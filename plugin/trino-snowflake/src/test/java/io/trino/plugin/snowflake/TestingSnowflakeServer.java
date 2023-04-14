@@ -31,6 +31,7 @@ public class TestingSnowflakeServer
     public static final String TEST_DATABASE = requireNonNull(System.getProperty("snowflake.test.server.database"), "snowflake.test.server.database is not set");
     public static final String TEST_WAREHOUSE = requireNonNull(System.getProperty("snowflake.test.server.warehouse"), "snowflake.test.server.warehouse is not set");
     public static final String TEST_ROLE = requireNonNull(System.getProperty("snowflake.test.server.role"), "snowflake.test.server.role is not set");
+    public static final String TEST_PROXY = System.getProperty("snowflake.test.http_proxy");
     public static final String TEST_SCHEMA = "tpch";
 
     public TestingSnowflakeServer()
