@@ -24,7 +24,9 @@ import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
 import io.trino.plugin.jdbc.ConnectionFactory;
+import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.LongWriteFunction;
 import io.trino.plugin.jdbc.ObjectReadFunction;
@@ -373,6 +375,12 @@ public class SnowflakeClient
                 (resultSet, columnIndex) -> jsonParse(utf8Slice(resultSet.getString(columnIndex))),
                 StandardColumnMappings.varcharWriteFunction(),
                 DISABLE_PUSHDOWN);
+    }
+
+    @Override
+    public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
     }
 
     private static SliceReadFunction variantReadFunction()
