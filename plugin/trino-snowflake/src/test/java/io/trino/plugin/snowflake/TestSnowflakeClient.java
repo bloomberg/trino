@@ -127,7 +127,7 @@ public class TestSnowflakeClient
         testImplementAggregation(
                 new AggregateFunction("sum", BIGINT, List.of(bigintVariable), List.of(), true, Optional.empty()),
                 Map.of(bigintVariable.getName(), BIGINT_COLUMN),
-                Optional.empty());  // distinct not supported
+                Optional.of("sum(DISTINCT \"c_bigint\")"));
 
         // sum(bigint) FILTER (WHERE ...)
         testImplementAggregation(
