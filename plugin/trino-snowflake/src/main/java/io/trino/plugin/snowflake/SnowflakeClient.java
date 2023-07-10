@@ -15,6 +15,7 @@ package io.trino.plugin.snowflake;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slices;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
@@ -68,8 +69,6 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
-
-import javax.inject.Inject;
 
 import java.math.RoundingMode;
 import java.sql.Connection;
@@ -671,7 +670,8 @@ public class SnowflakeClient
                 longTimestampWriter(precision));
     }
 
-    private static LocalDateTime toLocalDateTime(ResultSet resultSet, int columnIndex) throws SQLException
+    private static LocalDateTime toLocalDateTime(ResultSet resultSet, int columnIndex)
+            throws SQLException
     {
         Calendar calendar = new GregorianCalendar(UTC_TZ, Locale.ENGLISH);
         calendar.setTime(new Date(0));

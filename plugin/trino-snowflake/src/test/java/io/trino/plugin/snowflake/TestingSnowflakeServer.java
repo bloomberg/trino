@@ -47,7 +47,7 @@ public class TestingSnowflakeServer
     private static void execute(String url, Properties properties, String sql)
     {
         try (Connection connection = DriverManager.getConnection(url, properties);
-                Statement statement = connection.createStatement()) {
+             Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }
         catch (SQLException e) {

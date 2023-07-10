@@ -41,8 +41,6 @@ public class SnowflakeClientModule
     @Override
     public void configure(Binder binder)
     {
-//        binder.bind(Key.get(JdbcClient.class, ForBaseJdbc.class))
-//                .to(SnowflakeClient.class).in(Scopes.SINGLETON);
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(SnowflakeClient.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(SnowflakeConfig.class);
         configBinder(binder).bindConfig(TypeHandlingJdbcConfig.class);

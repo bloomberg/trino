@@ -34,7 +34,6 @@ import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestSnowflakeConnectorTest
         extends BaseJdbcConnectorTest
@@ -181,6 +180,14 @@ public class TestSnowflakeConnectorTest
                         "   comment varchar(79)\n" +
                         ")\n" +
                         "COMMENT ''");
+    }
+
+    @Override
+    public void testAddNotNullColumn()
+    {
+        assertThatThrownBy(super::testAddNotNullColumn)
+                .isInstanceOf(AssertionError.class)
+                .hasMessage("Unexpected failure when adding not null column");
     }
 
     @Test
@@ -352,14 +359,6 @@ public class TestSnowflakeConnectorTest
     {
         // Override and skip it because snowflake not support this feature
         assertThatThrownBy(super::testDropAmbiguousRowFieldCaseSensitivity);
-    }
-
-    @Test
-    @Override
-    public void testAddNotNullColumnToNonEmptyTable()
-    {
-        // Override and skip it because snowflake not support this feature
-        assertThatThrownBy(super::testAddNotNullColumnToNonEmptyTable).isInstanceOf(AssertionError.class);
     }
 
     @Test
