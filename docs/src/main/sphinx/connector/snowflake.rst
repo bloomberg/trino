@@ -11,7 +11,7 @@ Configuration
 -------------
 
 To configure the Snowflake connector, create a catalog properties file
-in ``etc/catalog`` named, for example, ``snowflake.properties``, to
+in ``etc/catalog`` named, for example, ``example.properties``, to
 mount the Snowflake connector as the ``snowflake`` catalog.
 Create the file with the following contents, replacing the
 connection properties as appropriate for your setup:
@@ -62,6 +62,10 @@ Snowflake Type                      Trino Type
 ``binary(n)``                       ``varbinary``
 ``varbinary``                       ``varbinary``
 ``date``                            ``date``
+``time``                            ``time``
+``timestampntz``                    ``timestamp``
+``timestamptz``                     ``timestampTZ``
+``timestampltz``                    ``timestampTZ``
 ==================================  ===============================
 
 Complete list of `Snowflake data types
