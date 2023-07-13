@@ -2,8 +2,12 @@
 Snowflake connector
 ===================
 
+.. raw:: html
+
+  <img src="../_static/img/snowflake.png" class="connector-logo">
+
 The Snowflake connector allows querying and creating tables in an
-external Snowflake account. This can be used to join data between
+external `Snowflake <https://www.snowflake.com/>`_ account. This can be used to join data between
 different systems like Snowflake and Hive, or between two different
 Snowflake accounts.
 
@@ -26,6 +30,17 @@ connection properties as appropriate for your setup:
     snowflake.database=database
     snowflake.role=role
     snowflake.warehouse=warehouse
+
+Arrow serialization support
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This is an experimental feature which introduces support for using Apache Arrow
+as the serialization format when reading from Snowflake.  Please note there are
+a few caveats:
+
+* Using Apache Arrow serialization is disabled by default. In order to enable
+  it,  add ``--add-opens=java.base/java.nio=ALL-UNNAMED`` to the Trino
+  :ref:`jvm-config`.
 
 
 Multiple Snowflake databases or accounts

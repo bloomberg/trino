@@ -32,6 +32,7 @@ public class TestSnowflakeConfig
                 .setDatabase(null)
                 .setRole(null)
                 .setWarehouse(null)
+                .setHTTPProxy(null)
                 .setTimestampNoTimezoneAsUTC(null));
     }
 
@@ -43,7 +44,8 @@ public class TestSnowflakeConfig
                 .put("snowflake.database", "MYDATABASE")
                 .put("snowflake.role", "MYROLE")
                 .put("snowflake.warehouse", "MYWAREHOUSE")
-                .put("snowflake.timestampNoTimezoneAsUtc", "true")
+                .put("snowflake.http-proxy", "MYPROXY")
+                .put("snowflake.timestamp-no-timezone-as-utc", "true")
                 .buildOrThrow();
 
         SnowflakeConfig expected = new SnowflakeConfig()
@@ -51,6 +53,7 @@ public class TestSnowflakeConfig
                 .setDatabase("MYDATABASE")
                 .setRole("MYROLE")
                 .setWarehouse("MYWAREHOUSE")
+                .setHTTPProxy("MYPROXY")
                 .setTimestampNoTimezoneAsUTC(true);
 
         assertFullMapping(properties, expected);
