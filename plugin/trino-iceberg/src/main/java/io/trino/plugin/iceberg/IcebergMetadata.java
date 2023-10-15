@@ -1664,9 +1664,7 @@ public class IcebergMetadata
         if (properties.containsKey(EXTRA_PROPERTIES)) {
             Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES)
                     .orElseThrow(() -> new IllegalArgumentException("extra_properties property cannot be empty"));
-            extraProperties.forEach((key, value) -> {
-                updateProperties.set(key, value);
-            });
+            extraProperties.forEach(updateProperties::set);
         }
 
         if (properties.containsKey(FILE_FORMAT_PROPERTY)) {
