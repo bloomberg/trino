@@ -221,6 +221,7 @@ import static io.trino.plugin.iceberg.IcebergSessionProperties.isExtendedStatist
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isMergeManifestsOnWrite;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isProjectionPushdownEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isStatisticsEnabled;
+import static io.trino.plugin.iceberg.IcebergTableProperties.EXTRA_PROPERTIES;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
@@ -301,7 +302,7 @@ public class IcebergMetadata
     private static final int CLEANING_UP_PROCEDURES_MAX_SUPPORTED_TABLE_VERSION = 2;
     private static final String RETENTION_THRESHOLD = "retention_threshold";
     private static final String UNKNOWN_SNAPSHOT_TOKEN = "UNKNOWN";
-    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.of(FILE_FORMAT_PROPERTY, FORMAT_VERSION_PROPERTY, PARTITIONING_PROPERTY, SORTED_BY_PROPERTY);
+    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.of(FILE_FORMAT_PROPERTY, FORMAT_VERSION_PROPERTY, PARTITIONING_PROPERTY, SORTED_BY_PROPERTY, EXTRA_PROPERTIES);
 
     public static final String ORC_BLOOM_FILTER_COLUMNS_KEY = "orc.bloom.filter.columns";
     public static final String ORC_BLOOM_FILTER_FPP_KEY = "orc.bloom.filter.fpp";
@@ -1659,6 +1660,14 @@ public class IcebergMetadata
 
         beginTransaction(icebergTable);
         UpdateProperties updateProperties = transaction.updateProperties();
+
+        if (properties.containsKey(EXTRA_PROPERTIES)) {
+            Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES)
+                    .orElseThrow(() -> new IllegalArgumentException("extra_properties property cannot be empty"));
+            extraProperties.forEach((key, value) -> {
+                updateProperties.set(key, value);
+            });
+        }
 
         if (properties.containsKey(FILE_FORMAT_PROPERTY)) {
             IcebergFileFormat fileFormat = (IcebergFileFormat) properties.get(FILE_FORMAT_PROPERTY)
