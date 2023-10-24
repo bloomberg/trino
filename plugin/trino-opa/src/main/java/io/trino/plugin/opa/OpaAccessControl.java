@@ -70,10 +70,11 @@ import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthoriza
 import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 
-public class OpaAccessControl
+public sealed class OpaAccessControl
         implements SystemAccessControl
+        permits OpaBatchAccessControl
 {
-    protected final OpaHighLevelClient opaHighLevelClient;
+    private final OpaHighLevelClient opaHighLevelClient;
 
     @Inject
     public OpaAccessControl(OpaHighLevelClient opaHighLevelClient)
@@ -94,12 +95,7 @@ public class OpaAccessControl
 
     @Override
     public void checkCanSetUser(Optional<Principal> principal, String userName)
-    {
-        // This function is called for every query, asking if the user can become themselves, resulting in e.g.
-        // Access Denied: Principal bob cannot become user bob
-        //
-        // The function is deprecated, so let's no-op
-    }
+    {}
 
     @Override
     public void checkCanExecuteQuery(Identity identity)

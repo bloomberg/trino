@@ -41,7 +41,7 @@ import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
-public class OpaBatchAccessControl
+public final class OpaBatchAccessControl
         extends OpaAccessControl
 {
     private final JsonCodec<OpaBatchQueryResult> batchResultCodec;
