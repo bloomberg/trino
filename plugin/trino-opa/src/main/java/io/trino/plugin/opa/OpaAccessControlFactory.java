@@ -83,7 +83,7 @@ public class OpaAccessControlFactory
                 .doNotInitializeLogging()
                 .setRequiredConfigurationProperties(config)
                 .initialize();
-        return injector.getInstance(Key.get(SystemAccessControl.class, ForOpa.class));
+        return injector.getInstance(SystemAccessControl.class);
     }
 
     private static class ExecutorProvider

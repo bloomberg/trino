@@ -14,7 +14,6 @@
 package io.trino.plugin.opa;
 
 import com.google.inject.Binder;
-import com.google.inject.Key;
 import com.google.inject.Scopes;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.trino.plugin.opa.schema.OpaBatchQueryResult;
@@ -44,7 +43,7 @@ public class OpaAccessControlModule
         @Override
         protected void setup(Binder binder)
         {
-            binder.bind(Key.get(SystemAccessControl.class, ForOpa.class)).to(OpaAccessControl.class).in(Scopes.SINGLETON);
+            binder.bind(SystemAccessControl.class).to(OpaAccessControl.class).in(Scopes.SINGLETON);
         }
     }
 
@@ -55,7 +54,7 @@ public class OpaAccessControlModule
         protected void setup(Binder binder)
         {
             jsonCodecBinder(binder).bindJsonCodec(OpaBatchQueryResult.class);
-            binder.bind(Key.get(SystemAccessControl.class, ForOpa.class)).to(OpaBatchAccessControl.class).in(Scopes.SINGLETON);
+            binder.bind(SystemAccessControl.class).to(OpaBatchAccessControl.class).in(Scopes.SINGLETON);
         }
     }
 }
