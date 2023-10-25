@@ -20,20 +20,11 @@ import io.trino.plugin.opa.schema.OpaQueryInput;
 import io.trino.plugin.opa.schema.OpaQueryInputAction;
 import io.trino.plugin.opa.schema.OpaQueryInputResource;
 import io.trino.plugin.opa.schema.OpaQueryResult;
-import io.trino.plugin.opa.schema.TrinoSchema;
-import io.trino.plugin.opa.schema.TrinoTable;
-import io.trino.plugin.opa.schema.TrinoUser;
-import io.trino.spi.connector.CatalogSchemaName;
-import io.trino.spi.connector.CatalogSchemaTableName;
-import io.trino.spi.security.Identity;
+import io.trino.spi.security.AccessDeniedException;
 
 import java.net.URI;
 import java.util.Collection;
-import java.util.Map;
 import java.util.Set;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
-import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static java.util.Objects.requireNonNull;
@@ -82,123 +73,28 @@ public class OpaHighLevelClient
                                 .build()));
     }
 
-    public <T> void queryAndEnforce(
+    public void queryAndEnforce(
             OpaQueryContext context,
             String actionName,
-            Consumer<T> denyCallable,
-            BiFunction<OpaQueryInputResource.Builder, T, OpaQueryInputResource.Builder> builderSetter,
-            T value)
+            Runnable deny,
+            OpaQueryInputResource resource)
     {
-        OpaQueryInputResource resource = builderSetter.apply(OpaQueryInputResource.builder(), value).build();
         if (!queryOpaWithSimpleResource(context, actionName, resource)) {
-            denyCallable.accept(value);
+            deny.run();
+            // we should never get here because deny should throw
+            throw new AccessDeniedException("Access denied for action %s and resource %s".formatted(actionName, resource));
         }
     }
 
-    public <T> void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            DenyCallable denyCallable,
-            BiFunction<OpaQueryInputResource.Builder, T, OpaQueryInputResource.Builder> builderSetter,
-            T value)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                failedItem -> denyCallable.deny(),
-                builderSetter,
-                value);
-    }
-
     public void queryAndEnforce(
             OpaQueryContext context,
             String actionName,
-            Consumer<String> denyCallable,
-            CatalogSchemaName schema)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                () -> denyCallable.accept(schema.toString()),
-                OpaQueryInputResource.Builder::schema,
-                TrinoSchema.fromTrinoCatalogSchema(schema));
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            Consumer<String> denyCallable,
-            CatalogSchemaName schema,
-            Map<String, ?> properties)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                () -> denyCallable.accept(schema.toString()),
-                OpaQueryInputResource.Builder::schema,
-                TrinoSchema.Builder.fromTrinoCatalogSchema(schema).properties(properties).build());
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            Consumer<String> denyCallable,
-            CatalogSchemaTableName table)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                () -> denyCallable.accept(table.toString()),
-                OpaQueryInputResource.Builder::table,
-                TrinoTable.fromTrinoTable(table));
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            BiConsumer<String, Set<String>> denyCallable,
-            CatalogSchemaTableName table,
-            Set<String> columns)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                () -> denyCallable.accept(table.toString(), columns),
-                OpaQueryInputResource.Builder::table,
-                TrinoTable.Builder.fromTrinoTable(table).columns(columns).build());
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            Consumer<String> denyCallable,
-            CatalogSchemaTableName table,
-            Map<String, ?> properties)
-    {
-        queryAndEnforce(
-                context,
-                actionName,
-                () -> denyCallable.accept(table.toString()),
-                OpaQueryInputResource.Builder::table,
-                TrinoTable.Builder.fromTrinoTable(table).properties(properties).build());
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            DenyCallable denyCallable,
-            Identity identity)
-    {
-        queryAndEnforce(context, actionName, denyCallable, OpaQueryInputResource.Builder::user, new TrinoUser(identity));
-    }
-
-    public void queryAndEnforce(
-            OpaQueryContext context,
-            String actionName,
-            DenyCallable denyCallable)
+            Runnable deny)
     {
         if (!queryOpaWithSimpleAction(context, actionName)) {
-            denyCallable.deny();
+            deny.run();
+            // we should never get here because deny should throw
+            throw new AccessDeniedException("Access denied for action %s".formatted(actionName));
         }
     }
 
@@ -217,10 +113,5 @@ public class OpaHighLevelClient
     public static OpaQueryInput buildQueryInputForSimpleResource(OpaQueryContext context, String operation, OpaQueryInputResource resource)
     {
         return new OpaQueryInput(context, OpaQueryInputAction.builder().operation(operation).resource(resource).build());
-    }
-
-    interface DenyCallable
-    {
-        void deny();
     }
 }
