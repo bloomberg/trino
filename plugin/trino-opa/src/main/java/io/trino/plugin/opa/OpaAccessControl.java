@@ -206,7 +206,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "CreateSchema",
                 () -> denyCreateSchema(schema.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.Builder.fromTrinoCatalogSchema(schema).properties(properties).build()).build());
+                OpaQueryInputResource.builder().schema(TrinoSchema.builder(schema).properties(properties).build()).build());
     }
 
     @Override
@@ -880,7 +880,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 actionName,
                 () -> deny.accept(table.toString()),
-                OpaQueryInputResource.builder().table(TrinoTable.Builder.fromTrinoTable(table).properties(properties).build()).build());
+                OpaQueryInputResource.builder().table(TrinoTable.builder(table).properties(properties).build()).build());
     }
 
     private void checkTableAndColumnsOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Set<String> columns, BiConsumer<String, Set<String>> deny)
@@ -889,6 +889,6 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 actionName,
                 () -> deny.accept(table.toString(), columns),
-                OpaQueryInputResource.builder().table(TrinoTable.Builder.fromTrinoTable(table).columns(columns).build()).build());
+                OpaQueryInputResource.builder().table(TrinoTable.builder(table).columns(columns).build()).build());
     }
 }

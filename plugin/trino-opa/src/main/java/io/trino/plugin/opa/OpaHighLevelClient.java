@@ -51,7 +51,7 @@ public class OpaHighLevelClient
         return opaHttpClient.consumeOpaResponse(opaHttpClient.submitOpaRequest(input, opaPolicyUri, queryResultCodec)).result();
     }
 
-    public boolean queryOpaWithSimpleAction(OpaQueryContext context, String operation)
+    private boolean queryOpaWithSimpleAction(OpaQueryContext context, String operation)
     {
         return queryOpa(buildQueryInputForSimpleAction(context, operation));
     }

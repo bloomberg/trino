@@ -32,7 +32,7 @@ public record TrinoTable(
 {
     public static TrinoTable fromTrinoTable(CatalogSchemaTableName table)
     {
-        return TrinoTable.Builder.fromTrinoTable(table).build();
+        return TrinoTable.builder(table).build();
     }
 
     public TrinoTable
@@ -49,19 +49,19 @@ public record TrinoTable(
         return new Builder();
     }
 
+    public static Builder builder(CatalogSchemaTableName table)
+    {
+        return builder()
+                .catalogName(table.getCatalogName())
+                .schemaName(table.getSchemaTableName().getSchemaName())
+                .tableName(table.getSchemaTableName().getTableName());
+    }
+
     public static class Builder
             extends BaseSchemaBuilder<TrinoTable, Builder>
     {
         public String tableName;
         public Set<String> columns;
-
-        public static Builder fromTrinoTable(CatalogSchemaTableName table)
-        {
-            return builder()
-                    .catalogName(table.getCatalogName())
-                    .schemaName(table.getSchemaTableName().getSchemaName())
-                    .tableName(table.getSchemaTableName().getTableName());
-        }
 
         private Builder() {}
 

@@ -32,7 +32,7 @@ public record TrinoSchema(
 {
     public static TrinoSchema fromTrinoCatalogSchema(CatalogSchemaName catalogSchemaName)
     {
-        return Builder.fromTrinoCatalogSchema(catalogSchemaName).build();
+        return builder(catalogSchemaName).build();
     }
 
     public TrinoSchema
@@ -49,16 +49,14 @@ public record TrinoSchema(
         return new Builder();
     }
 
+    public static Builder builder(CatalogSchemaName catalogSchemaName)
+    {
+        return builder().catalogName(catalogSchemaName.getCatalogName()).schemaName(catalogSchemaName.getSchemaName());
+    }
+
     public static class Builder
             extends BaseSchemaBuilder<TrinoSchema, Builder>
     {
-        public static Builder fromTrinoCatalogSchema(CatalogSchemaName catalogSchemaName)
-        {
-            return new Builder()
-                    .catalogName(catalogSchemaName.getCatalogName())
-                    .schemaName(catalogSchemaName.getSchemaName());
-        }
-
         private Builder() {}
 
         @Override
