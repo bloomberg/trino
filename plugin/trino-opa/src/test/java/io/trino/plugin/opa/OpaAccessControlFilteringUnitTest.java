@@ -101,8 +101,6 @@ public class OpaAccessControlFilteringUnitTest
                                 "name": "user-one",
                                 "user": "user-one",
                                 "groups": [],
-                                "enabledRoles": [],
-                                "catalogRoles": {},
                                 "extraCredentials": {}
                             }
                         }
@@ -116,8 +114,6 @@ public class OpaAccessControlFilteringUnitTest
                                 "name": "user-two",
                                 "user": "user-two",
                                 "groups": [],
-                                "enabledRoles": [],
-                                "catalogRoles": {},
                                 "extraCredentials": {}
                             }
                         }

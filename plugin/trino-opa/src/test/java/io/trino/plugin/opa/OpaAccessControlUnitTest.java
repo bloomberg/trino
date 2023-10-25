@@ -333,8 +333,6 @@ public class OpaAccessControlUnitTest
                             "name": "dummy-user",
                             "user": "dummy-user",
                             "groups": ["some-group"],
-                            "enabledRoles": [],
-                            "catalogRoles": {},
                             "extraCredentials": {"some_extra_credential": "value"}
                         }
                     }
