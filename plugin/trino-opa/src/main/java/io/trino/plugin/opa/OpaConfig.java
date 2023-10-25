@@ -28,12 +28,23 @@ public class OpaConfig
     private boolean logRequests;
     private boolean logResponses;
 
+    @NotNull
+    public URI getOpaUri()
+    {
+        return opaUri;
+    }
+
     @Config("opa.policy.uri")
     @ConfigDescription("URI for OPA policies")
     public OpaConfig setOpaUri(@NotNull URI opaUri)
     {
         this.opaUri = opaUri;
         return this;
+    }
+
+    public Optional<URI> getOpaBatchUri()
+    {
+        return opaBatchUri;
     }
 
     @Config("opa.policy.batched-uri")
@@ -44,6 +55,11 @@ public class OpaConfig
         return this;
     }
 
+    public boolean getLogRequests()
+    {
+        return this.logRequests;
+    }
+
     @Config("opa.log-requests")
     @ConfigDescription("Whether to log requests (URI, entire body and headers) prior to sending them to OPA")
     public OpaConfig setLogRequests(boolean logRequests)
@@ -52,32 +68,16 @@ public class OpaConfig
         return this;
     }
 
+    public boolean getLogResponses()
+    {
+        return this.logResponses;
+    }
+
     @Config("opa.log-responses")
     @ConfigDescription("Whether to log responses (URI, entire body, status code and headers) received from OPA")
     public OpaConfig setLogResponses(boolean logResponses)
     {
         this.logResponses = logResponses;
         return this;
-    }
-
-    @NotNull
-    public URI getOpaUri()
-    {
-        return opaUri;
-    }
-
-    public Optional<URI> getOpaBatchUri()
-    {
-        return opaBatchUri;
-    }
-
-    public boolean getLogRequests()
-    {
-        return this.logRequests;
-    }
-
-    public boolean getLogResponses()
-    {
-        return this.logResponses;
     }
 }
