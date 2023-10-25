@@ -92,12 +92,7 @@ public final class OpaBatchAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "FilterSchemas",
                 schemaNames,
-                schema -> OpaQueryInputResource.builder()
-                        .schema(TrinoSchema.builder()
-                                .catalogName(catalogName)
-                                .schemaName(schema)
-                                .build())
-                        .build());
+                schema -> OpaQueryInputResource.builder().schema(new TrinoSchema(catalogName, schema)).build());
     }
 
     @Override
@@ -107,13 +102,7 @@ public final class OpaBatchAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "FilterTables",
                 tableNames,
-                table -> OpaQueryInputResource.builder()
-                        .table(TrinoTable.builder()
-                                .catalogName(catalogName)
-                                .schemaName(table.getSchemaName())
-                                .tableName(table.getTableName())
-                                .build())
-                        .build());
+                table -> OpaQueryInputResource.builder().table(new TrinoTable(catalogName, table.getSchemaName(), table.getTableName())).build());
     }
 
     @Override
@@ -122,15 +111,9 @@ public final class OpaBatchAccessControl
         BiFunction<SchemaTableName, List<String>, OpaQueryInput> requestBuilder = batchRequestBuilder(
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "FilterColumns",
-                (schemaTableName, columns) ->
-                        OpaQueryInputResource.builder()
-                                .table(TrinoTable.builder()
-                                        .catalogName(catalogName)
-                                        .schemaName(schemaTableName.getSchemaName())
-                                        .tableName(schemaTableName.getTableName())
-                                        .columns(ImmutableSet.copyOf(columns))
-                                        .build())
-                                .build());
+                (schemaTableName, columns) -> OpaQueryInputResource.builder()
+                        .table(new TrinoTable(catalogName, schemaTableName.getSchemaName(), schemaTableName.getTableName()).withColumns(ImmutableSet.copyOf(columns)))
+                        .build());
         return opaHttpClient.parallelBatchFilterFromOpa(tableColumns, requestBuilder, opaBatchedPolicyUri, batchResultCodec);
     }
 
@@ -142,12 +125,7 @@ public final class OpaBatchAccessControl
                 "FilterFunctions",
                 functionNames,
                 function -> OpaQueryInputResource.builder()
-                        .function(new TrinoFunction(
-                                TrinoSchema.builder()
-                                        .catalogName(catalogName)
-                                        .schemaName(function.getSchemaName())
-                                        .build(),
-                                function.getFunctionName()))
+                        .function(new TrinoFunction(new TrinoSchema(catalogName, function.getSchemaName()), function.getFunctionName()))
                         .build());
     }
 

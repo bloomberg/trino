@@ -14,11 +14,13 @@
 package io.trino.plugin.opa.schema;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.annotation.JsonUnwrapped;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import jakarta.validation.constraints.NotNull;
 
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
@@ -26,70 +28,42 @@ import static java.util.Objects.requireNonNull;
 
 @JsonInclude(NON_NULL)
 public record TrinoTable(
-        @JsonUnwrapped @NotNull TrinoSchema catalogSchema,
+        @NotNull String catalogName,
+        @NotNull String schemaName,
         @NotNull String tableName,
-        Set<String> columns)
+        Set<String> columns,
+        Map<String, Optional<Object>> properties)
 {
-    public static TrinoTable fromTrinoTable(CatalogSchemaTableName table)
-    {
-        return TrinoTable.builder(table).build();
-    }
-
     public TrinoTable
     {
-        requireNonNull(catalogSchema, "catalogSchema is null");
+        requireNonNull(catalogName, "catalogName is null");
+        requireNonNull(schemaName, "schemaName is null");
         requireNonNull(tableName, "tableName is null");
         if (columns != null) {
             columns = ImmutableSet.copyOf(columns);
         }
+        if (properties != null) {
+            properties = ImmutableMap.copyOf(properties);
+        }
     }
 
-    public static Builder builder()
+    public TrinoTable(CatalogSchemaTableName table)
     {
-        return new Builder();
+        this(table.getCatalogName(), table.getSchemaTableName().getSchemaName(), table.getSchemaTableName().getTableName());
     }
 
-    public static Builder builder(CatalogSchemaTableName table)
+    public TrinoTable(String catalogName, String schemaName, String tableName)
     {
-        return builder()
-                .catalogName(table.getCatalogName())
-                .schemaName(table.getSchemaTableName().getSchemaName())
-                .tableName(table.getSchemaTableName().getTableName());
+        this(catalogName, schemaName, tableName, null, null);
     }
 
-    public static class Builder
-            extends BaseSchemaBuilder<TrinoTable, Builder>
+    public TrinoTable withColumns(Set<String> newColumns)
     {
-        public String tableName;
-        public Set<String> columns;
+        return new TrinoTable(catalogName, schemaName, tableName, newColumns, properties);
+    }
 
-        private Builder() {}
-
-        @Override
-        protected Builder getInstance()
-        {
-            return this;
-        }
-
-        public Builder tableName(String tableName)
-        {
-            this.tableName = tableName;
-            return this;
-        }
-
-        public Builder columns(Set<String> columns)
-        {
-            this.columns = columns;
-            return this;
-        }
-
-        @Override
-        public TrinoTable build()
-        {
-            return new TrinoTable(
-                    new TrinoSchema(this.catalogName, this.schemaName, this.properties),
-                    this.tableName,
-                    this.columns);
-        }
+    public TrinoTable withProperties(Map<String, Optional<Object>> newProperties)
+    {
+        return new TrinoTable(catalogName, schemaName, tableName, columns, newProperties);
     }
 }

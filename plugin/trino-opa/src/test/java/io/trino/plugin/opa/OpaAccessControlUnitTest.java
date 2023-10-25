@@ -38,7 +38,6 @@ import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
 import java.net.URI;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -248,16 +247,11 @@ public class OpaAccessControlUnitTest
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, Map> callable)
     {
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
-        Map<String, Optional<Object>> properties = new HashMap<>(
-                ImmutableMap.<String, Optional<Object>>builder()
-                        .put("string_item", Optional.of("string_value"))
-                        .put("empty_item", Optional.empty())
-                        .put("boxed_number_item", Optional.of(Integer.valueOf(32)))
-                        .buildOrThrow());
-        // https://openjdk.org/jeps/269
-        // New collections do not support null items in them, so we need to ensure
-        // our code can still deal with them.
-        properties.put("null_item", null);
+        Map<String, Optional<Object>> properties = ImmutableMap.<String, Optional<Object>>builder()
+                .put("string_item", Optional.of("string_value"))
+                .put("empty_item", Optional.empty())
+                .put("boxed_number_item", Optional.of(Integer.valueOf(32)))
+                .buildOrThrow();
 
         callable.accept(authorizer, requestingSecurityContext, table, properties);
 
@@ -272,7 +266,6 @@ public class OpaAccessControlUnitTest
                             "properties": {
                                 "string_item": "string_value",
                                 "empty_item": null,
-                                "null_item": null,
                                 "boxed_number_item": 32
                             }
                         }

@@ -30,11 +30,6 @@ public record TrinoSchema(
         @NotNull String schemaName,
         Map<String, Optional<Object>> properties)
 {
-    public static TrinoSchema fromTrinoCatalogSchema(CatalogSchemaName catalogSchemaName)
-    {
-        return builder(catalogSchemaName).build();
-    }
-
     public TrinoSchema
     {
         requireNonNull(catalogName, "catalogName is null");
@@ -44,34 +39,18 @@ public record TrinoSchema(
         }
     }
 
-    public static Builder builder()
+    public TrinoSchema(CatalogSchemaName schema)
     {
-        return new Builder();
+        this(schema.getCatalogName(), schema.getSchemaName());
     }
 
-    public static Builder builder(CatalogSchemaName catalogSchemaName)
+    public TrinoSchema(String catalogName, String schemaName)
     {
-        return builder().catalogName(catalogSchemaName.getCatalogName()).schemaName(catalogSchemaName.getSchemaName());
+        this(catalogName, schemaName, null);
     }
 
-    public static class Builder
-            extends BaseSchemaBuilder<TrinoSchema, Builder>
+    public TrinoSchema withProperties(Map<String, Optional<Object>> newProperties)
     {
-        private Builder() {}
-
-        @Override
-        protected Builder getInstance()
-        {
-            return this;
-        }
-
-        @Override
-        public TrinoSchema build()
-        {
-            return new TrinoSchema(
-                    this.catalogName,
-                    this.schemaName,
-                    this.properties);
-        }
+        return new TrinoSchema(catalogName, schemaName, newProperties);
     }
 }

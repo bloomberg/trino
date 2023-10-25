@@ -29,10 +29,7 @@ public record TrinoFunction(
     public static TrinoFunction fromTrinoFunction(CatalogSchemaRoutineName catalogSchemaRoutineName)
     {
         return new TrinoFunction(
-                TrinoSchema.builder()
-                        .catalogName(catalogSchemaRoutineName.getCatalogName())
-                        .schemaName(catalogSchemaRoutineName.getSchemaName())
-                        .build(),
+                new TrinoSchema(catalogSchemaRoutineName.getCatalogName(), catalogSchemaRoutineName.getSchemaName()),
                 catalogSchemaRoutineName.getRoutineName());
     }
 

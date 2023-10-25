@@ -51,6 +51,7 @@ import java.util.function.Consumer;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.opa.OpaHighLevelClient.buildQueryInputForSimpleResource;
+import static io.trino.plugin.opa.schema.PropertiesMapper.convertProperties;
 import static io.trino.spi.security.AccessDeniedException.denyCreateCatalog;
 import static io.trino.spi.security.AccessDeniedException.denyCreateRole;
 import static io.trino.spi.security.AccessDeniedException.denyCreateSchema;
@@ -206,7 +207,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "CreateSchema",
                 () -> denyCreateSchema(schema.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.builder(schema).properties(properties).build()).build());
+                OpaQueryInputResource.builder().schema(new TrinoSchema(schema).withProperties(convertProperties(properties))).build());
     }
 
     @Override
@@ -216,19 +217,14 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "DropSchema",
                 () -> denyDropSchema(schema.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build());
+                OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build());
     }
 
     @Override
     public void checkCanRenameSchema(SystemSecurityContext context, CatalogSchemaName schema, String newSchemaName)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build();
-        OpaQueryInputResource targetResource = OpaQueryInputResource.builder()
-                .schema(TrinoSchema.builder()
-                        .catalogName(schema.getCatalogName())
-                        .schemaName(newSchemaName)
-                        .build())
-                .build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build();
+        OpaQueryInputResource targetResource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema.getCatalogName(), newSchemaName)).build();
 
         OpaQueryContext queryContext = OpaQueryContext.fromSystemSecurityContext(context);
 
@@ -240,7 +236,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanSetSchemaAuthorization(SystemSecurityContext context, CatalogSchemaName schema, TrinoPrincipal principal)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build();
         OpaQueryInputGrant grantee = OpaQueryInputGrant.builder().principal(TrinoGrantPrincipal.fromTrinoPrincipal(principal)).build();
         OpaQueryInputAction action = OpaQueryInputAction.builder()
                 .operation("SetSchemaAuthorization")
@@ -272,12 +268,7 @@ public sealed class OpaAccessControl
                 schema -> buildQueryInputForSimpleResource(
                         OpaQueryContext.fromSystemSecurityContext(context),
                         "FilterSchemas",
-                        OpaQueryInputResource.builder()
-                                .schema(TrinoSchema.builder()
-                                        .catalogName(catalogName)
-                                        .schemaName(schema)
-                                        .build())
-                                .build()));
+                        OpaQueryInputResource.builder().schema(new TrinoSchema(catalogName, schema)).build()));
     }
 
     @Override
@@ -287,7 +278,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "ShowCreateSchema",
                 () -> denyShowCreateSchema(schemaName.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schemaName)).build());
+                OpaQueryInputResource.builder().schema(new TrinoSchema(schemaName)).build());
     }
 
     @Override
@@ -299,7 +290,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanCreateTable(SystemSecurityContext context, CatalogSchemaTableName table, Map<String, Object> properties)
     {
-        checkTableAndPropertiesOperation(context, "CreateTable", table, properties, AccessDeniedException::denyCreateTable);
+        checkTableAndPropertiesOperation(context, "CreateTable", table, convertProperties(properties), AccessDeniedException::denyCreateTable);
     }
 
     @Override
@@ -311,8 +302,8 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanRenameTable(SystemSecurityContext context, CatalogSchemaTableName table, CatalogSchemaTableName newTable)
     {
-        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build();
-        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(newTable)).build();
+        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(new TrinoTable(table)).build();
+        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(new TrinoTable(newTable)).build();
         OpaQueryContext queryContext = OpaQueryContext.fromSystemSecurityContext(context);
 
         if (!opaHighLevelClient.queryOpaWithSourceAndTargetResource(queryContext, "RenameTable", oldResource, newResource)) {
@@ -351,7 +342,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "ShowTables",
                 () -> denyShowTables(schema.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build());
+                OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build());
     }
 
     @Override
@@ -363,11 +354,7 @@ public sealed class OpaAccessControl
                         OpaQueryContext.fromSystemSecurityContext(context),
                         "FilterTables",
                         OpaQueryInputResource.builder()
-                                .table(TrinoTable.builder()
-                                        .catalogName(catalogName)
-                                        .schemaName(table.getSchemaName())
-                                        .tableName(table.getTableName())
-                                        .build())
+                                .table(new TrinoTable(catalogName, table.getSchemaName(), table.getTableName()))
                                 .build()));
     }
 
@@ -397,12 +384,10 @@ public sealed class OpaAccessControl
                         OpaQueryContext.fromSystemSecurityContext(context),
                         "FilterColumns",
                         OpaQueryInputResource.builder()
-                                .table(TrinoTable.builder()
-                                        .catalogName(catalogName)
-                                        .schemaName(tableColumn.schemaTableName().getSchemaName())
-                                        .tableName(tableColumn.schemaTableName().getTableName())
-                                        .columns(ImmutableSet.of(tableColumn.columnName()))
-                                        .build())
+                                .table(new TrinoTable(
+                                        catalogName,
+                                        tableColumn.schemaTableName().getSchemaName(),
+                                        tableColumn.schemaTableName().getTableName()).withColumns(ImmutableSet.of(tableColumn.columnName())))
                                 .build()));
 
         for (TrinoColumn filteredColumn : filteredColumns) {
@@ -433,7 +418,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanSetTableAuthorization(SystemSecurityContext context, CatalogSchemaTableName table, TrinoPrincipal principal)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(new TrinoTable(table)).build();
         OpaQueryInputGrant grantee = OpaQueryInputGrant.builder().principal(TrinoGrantPrincipal.fromTrinoPrincipal(principal)).build();
         OpaQueryInputAction action = OpaQueryInputAction.builder()
                 .operation("SetTableAuthorization")
@@ -492,8 +477,8 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanRenameView(SystemSecurityContext context, CatalogSchemaTableName view, CatalogSchemaTableName newView)
     {
-        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(view)).build();
-        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(newView)).build();
+        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(new TrinoTable(view)).build();
+        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(new TrinoTable(newView)).build();
         OpaQueryContext queryContext = OpaQueryContext.fromSystemSecurityContext(context);
 
         if (!opaHighLevelClient.queryOpaWithSourceAndTargetResource(queryContext, "RenameView", oldResource, newResource)) {
@@ -504,7 +489,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanSetViewAuthorization(SystemSecurityContext context, CatalogSchemaTableName view, TrinoPrincipal principal)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(view)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(new TrinoTable(view)).build();
         OpaQueryInputGrant grantee = OpaQueryInputGrant.builder().principal(TrinoGrantPrincipal.fromTrinoPrincipal(principal)).build();
         OpaQueryInputAction action = OpaQueryInputAction.builder()
                 .operation("SetViewAuthorization")
@@ -533,7 +518,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanCreateMaterializedView(SystemSecurityContext context, CatalogSchemaTableName materializedView, Map<String, Object> properties)
     {
-        checkTableAndPropertiesOperation(context, "CreateMaterializedView", materializedView, properties, AccessDeniedException::denyCreateMaterializedView);
+        checkTableAndPropertiesOperation(context, "CreateMaterializedView", materializedView, convertProperties(properties), AccessDeniedException::denyCreateMaterializedView);
     }
 
     @Override
@@ -557,8 +542,8 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanRenameMaterializedView(SystemSecurityContext context, CatalogSchemaTableName view, CatalogSchemaTableName newView)
     {
-        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(view)).build();
-        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(newView)).build();
+        OpaQueryInputResource oldResource = OpaQueryInputResource.builder().table(new TrinoTable(view)).build();
+        OpaQueryInputResource newResource = OpaQueryInputResource.builder().table(new TrinoTable(newView)).build();
         OpaQueryContext queryContext = OpaQueryContext.fromSystemSecurityContext(context);
 
         if (!opaHighLevelClient.queryOpaWithSourceAndTargetResource(queryContext, "RenameMaterializedView", oldResource, newResource)) {
@@ -579,7 +564,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanGrantSchemaPrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaName schema, TrinoPrincipal grantee, boolean grantOption)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build();
         OpaQueryInputGrant opaGrantee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(grantee))
                 .grantOption(grantOption)
@@ -600,7 +585,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanDenySchemaPrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaName schema, TrinoPrincipal grantee)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build();
         OpaQueryInputGrant opaGrantee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(grantee))
                 .privilege(privilege)
@@ -620,7 +605,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanRevokeSchemaPrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaName schema, TrinoPrincipal revokee, boolean grantOption)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build();
         OpaQueryInputGrant opaGrantee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(revokee))
                 .grantOption(grantOption)
@@ -641,7 +626,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanGrantTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, TrinoPrincipal grantee, boolean grantOption)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(new TrinoTable(table)).build();
         OpaQueryInputGrant opaGrantee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(grantee))
                 .grantOption(grantOption)
@@ -662,7 +647,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanDenyTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, TrinoPrincipal grantee)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(new TrinoTable(table)).build();
         OpaQueryInputGrant opaGrantee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(grantee))
                 .privilege(privilege)
@@ -682,7 +667,7 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanRevokeTablePrivilege(SystemSecurityContext context, Privilege privilege, CatalogSchemaTableName table, TrinoPrincipal revokee, boolean grantOption)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build();
+        OpaQueryInputResource resource = OpaQueryInputResource.builder().table(new TrinoTable(table)).build();
         OpaQueryInputGrant opaRevokee = OpaQueryInputGrant.builder()
                 .principal(TrinoGrantPrincipal.fromTrinoPrincipal(revokee))
                 .privilege(privilege)
@@ -806,7 +791,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 "ShowFunctions",
                 () -> denyShowFunctions(schema.toString()),
-                OpaQueryInputResource.builder().schema(TrinoSchema.fromTrinoCatalogSchema(schema)).build());
+                OpaQueryInputResource.builder().schema(new TrinoSchema(schema)).build());
     }
 
     @Override
@@ -818,12 +803,10 @@ public sealed class OpaAccessControl
                         OpaQueryContext.fromSystemSecurityContext(context),
                         "FilterFunctions",
                         OpaQueryInputResource.builder()
-                                .function(new TrinoFunction(
-                                        TrinoSchema.builder()
-                                                .catalogName(catalogName)
-                                                .schemaName(function.getSchemaName())
-                                                .build(),
-                                        function.getFunctionName()))
+                                .function(
+                                        new TrinoFunction(
+                                                new TrinoSchema(catalogName, function.getSchemaName()),
+                                                function.getFunctionName()))
                                 .build()));
     }
 
@@ -862,7 +845,7 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(systemSecurityContext),
                 "ExecuteTableProcedure",
                 () -> denyExecuteTableProcedure(table.toString(), procedure),
-                OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).function(procedure).build());
+                OpaQueryInputResource.builder().table(new TrinoTable(table)).function(procedure).build());
     }
 
     private void checkTableOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Consumer<String> deny)
@@ -871,16 +854,16 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 actionName,
                 () -> deny.accept(table.toString()),
-                OpaQueryInputResource.builder().table(TrinoTable.fromTrinoTable(table)).build());
+                OpaQueryInputResource.builder().table(new TrinoTable(table)).build());
     }
 
-    private void checkTableAndPropertiesOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Map<String, ?> properties, Consumer<String> deny)
+    private void checkTableAndPropertiesOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Map<String, Optional<Object>> properties, Consumer<String> deny)
     {
         opaHighLevelClient.queryAndEnforce(
                 OpaQueryContext.fromSystemSecurityContext(context),
                 actionName,
                 () -> deny.accept(table.toString()),
-                OpaQueryInputResource.builder().table(TrinoTable.builder(table).properties(properties).build()).build());
+                OpaQueryInputResource.builder().table(new TrinoTable(table).withProperties(properties)).build());
     }
 
     private void checkTableAndColumnsOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Set<String> columns, BiConsumer<String, Set<String>> deny)
@@ -889,6 +872,6 @@ public sealed class OpaAccessControl
                 OpaQueryContext.fromSystemSecurityContext(context),
                 actionName,
                 () -> deny.accept(table.toString(), columns),
-                OpaQueryInputResource.builder().table(TrinoTable.builder(table).columns(columns).build()).build());
+                OpaQueryInputResource.builder().table(new TrinoTable(table).withColumns(columns)).build());
     }
 }
