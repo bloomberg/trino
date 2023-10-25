@@ -34,7 +34,6 @@ import io.trino.plugin.opa.schema.OpaQueryResult;
 
 import java.net.URI;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -153,16 +152,14 @@ public class OpaHttpClient
 
     public <K, V> Map<K, Set<V>> parallelBatchFilterFromOpa(Map<K, ? extends Collection<V>> items, BiFunction<K, List<V>, OpaQueryInput> requestBuilder, URI uri, JsonCodec<? extends OpaBatchQueryResult> deserializer)
     {
-        ImmutableMap.Builder<K, Set<V>> resultBuilder = ImmutableMap.builder();
-        Map<K, FluentFuture<ImmutableSet<V>>> allFutures = new HashMap<>();
+        ImmutableMap.Builder<K, FluentFuture<ImmutableSet<V>>> allFuturesBuilder = ImmutableMap.builder();
 
         for (Map.Entry<K, ? extends Collection<V>> mapEntry : items.entrySet()) {
-            resultBuilder.put(mapEntry.getKey(), ImmutableSet.of());
             if (mapEntry.getValue().isEmpty()) {
                 continue;
             }
             List<V> orderedItems = ImmutableList.copyOf(mapEntry.getValue());
-            allFutures.put(
+            allFuturesBuilder.put(
                     mapEntry.getKey(),
                     submitOpaRequest(requestBuilder.apply(mapEntry.getKey(), orderedItems), uri, deserializer)
                             .transform(
@@ -172,10 +169,13 @@ public class OpaHttpClient
                                     executor));
         }
 
+        ImmutableMap<K, FluentFuture<ImmutableSet<V>>> allFutures = allFuturesBuilder.buildOrThrow();
+        ImmutableMap.Builder<K, Set<V>> resultBuilder = ImmutableMap.builder();
         List<Map.Entry<K, ImmutableSet<V>>> consumedFutures = consumeOpaResponse(
                 Futures.whenAllComplete(allFutures.values()).call(
                         () -> allFutures.entrySet().stream()
                                 .map(entry -> Map.entry(entry.getKey(), consumeOpaResponse(entry.getValue())))
+                                .filter(entry -> !entry.getValue().isEmpty())
                                 .collect(toImmutableList()),
                         executor));
         return resultBuilder.putAll(consumedFutures).buildKeepingLast();

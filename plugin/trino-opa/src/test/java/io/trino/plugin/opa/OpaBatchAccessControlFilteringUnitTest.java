@@ -309,7 +309,6 @@ public class OpaBatchAccessControlFilteringUnitTest
                 ImmutableMap.builder()
                         .put(tableOne, ImmutableSet.of("table_one_column_one", "table_one_column_two"))
                         .put(tableTwo, ImmutableSet.of("table_two_column_two"))
-                        .put(tableThree, ImmutableSet.of())
                         .buildOrThrow()).areEqual());
     }
 
@@ -377,7 +376,7 @@ public class OpaBatchAccessControlFilteringUnitTest
                 "my_catalog",
                 requestedColumns);
         assertTrue(mockClient.getRequests().isEmpty());
-        assertTrue(Maps.difference(result, requestedColumns).areEqual());
+        assertTrue(result.isEmpty());
     }
 
     @ParameterizedTest(name = "{index}: {0}")
