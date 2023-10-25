@@ -64,7 +64,7 @@ public class OpaAccessControlFilteringUnitTest
     public void setupAuthorizer()
     {
         this.mockClient = new HttpClientUtils.InstrumentedHttpClient(OPA_SERVER_URI, "POST", JSON_UTF_8.toString(), request -> OK_RESPONSE);
-        this.authorizer = (OpaAccessControl) new OpaAccessControlFactory().create(ImmutableMap.of("opa.policy.uri", OPA_SERVER_URI.toString()), Optional.of(mockClient));
+        this.authorizer = (OpaAccessControl) OpaAccessControlFactory.create(ImmutableMap.of("opa.policy.uri", OPA_SERVER_URI.toString()), Optional.of(mockClient));
         this.requestingIdentity = Identity.ofUser("source-user");
         this.requestingSecurityContext = systemSecurityContextFromIdentity(requestingIdentity);
     }

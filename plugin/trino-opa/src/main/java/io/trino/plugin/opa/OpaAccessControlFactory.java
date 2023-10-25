@@ -59,7 +59,7 @@ public class OpaAccessControlFactory
     }
 
     @VisibleForTesting
-    protected SystemAccessControl create(Map<String, String> config, Optional<HttpClient> httpClient)
+    protected static SystemAccessControl create(Map<String, String> config, Optional<HttpClient> httpClient)
     {
         requireNonNull(config, "config is null");
 
