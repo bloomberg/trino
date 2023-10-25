@@ -924,11 +924,9 @@ public class OpaAccessControlUnitTest
                 {
                     "operation": "SetCatalogSessionProperty",
                     "resource": {
-                        "catalog": {
-                            "name": "my_catalog"
-                        },
                         "catalogSessionProperty": {
-                            "name": "my_property"
+                            "catalogName": "my_catalog",
+                            "propertyName": "my_property"
                         }
                     }
                 }

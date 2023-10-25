@@ -27,7 +27,7 @@ import static java.util.Objects.requireNonNull;
 public record OpaQueryInputResource(
         TrinoUser user,
         NamedEntity systemSessionProperty,
-        NamedEntity catalogSessionProperty,
+        TrinoCatalogSessionProperty catalogSessionProperty,
         TrinoFunction function,
         NamedEntity catalog,
         TrinoSchema schema,
@@ -59,7 +59,7 @@ public record OpaQueryInputResource(
     {
         private TrinoUser user;
         private NamedEntity systemSessionProperty;
-        private NamedEntity catalogSessionProperty;
+        private TrinoCatalogSessionProperty catalogSessionProperty;
         private NamedEntity catalog;
         private TrinoSchema schema;
         private TrinoTable table;
@@ -81,9 +81,9 @@ public record OpaQueryInputResource(
             return this;
         }
 
-        public Builder catalogSessionProperty(String catalogSessionProperty)
+        public Builder catalogSessionProperty(TrinoCatalogSessionProperty catalogSessionProperty)
         {
-            this.catalogSessionProperty = new NamedEntity(catalogSessionProperty);
+            this.catalogSessionProperty = catalogSessionProperty;
             return this;
         }
 

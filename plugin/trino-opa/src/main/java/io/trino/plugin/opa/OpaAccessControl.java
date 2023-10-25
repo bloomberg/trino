@@ -20,6 +20,7 @@ import io.trino.plugin.opa.schema.OpaQueryInput;
 import io.trino.plugin.opa.schema.OpaQueryInputAction;
 import io.trino.plugin.opa.schema.OpaQueryInputGrant;
 import io.trino.plugin.opa.schema.OpaQueryInputResource;
+import io.trino.plugin.opa.schema.TrinoCatalogSessionProperty;
 import io.trino.plugin.opa.schema.TrinoColumn;
 import io.trino.plugin.opa.schema.TrinoFunction;
 import io.trino.plugin.opa.schema.TrinoGrantPrincipal;
@@ -568,15 +569,11 @@ public sealed class OpaAccessControl
     @Override
     public void checkCanSetCatalogSessionProperty(SystemSecurityContext context, String catalogName, String propertyName)
     {
-        OpaQueryInputResource resource = OpaQueryInputResource.builder()
-                .catalog(catalogName)
-                .catalogSessionProperty(propertyName)
-                .build();
-        OpaQueryContext queryContext = OpaQueryContext.fromSystemSecurityContext(context);
-
-        if (!opaHighLevelClient.queryOpaWithSimpleResource(queryContext, "SetCatalogSessionProperty", resource)) {
-            denySetCatalogSessionProperty(propertyName);
-        }
+        opaHighLevelClient.queryAndEnforce(
+                OpaQueryContext.fromSystemSecurityContext(context),
+                "SetCatalogSessionProperty",
+                () -> denySetCatalogSessionProperty(propertyName),
+                OpaQueryInputResource.builder().catalogSessionProperty(new TrinoCatalogSessionProperty(catalogName, propertyName)).build());
     }
 
     @Override
