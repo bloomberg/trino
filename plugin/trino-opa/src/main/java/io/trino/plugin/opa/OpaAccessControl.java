@@ -14,6 +14,8 @@
 package io.trino.plugin.opa;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSetMultimap;
+import com.google.common.collect.Multimaps;
 import com.google.inject.Inject;
 import io.trino.plugin.opa.schema.OpaQueryContext;
 import io.trino.plugin.opa.schema.OpaQueryInput;
@@ -21,7 +23,6 @@ import io.trino.plugin.opa.schema.OpaQueryInputAction;
 import io.trino.plugin.opa.schema.OpaQueryInputGrant;
 import io.trino.plugin.opa.schema.OpaQueryInputResource;
 import io.trino.plugin.opa.schema.TrinoCatalogSessionProperty;
-import io.trino.plugin.opa.schema.TrinoColumn;
 import io.trino.plugin.opa.schema.TrinoFunction;
 import io.trino.plugin.opa.schema.TrinoGrantPrincipal;
 import io.trino.plugin.opa.schema.TrinoSchema;
@@ -41,15 +42,14 @@ import io.trino.spi.security.TrinoPrincipal;
 
 import java.security.Principal;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.opa.OpaHighLevelClient.buildQueryInputForSimpleResource;
 import static io.trino.plugin.opa.schema.PropertiesMapper.convertProperties;
 import static io.trino.spi.security.AccessDeniedException.denyCreateCatalog;
@@ -367,34 +367,26 @@ public sealed class OpaAccessControl
     @Override
     public Map<SchemaTableName, Set<String>> filterColumns(SystemSecurityContext context, String catalogName, Map<SchemaTableName, Set<String>> tableColumns)
     {
-        ImmutableSet.Builder<TrinoColumn> allColumnsBuilder = ImmutableSet.builder();
-        Map<SchemaTableName, ImmutableSet.Builder<String>> resultBuilder = new HashMap<>();
-
-        for (Map.Entry<SchemaTableName, Set<String>> oneTableColumns : tableColumns.entrySet()) {
-            SchemaTableName schemaTableName = oneTableColumns.getKey();
-            resultBuilder.put(schemaTableName, ImmutableSet.builder());
-            for (String columnForTable : oneTableColumns.getValue()) {
-                allColumnsBuilder.add(new TrinoColumn(schemaTableName, columnForTable));
+        ImmutableSet.Builder<TrinoTable> allColumnsBuilder = ImmutableSet.builder();
+        for (Map.Entry<SchemaTableName, Set<String>> entry : tableColumns.entrySet()) {
+            SchemaTableName schemaTableName = entry.getKey();
+            TrinoTable trinoTable = new TrinoTable(catalogName, schemaTableName.getSchemaName(), schemaTableName.getTableName());
+            for (String columnName : entry.getValue()) {
+                allColumnsBuilder.add(trinoTable.withColumns(ImmutableSet.of(columnName)));
             }
         }
-
-        Set<TrinoColumn> filteredColumns = opaHighLevelClient.parallelFilterFromOpa(
+        Set<TrinoTable> filteredColumns = opaHighLevelClient.parallelFilterFromOpa(
                 allColumnsBuilder.build(),
                 tableColumn -> buildQueryInputForSimpleResource(
                         OpaQueryContext.fromSystemSecurityContext(context),
                         "FilterColumns",
-                        OpaQueryInputResource.builder()
-                                .table(new TrinoTable(
-                                        catalogName,
-                                        tableColumn.schemaTableName().getSchemaName(),
-                                        tableColumn.schemaTableName().getTableName()).withColumns(ImmutableSet.of(tableColumn.columnName())))
-                                .build()));
+                        OpaQueryInputResource.builder().table(tableColumn).build()));
 
-        for (TrinoColumn filteredColumn : filteredColumns) {
-            resultBuilder.get(filteredColumn.schemaTableName()).add(filteredColumn.columnName());
+        ImmutableSetMultimap.Builder<SchemaTableName, String> results = ImmutableSetMultimap.builder();
+        for (TrinoTable tableColumn : filteredColumns) {
+            results.put(new SchemaTableName(tableColumn.schemaName(), tableColumn.tableName()), getOnlyElement(tableColumn.columns()));
         }
-
-        return resultBuilder.entrySet().stream().collect(toImmutableMap(Map.Entry::getKey, (mapEntry) -> mapEntry.getValue().build()));
+        return Multimaps.asMap(results.build());
     }
 
     @Override

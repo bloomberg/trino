@@ -268,7 +268,6 @@ public class OpaAccessControlFilteringUnitTest
                         ImmutableMap.builder()
                                 .put(tableOne, ImmutableSet.of("table_one_column_one", "table_one_column_two"))
                                 .put(tableTwo, ImmutableSet.of("table_two_column_two"))
-                                .put(tableThree, ImmutableSet.of())
                                 .buildOrThrow()).areEqual());
     }
 
@@ -284,7 +283,7 @@ public class OpaAccessControlFilteringUnitTest
                 requestedColumns);
 
         assertTrue(mockClient.getRequests().isEmpty());
-        assertTrue(Maps.difference(result, requestedColumns).areEqual());
+        assertTrue(result.isEmpty());
     }
 
     @Test
