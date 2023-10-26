@@ -60,10 +60,19 @@ opa.policy.batched-uri=https://your-opa-endpoint/v1/data/batch
 
 ## OPA queries
 
+### Full request / response definitions
+
+For a full definition of all possible request JSON bodies, refer to [schema-docs/README.md](schema-docs/README.md)
+
+### Summary
+
 The plugin will contact OPA for each authorization request as defined on the SPI.
 
-OPA must return a response containing a boolean `allow` field, which will determine whether the operation
-is permitted or not.
+For most operations, OPA must return a response containing a boolean `allow` field, which will determine
+whether the operation is permitted or not.
+
+Batch filtering requests are an exception to this, refer to the [batch mode section](#batch-mode) for a summary
+and to [the batch mode full documentation](./schema-docs/filtering-batch.md) for in-depth details.
 
 The plugin will pass as much context as possible within the OPA request. A simple way of checking
 what data is passed in from Trino is to run OPA locally in verbose mode.
@@ -83,6 +92,7 @@ This determines _what_ action is being performed and upon what resources, the to
 - `operation` (string): operation being performed
 - `resource` (object, nullable): information about the object being operated upon
 - `targetResource` (object, nullable): information about the _new object_ being created, if applicable
+- `filterResources` (list of objects, nullable): used only for batch mode
 - `grantee` (object, nullable): grantee of a grant operation
 - `grantor` (object, nullable): grantor in a grant operation
 
@@ -169,20 +179,27 @@ An OPA policy supporting batch operations should return a (potentially empty) li
 of the items for which authorization is granted (if any). Returning a `null` value instead of a list
 is equivalent to returning an empty list.
 
-> We may want to reconsider the choice of using _indices_ in the response as opposed to returning a list
-> containing copies of elements from the `filterResources` field in the request for which access should
-> be granted. Indices were chosen over copying elements as it made validation in the plugin easier,
-> and from the few examples we tried, it also made certain policies a bit simpler. Any feedback is appreciated!
+> See the [filtering docs](./schema-docs/filtering-batch.md) for full details on the batch request / response format.
 
-An interesting side effect of this is that we can add batching support for policies that didn't originally
-have it quite easily. Consider the following rego:
+### Easy to implement recursion
+
+An interesting side effect of this is that we can easily add batching support for policies that didn't originally
+have it.
+
+The following `rego` code will implement a `batchAllow` rule that does server-side recursion in OPA (assuming the
+non-batch endpoint is called `allow`)
+
 
 ```rego
 package foo
 
 # ... rest of the policy ...
 # this assumes the non-batch response field is called "allow"
-batch contains i {
+# Recursion to implement filter logic on top of single `allow` requests
+# Given a list of resources in `filterResources`, this rule will produce the indices
+# of those for which the user would be granted access
+
+batchAllow contains i {
     some i
     raw_resource := input.action.filterResources[i]
     allow with input.action.resource as raw_resource
@@ -191,15 +208,15 @@ batch contains i {
 # Corner case: filtering columns is done with a single table item, and many columns inside
 # We cannot use our normal logic in other parts of the policy as they are based on sets
 # and we need to retain order
-batch contains i {
+batchAllow contains i {
     some i
     input.action.operation == "FilterColumns"
     count(input.action.filterResources) == 1
     raw_resource := input.action.filterResources[0]
     count(raw_resource["table"]["columns"]) > 0
     new_resources := [
-        object.union(raw_resource, {"table": {"column": column_name}})
-        | column_name := raw_resource["table"]["columns"][_]
+        object.union(raw_resource, {"table": {"columns": [col]}})
+        | col := raw_resource["table"]["columns"][_]
     ]
     allow with input.action.resource as new_resources[i]
 }
