@@ -116,7 +116,7 @@ public class TestHelpers
             this.callable = callable;
         }
 
-
+        @Override
         public boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument) {
             try {
                 this.callable.accept(opaAccessControl, systemSecurityContext, argument);
@@ -134,6 +134,7 @@ public class TestHelpers
             this.callable = callable;
         }
 
+        @Override
         public boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument) {
             return this.callable.apply(opaAccessControl, systemSecurityContext, argument);
         }
