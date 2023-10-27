@@ -408,6 +408,40 @@ public class OpaBatchAccessControlFilteringUnitTest
         assertFalse(mockClient.getRequests().isEmpty());
     }
 
+    @Test
+    public void testResponseOutOfBoundsThrows()
+    {
+        mockClient.setHandler(request -> new HttpClientUtils.MockResponse("{\"result\": [0, 1, 2]}", 200));
+
+        assertThrows(
+                OpaQueryException.QueryFailed.class,
+                () -> authorizer.filterCatalogs(requestingSecurityContext, ImmutableSet.of("catalog_one", "catalog_two")));
+        assertThrows(
+                OpaQueryException.QueryFailed.class,
+                () -> authorizer.filterSchemas(requestingSecurityContext, "some_catalog", ImmutableSet.of("schema_one", "schema_two")));
+        assertThrows(
+                OpaQueryException.QueryFailed.class,
+                () -> authorizer.filterTables(
+                        requestingSecurityContext,
+                        "some_catalog",
+                        ImmutableSet.of(
+                                new SchemaTableName("some_schema", "table_one"),
+                                new SchemaTableName("some_schema", "table_two"))));
+        assertThrows(
+                OpaQueryException.QueryFailed.class,
+                () -> authorizer.filterColumns(
+                        requestingSecurityContext,
+                        "some_catalog",
+                        ImmutableMap.<SchemaTableName, Set<String>>builder()
+                                .put(new SchemaTableName("some_schema", "some_table"), ImmutableSet.of("column_one", "column_two"))
+                                .buildOrThrow()));
+        assertThrows(
+                OpaQueryException.QueryFailed.class,
+                () -> authorizer.filterViewQueryOwnedBy(
+                        requestingIdentity,
+                        ImmutableSet.of(Identity.ofUser("identity_one"), Identity.ofUser("identity_two"))));
+    }
+
     private ObjectNode encodeObjectWithKey(Object inp, String key)
     {
         return jsonMapper.createObjectNode().set(key, jsonMapper.valueToTree(inp));
