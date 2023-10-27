@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.opa.schema;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.security.Identity;
@@ -22,10 +21,8 @@ import jakarta.validation.constraints.NotNull;
 import java.util.Map;
 import java.util.Set;
 
-import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
 import static java.util.Objects.requireNonNull;
 
-@JsonInclude(NON_NULL)
 public record TrinoIdentity(
         @NotNull String user,
         @NotNull Set<String> groups,

@@ -85,7 +85,7 @@ public class OpaAccessControlFilteringUnitTest
         Identity userOne = Identity.ofUser("user-one");
         Identity userTwo = Identity.ofUser("user-two");
         List<Identity> requestedIdentities = ImmutableList.of(userOne, userTwo);
-        this.mockClient.setHandler(buildHandler("/input/action/resource/user/name", "user-one"));
+        this.mockClient.setHandler(buildHandler("/input/action/resource/user/user", "user-one"));
 
         Collection<Identity> result = authorizer.filterViewQueryOwnedBy(
                 requestingIdentity,
@@ -98,7 +98,6 @@ public class OpaAccessControlFilteringUnitTest
                         "operation": "FilterViewQueryOwnedBy",
                         "resource": {
                             "user": {
-                                "name": "user-one",
                                 "user": "user-one",
                                 "groups": [],
                                 "extraCredentials": {}
@@ -111,7 +110,6 @@ public class OpaAccessControlFilteringUnitTest
                         "operation": "FilterViewQueryOwnedBy",
                         "resource": {
                             "user": {
-                                "name": "user-two",
                                 "user": "user-two",
                                 "groups": [],
                                 "extraCredentials": {}

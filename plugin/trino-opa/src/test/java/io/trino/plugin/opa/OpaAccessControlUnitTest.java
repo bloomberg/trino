@@ -330,7 +330,6 @@ public class OpaAccessControlUnitTest
                     "operation": "%s",
                     "resource": {
                         "user": {
-                            "name": "dummy-user",
                             "user": "dummy-user",
                             "groups": ["some-group"],
                             "extraCredentials": {"some_extra_credential": "value"}
@@ -370,14 +369,12 @@ public class OpaAccessControlUnitTest
     private static Stream<Arguments> stringResourceTestCases()
     {
         Stream<FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, String>> methods = Stream.of(
-                convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanImpersonateUser),
                 convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanSetSystemSessionProperty),
                 OpaAccessControl::checkCanCreateCatalog,
                 OpaAccessControl::checkCanDropCatalog,
                 OpaAccessControl::checkCanShowSchemas,
                 OpaAccessControl::checkCanDropRole);
         Stream<FunctionalHelpers.Pair<String, String>> actionAndResource = Stream.of(
-                FunctionalHelpers.Pair.of("ImpersonateUser", "user"),
                 FunctionalHelpers.Pair.of("SetSystemSessionProperty", "systemSessionProperty"),
                 FunctionalHelpers.Pair.of("CreateCatalog", "catalog"),
                 FunctionalHelpers.Pair.of("DropCatalog", "catalog"),
@@ -434,6 +431,40 @@ public class OpaAccessControlUnitTest
                         authorizer,
                         requestingSecurityContext,
                         "dummy_value"));
+        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
+                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+    }
+
+    @Test
+    public void testCanImpersonateUser()
+    {
+        authorizer.checkCanImpersonateUser(requestingIdentity, "some_other_user");
+
+        String expectedRequest = """
+                {
+                    "operation": "ImpersonateUser",
+                    "resource": {
+                        "user": {
+                            "user": "some_other_user"
+                        }
+                    }
+                }
+                """;
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
+    }
+
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
+    public void testCanImpersonateUserFailure(
+            HttpClientUtils.MockResponse failureResponse,
+            Class<? extends Throwable> expectedException,
+            String expectedErrorMessage)
+    {
+        mockClient.setHandler(request -> failureResponse);
+
+        Throwable actualError = assertThrows(
+                expectedException,
+                () -> authorizer.checkCanImpersonateUser(requestingIdentity, "some_other_user"));
         assertTrue(actualError.getMessage().contains(expectedErrorMessage),
                 String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
     }
