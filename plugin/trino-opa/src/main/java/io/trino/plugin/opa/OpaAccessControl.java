@@ -53,12 +53,14 @@ import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.opa.OpaHighLevelClient.buildQueryInputForSimpleResource;
 import static io.trino.plugin.opa.schema.PropertiesMapper.convertProperties;
 import static io.trino.spi.security.AccessDeniedException.denyCreateCatalog;
+import static io.trino.spi.security.AccessDeniedException.denyCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyCreateRole;
 import static io.trino.spi.security.AccessDeniedException.denyCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyCreateViewWithSelect;
 import static io.trino.spi.security.AccessDeniedException.denyDenySchemaPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenyTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDropCatalog;
+import static io.trino.spi.security.AccessDeniedException.denyDropFunction;
 import static io.trino.spi.security.AccessDeniedException.denyDropRole;
 import static io.trino.spi.security.AccessDeniedException.denyDropSchema;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteProcedure;
@@ -838,6 +840,26 @@ public sealed class OpaAccessControl
                 "ExecuteTableProcedure",
                 () -> denyExecuteTableProcedure(table.toString(), procedure),
                 OpaQueryInputResource.builder().table(new TrinoTable(table)).function(procedure).build());
+    }
+
+    @Override
+    public void checkCanCreateFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        opaHighLevelClient.queryAndEnforce(
+                OpaQueryContext.fromSystemSecurityContext(systemSecurityContext),
+                "CreateFunction",
+                () -> denyCreateFunction(functionName.toString()),
+                OpaQueryInputResource.builder().function(TrinoFunction.fromTrinoFunction(functionName)).build());
+    }
+
+    @Override
+    public void checkCanDropFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        opaHighLevelClient.queryAndEnforce(
+                OpaQueryContext.fromSystemSecurityContext(systemSecurityContext),
+                "DropFunction",
+                () -> denyDropFunction(functionName.toString()),
+                OpaQueryInputResource.builder().function(TrinoFunction.fromTrinoFunction(functionName)).build());
     }
 
     private void checkTableOperation(SystemSecurityContext context, String actionName, CatalogSchemaTableName table, Consumer<String> deny)

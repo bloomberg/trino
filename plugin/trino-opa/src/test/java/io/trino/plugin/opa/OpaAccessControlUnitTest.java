@@ -1324,10 +1324,14 @@ public class OpaAccessControlUnitTest
     {
         Stream<TestHelpers.MethodWrapper<CatalogSchemaRoutineName>> methods = Stream.of(
                 new TestHelpers.ThrowingMethodWrapper<>(OpaAccessControl::checkCanExecuteProcedure),
+                new TestHelpers.ThrowingMethodWrapper<>(OpaAccessControl::checkCanCreateFunction),
+                new TestHelpers.ThrowingMethodWrapper<>(OpaAccessControl::checkCanDropFunction),
                 new TestHelpers.ReturningMethodWrapper<>(OpaAccessControl::canExecuteFunction),
                 new TestHelpers.ReturningMethodWrapper<>(OpaAccessControl::canCreateViewWithExecuteFunction));
         Stream<String> actions = Stream.of(
                 "ExecuteProcedure",
+                "CreateFunction",
+                "DropFunction",
                 "ExecuteFunction",
                 "CreateViewWithExecuteFunction");
         return Streams.zip(actions, methods, (action, method) -> Arguments.of(Named.of(action, action), method));
