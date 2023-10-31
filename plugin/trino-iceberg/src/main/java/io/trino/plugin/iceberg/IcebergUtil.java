@@ -103,19 +103,7 @@ import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_BAD_DATA;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_INVALID_PARTITION_VALUE;
 import static io.trino.plugin.iceberg.IcebergMetadata.ORC_BLOOM_FILTER_COLUMNS_KEY;
 import static io.trino.plugin.iceberg.IcebergMetadata.ORC_BLOOM_FILTER_FPP_KEY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.LOCATION_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.ORC_BLOOM_FILTER_COLUMNS;
-import static io.trino.plugin.iceberg.IcebergTableProperties.ORC_BLOOM_FILTER_FPP;
-import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.SORTED_BY_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getExtraProperties;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getOrcBloomFilterColumns;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getOrcBloomFilterFpp;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getPartitioning;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getSortOrder;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getTableLocation;
+import static io.trino.plugin.iceberg.IcebergTableProperties.*;
 import static io.trino.plugin.iceberg.PartitionFields.parsePartitionFields;
 import static io.trino.plugin.iceberg.PartitionFields.toPartitionFields;
 import static io.trino.plugin.iceberg.SortFieldUtils.parseSortFields;
@@ -662,7 +650,7 @@ public final class IcebergUtil
         // Add properties set via "extra_properties" table property.
         Map<String, String> extraProperties = getExtraProperties(tableMetadata.getProperties())
                 .orElseGet(ImmutableMap::of);
-        Set<String> illegalExtraProperties = Sets.intersection(baseProperties.keySet(), extraProperties.keySet());
+        Set<String> illegalExtraProperties = Sets.intersection(ILLEGAL_EXTRA_PROPERTIES, extraProperties.keySet());
         if (!illegalExtraProperties.isEmpty()) {
             throw new TrinoException(
                     INVALID_TABLE_PROPERTY,

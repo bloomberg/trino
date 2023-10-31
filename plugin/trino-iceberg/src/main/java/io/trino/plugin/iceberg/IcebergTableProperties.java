@@ -14,6 +14,7 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.trino.plugin.hive.orc.OrcWriterConfig;
 import io.trino.spi.TrinoException;
@@ -25,6 +26,7 @@ import io.trino.spi.type.TypeManager;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.iceberg.IcebergConfig.FORMAT_VERSION_SUPPORT_MAX;
@@ -48,6 +50,14 @@ public class IcebergTableProperties
     public static final String ORC_BLOOM_FILTER_COLUMNS = "orc_bloom_filter_columns";
     public static final String ORC_BLOOM_FILTER_FPP = "orc_bloom_filter_fpp";
     public static final String EXTRA_PROPERTIES = "extra_properties";
+    public static final Set<String> ILLEGAL_EXTRA_PROPERTIES = ImmutableSet.of(
+            FILE_FORMAT_PROPERTY,
+            PARTITIONING_PROPERTY,
+            SORTED_BY_PROPERTY,
+            LOCATION_PROPERTY,
+            FORMAT_VERSION_PROPERTY,
+            ORC_BLOOM_FILTER_COLUMNS,
+            ORC_BLOOM_FILTER_FPP);
 
     private final List<PropertyMetadata<?>> tableProperties;
 

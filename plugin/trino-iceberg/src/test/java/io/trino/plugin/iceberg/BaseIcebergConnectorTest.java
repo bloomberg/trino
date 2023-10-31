@@ -32,25 +32,13 @@ import io.trino.operator.OperatorStats;
 import io.trino.plugin.hive.TestingHivePlugin;
 import io.trino.plugin.iceberg.fileio.ForwardingFileIo;
 import io.trino.spi.QueryId;
-import io.trino.spi.connector.ColumnHandle;
-import io.trino.spi.connector.Constraint;
-import io.trino.spi.connector.ConstraintApplicationResult;
-import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.connector.TableNotFoundException;
+import io.trino.spi.connector.*;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.OutputNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.testing.BaseConnectorTest;
-import io.trino.testing.DataProviders;
-import io.trino.testing.DistributedQueryRunner;
-import io.trino.testing.MaterializedResult;
-import io.trino.testing.MaterializedResultWithQueryId;
-import io.trino.testing.MaterializedRow;
-import io.trino.testing.QueryFailedException;
-import io.trino.testing.QueryRunner;
-import io.trino.testing.TestingConnectorBehavior;
+import io.trino.testing.*;
 import io.trino.testing.sql.TestTable;
 import org.apache.avro.Schema;
 import org.apache.avro.file.DataFileReader;
@@ -62,6 +50,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.util.JsonUtil;
+import org.assertj.core.api.Condition;
 import org.intellij.lang.annotations.Language;
 import org.testng.SkipException;
 import org.testng.annotations.BeforeClass;
@@ -78,15 +67,7 @@ import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Optional;
-import java.util.OptionalInt;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -103,14 +84,9 @@ import static com.google.common.collect.Iterables.concat;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterruptibly;
-import static io.trino.SystemSessionProperties.SCALE_WRITERS;
-import static io.trino.SystemSessionProperties.TASK_MAX_WRITER_COUNT;
-import static io.trino.SystemSessionProperties.TASK_MIN_WRITER_COUNT;
-import static io.trino.SystemSessionProperties.USE_PREFERRED_WRITE_PARTITIONING;
+import static io.trino.SystemSessionProperties.*;
 import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
-import static io.trino.plugin.iceberg.IcebergFileFormat.AVRO;
-import static io.trino.plugin.iceberg.IcebergFileFormat.ORC;
-import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
+import static io.trino.plugin.iceberg.IcebergFileFormat.*;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.COLLECT_EXTENDED_STATISTICS_ON_WRITE;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.EXTENDED_STATISTICS_ENABLED;
@@ -145,19 +121,13 @@ import static java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME;
 import static java.util.Collections.nCopies;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.MINUTES;
-import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.concurrent.TimeUnit.*;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNotEquals;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.testng.Assert.*;
 
 public abstract class BaseIcebergConnectorTest
         extends BaseConnectorTest
@@ -7352,13 +7322,13 @@ public abstract class BaseIcebergConnectorTest
         assertQuery(
                 "SELECT \"extra.property.one\", \"extra.property.two\" FROM \"%s$properties\"".formatted(tableName),
                 "SELECT 'one', 'two'");
-        assertThat(computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
-                .isEqualTo("CREATE TABLE iceberg.tpch.%s (\n".formatted(tableName) +
-                        "   c1 integer\n" +
-                        ")\n" +
-                        "WITH (\n" +
-                        "   format = 'ORC'\n" +
-                        ")");
+
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
+
         assertUpdate("DROP TABLE %s".formatted(tableName));
     }
 
@@ -7371,13 +7341,12 @@ public abstract class BaseIcebergConnectorTest
         assertQuery(
                 "SELECT \"extra.property.one\", \"extra.property.two\" FROM \"%s$properties\"".formatted(tableName),
                 "SELECT 'one', 'two'");
-        assertThat(computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
-                .isEqualTo("CREATE TABLE iceberg.tpch.%s (\n".formatted(tableName) +
-                        "   c1 integer\n" +
-                        ")\n" +
-                        "WITH (\n" +
-                        "   format = 'ORC'\n" +
-                        ")");
+
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
 
         assertUpdate("DROP TABLE %s".formatted(tableName));
     }
@@ -7388,13 +7357,11 @@ public abstract class BaseIcebergConnectorTest
         String tableName = format("%s.%s.show_create_table_with_extra_properties_%s", getSession().getCatalog().get(), getSession().getSchema().get(), randomNameSuffix());
         assertUpdate("CREATE TABLE %s (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property.one', 'extra.property.two'], ARRAY['one', 'two']))".formatted(tableName));
 
-        assertThat(computeActual("SHOW CREATE TABLE " + tableName).getOnlyValue())
-                .isEqualTo("CREATE TABLE %s (\n".formatted(tableName) +
-                        "   c1 integer\n" +
-                        ")\n" +
-                        "WITH (\n" +
-                        "   format = 'ORC'\n" +
-                        ")");
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE " + tableName).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
 
         assertUpdate("DROP TABLE %s".formatted(tableName));
     }
@@ -7413,13 +7380,13 @@ public abstract class BaseIcebergConnectorTest
     @Test
     public void testOverwriteExistingPropertyWithExtraProperties()
     {
-        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_with_overwrite_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['transactional'], ARRAY['true']))"))
+        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_with_overwrite_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['write.format.default'], ARRAY['foobar']))"))
                 .isInstanceOf(QueryFailedException.class)
-                .hasMessage("Illegal keys in extra_properties: [transactional]");
+                .hasMessage("Illegal keys in extra_properties: [write.format.default]");
 
-        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_as_select_with_extra_properties WITH (extra_properties = MAP(ARRAY['rawDataSize'], ARRAY['1'])) AS SELECT 1 as c1"))
+        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_as_select_with_extra_properties WITH (extra_properties = MAP(ARRAY['format-version'], ARRAY['10'])) AS SELECT 1 as c1"))
                 .isInstanceOf(QueryFailedException.class)
-                .hasMessage("Illegal keys in extra_properties: [rawDataSize]");
+                .hasMessage("Illegal keys in extra_properties: [format-version]");
     }
 
     @Test

@@ -160,20 +160,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Deque;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.OptionalLong;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -221,12 +208,7 @@ import static io.trino.plugin.iceberg.IcebergSessionProperties.isExtendedStatist
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isMergeManifestsOnWrite;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isProjectionPushdownEnabled;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.isStatisticsEnabled;
-import static io.trino.plugin.iceberg.IcebergTableProperties.EXTRA_PROPERTIES;
-import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.SORTED_BY_PROPERTY;
-import static io.trino.plugin.iceberg.IcebergTableProperties.getPartitioning;
+import static io.trino.plugin.iceberg.IcebergTableProperties.*;
 import static io.trino.plugin.iceberg.IcebergUtil.canEnforceColumnConstraintInSpecs;
 import static io.trino.plugin.iceberg.IcebergUtil.commit;
 import static io.trino.plugin.iceberg.IcebergUtil.deserializePartitionValue;
@@ -258,10 +240,7 @@ import static io.trino.plugin.iceberg.procedure.IcebergTableProcedureId.DROP_EXT
 import static io.trino.plugin.iceberg.procedure.IcebergTableProcedureId.EXPIRE_SNAPSHOTS;
 import static io.trino.plugin.iceberg.procedure.IcebergTableProcedureId.OPTIMIZE;
 import static io.trino.plugin.iceberg.procedure.IcebergTableProcedureId.REMOVE_ORPHAN_FILES;
-import static io.trino.spi.StandardErrorCode.COLUMN_ALREADY_EXISTS;
-import static io.trino.spi.StandardErrorCode.INVALID_ANALYZE_PROPERTY;
-import static io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS;
-import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.*;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.STALE;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.UNKNOWN;
@@ -1661,12 +1640,6 @@ public class IcebergMetadata
         beginTransaction(icebergTable);
         UpdateProperties updateProperties = transaction.updateProperties();
 
-        if (properties.containsKey(EXTRA_PROPERTIES)) {
-            Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES)
-                    .orElseThrow(() -> new IllegalArgumentException("extra_properties property cannot be empty"));
-            extraProperties.forEach(updateProperties::set);
-        }
-
         if (properties.containsKey(FILE_FORMAT_PROPERTY)) {
             IcebergFileFormat fileFormat = (IcebergFileFormat) properties.get(FILE_FORMAT_PROPERTY)
                     .orElseThrow(() -> new IllegalArgumentException("The format property cannot be empty"));
@@ -1706,6 +1679,19 @@ public class IcebergMetadata
             catch (RuntimeException e) {
                 throw new TrinoException(ICEBERG_COMMIT_ERROR, "Failed to set the sorted_by property", e);
             }
+        }
+
+        if (properties.containsKey(EXTRA_PROPERTIES)) {
+            Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES)
+                    .orElseThrow(() -> new IllegalArgumentException("extra_properties property cannot be empty"));
+
+            Set<String> illegalExtraProperties = Sets.intersection(ILLEGAL_EXTRA_PROPERTIES, extraProperties.keySet());
+            if (!illegalExtraProperties.isEmpty()) {
+                throw new TrinoException(
+                        INVALID_TABLE_PROPERTY,
+                        "Illegal keys in extra_properties: " + illegalExtraProperties);
+            }
+            extraProperties.forEach(updateProperties::set);
         }
 
         try {
