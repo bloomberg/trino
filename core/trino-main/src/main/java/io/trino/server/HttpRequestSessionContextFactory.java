@@ -51,6 +51,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Strings.emptyToNull;
@@ -107,6 +108,7 @@ public class HttpRequestSessionContextFactory
         Identity identity = buildSessionIdentity(authenticatedIdentity, protocolHeaders, headers);
         Identity originalIdentity = buildSessionOriginalIdentity(identity, protocolHeaders, headers);
         SelectedRole selectedRole = parseSystemRoleHeaders(protocolHeaders, headers);
+        validateImpersonation(originalIdentity, identity, authenticatedIdentity, selectedRole);
 
         Optional<String> source = Optional.ofNullable(headers.getFirst(protocolHeaders.requestSource()));
         Optional<String> traceToken = Optional.ofNullable(trimEmptyToNull(headers.getFirst(protocolHeaders.requestTraceToken())));
@@ -163,7 +165,7 @@ public class HttpRequestSessionContextFactory
                 schema,
                 path,
                 authenticatedIdentity,
-                identity,
+                addEnabledRoles(identity, selectedRole),
                 originalIdentity,
                 selectedRole,
                 source,
@@ -210,7 +212,25 @@ public class HttpRequestSessionContextFactory
 
         Identity identity = buildSessionIdentity(optionalAuthenticatedIdentity, protocolHeaders, headers);
         Identity originalIdentity = buildSessionOriginalIdentity(identity, protocolHeaders, headers);
+        validateImpersonation(originalIdentity, identity, optionalAuthenticatedIdentity, metadata::listEnabledRoles);
+        return addEnabledRoles(identity, parseSystemRoleHeaders(protocolHeaders, headers));
+    }
 
+    private void validateImpersonation(
+            Identity originalIdentity,
+            Identity identity,
+            Optional<Identity> optionalAuthenticatedIdentity,
+            SelectedRole selectedRole)
+    {
+        validateImpersonation(originalIdentity, identity, optionalAuthenticatedIdentity, authenticatedIdentity -> getEnabledRolesForIdentity(authenticatedIdentity, selectedRole));
+    }
+
+    private void validateImpersonation(
+            Identity originalIdentity,
+            Identity identity,
+            Optional<Identity> optionalAuthenticatedIdentity,
+            Function<Identity, Set<String>> roleRetriever)
+    {
         accessControl.checkCanSetUser(originalIdentity.getPrincipal(), originalIdentity.getUser());
 
         // authenticated may not present for HTTP or if authentication is not setup
@@ -219,7 +239,8 @@ public class HttpRequestSessionContextFactory
             if (!authenticatedIdentity.getUser().equals(originalIdentity.getUser())) {
                 // load enabled roles for authenticated identity, so impersonation permissions can be assigned to roles
                 authenticatedIdentity = Identity.from(authenticatedIdentity)
-                        .withEnabledRoles(metadata.listEnabledRoles(authenticatedIdentity))
+                        .withEnabledRoles(roleRetriever.apply(authenticatedIdentity))
+                        .withAdditionalGroups(groupProvider.getGroups(authenticatedIdentity.getUser()))
                         .build();
                 accessControl.checkCanImpersonateUser(authenticatedIdentity, originalIdentity.getUser());
             }
@@ -229,22 +250,28 @@ public class HttpRequestSessionContextFactory
             accessControl.checkCanSetUser(originalIdentity.getPrincipal(), identity.getUser());
             accessControl.checkCanImpersonateUser(originalIdentity, identity.getUser());
         }
-
-        return addEnabledRoles(identity, parseSystemRoleHeaders(protocolHeaders, headers), metadata);
     }
 
-    public static Identity addEnabledRoles(Identity identity, SelectedRole selectedRole, Metadata metadata)
+    private Set<String> getEnabledRolesForIdentity(Identity identity, SelectedRole selectedRole)
     {
-        if (selectedRole.getType() == Type.NONE) {
-            return identity;
-        }
-        Set<String> enabledRoles = metadata.listEnabledRoles(identity);
-        if (selectedRole.getType() == Type.ROLE) {
-            String role = selectedRole.getRole().orElseThrow();
-            if (!enabledRoles.contains(role)) {
-                denySetRole(role);
+        if (selectedRole.getType() != Type.NONE) {
+            Set<String> enabledRoles = metadata.listEnabledRoles(identity);
+            if (selectedRole.getType() == Type.ROLE) {
+                String role = selectedRole.getRole().orElseThrow();
+                if (!enabledRoles.contains(role)) {
+                    denySetRole(role);
+                }
+                return ImmutableSet.of(role);
             }
-            enabledRoles = ImmutableSet.of(role);
+        }
+        return ImmutableSet.of();
+    }
+
+    private Identity addEnabledRoles(Identity identity, SelectedRole selectedRole)
+    {
+        Set<String> enabledRoles = getEnabledRolesForIdentity(identity, selectedRole);
+        if (enabledRoles.isEmpty()) {
+            return identity;
         }
         return Identity.from(identity)
                 .withEnabledRoles(enabledRoles)
