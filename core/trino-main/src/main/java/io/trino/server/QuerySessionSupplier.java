@@ -21,6 +21,7 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.security.AccessControl;
 import io.trino.spi.QueryId;
+import io.trino.spi.security.GroupProvider;
 import io.trino.spi.security.Identity;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.sql.SqlEnvironmentConfig;
@@ -45,6 +46,7 @@ public class QuerySessionSupplier
     private final Metadata metadata;
     private final AccessControl accessControl;
     private final SessionPropertyManager sessionPropertyManager;
+    private final GroupProvider groupProvider;
     private final String defaultPath;
     private final Optional<TimeZoneKey> forcedSessionTimeZone;
     private final Optional<String> defaultCatalog;
@@ -55,11 +57,13 @@ public class QuerySessionSupplier
             Metadata metadata,
             AccessControl accessControl,
             SessionPropertyManager sessionPropertyManager,
+            GroupProvider groupProvider,
             SqlEnvironmentConfig config)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
+        this.groupProvider = requireNonNull(groupProvider, "groupProvider is null");
         this.defaultPath = requireNonNull(config.getPath(), "path is null");
         this.forcedSessionTimeZone = requireNonNull(config.getForcedSessionTimeZone(), "forcedSessionTimeZone is null");
         this.defaultCatalog = requireNonNull(config.getDefaultCatalog(), "defaultCatalog is null");
@@ -80,7 +84,9 @@ public class QuerySessionSupplier
             // only check impersonation if authenticated user is not the same as the explicitly set user
             if (!authenticatedIdentity.getUser().equals(originalIdentity.getUser())) {
                 // add enabled roles for authenticated identity, so impersonation permissions can be assigned to roles
-                authenticatedIdentity = addEnabledRoles(authenticatedIdentity, context.getSelectedRole(), metadata);
+                authenticatedIdentity = Identity.from(addEnabledRoles(authenticatedIdentity, context.getSelectedRole(), metadata))
+                        .withAdditionalGroups(groupProvider.getGroups(authenticatedIdentity.getUser()))
+                        .build();
                 accessControl.checkCanImpersonateUser(authenticatedIdentity, originalIdentity.getUser());
             }
         }
