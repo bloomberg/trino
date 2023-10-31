@@ -27,7 +27,7 @@ import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
@@ -152,7 +152,6 @@ public class TestMetastoreUtil
             .put("partition_columns.types", "string:string")
             .put("sdk1", "sdv1")
             .put("sdk2", "sdv2")
-            .put("serialization.ddl", "struct table_name { i64 col1, binary col2, string col3}")
             .put("serialization.lib", "com.facebook.hive.orc.OrcSerde")
             .buildOrThrow();
 

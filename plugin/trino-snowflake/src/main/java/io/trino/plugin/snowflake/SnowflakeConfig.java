@@ -79,7 +79,7 @@ public class SnowflakeConfig
         return Optional.ofNullable(timestampNoTimezoneAsUTC);
     }
 
-    @Config("snowflake.timestampNoTimezoneAsUtc")
+    @Config("snowflake.timestamp-no-timezone-as-utc")
     public SnowflakeConfig setTimestampNoTimezoneAsUTC(Boolean timestampNoTimezoneAsUTC)
     {
         this.timestampNoTimezoneAsUTC = timestampNoTimezoneAsUTC;
@@ -91,7 +91,7 @@ public class SnowflakeConfig
         return Optional.ofNullable(httpProxy);
     }
 
-    @Config("snowflake.httpProxy")
+    @Config("snowflake.http-proxy")
     public SnowflakeConfig setHTTPProxy(String httpProxy)
     {
         this.httpProxy = httpProxy;

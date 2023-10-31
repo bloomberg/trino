@@ -13,10 +13,8 @@
  */
 package io.trino.spi.block;
 
-import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-
-import javax.annotation.Nullable;
+import io.trino.spi.type.Int128;
+import jakarta.annotation.Nullable;
 
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -31,8 +29,8 @@ import static io.trino.spi.block.BlockUtil.compactArray;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
-public class Int128ArrayBlock
-        implements Block
+public final class Int128ArrayBlock
+        implements ValueBlock
 {
     private static final int INSTANCE_SIZE = instanceSize(Int128ArrayBlock.class);
     public static final int INT128_BYTES = Long.BYTES + Long.BYTES;
@@ -130,14 +128,32 @@ public class Int128ArrayBlock
     @Override
     public long getLong(int position, int offset)
     {
-        checkReadablePosition(this, position);
         if (offset == 0) {
-            return values[(position + positionOffset) * 2];
+            return getInt128High(position);
         }
         if (offset == 8) {
-            return values[((position + positionOffset) * 2) + 1];
+            return getInt128Low(position);
         }
         throw new IllegalArgumentException("offset must be 0 or 8");
+    }
+
+    public Int128 getInt128(int position)
+    {
+        checkReadablePosition(this, position);
+        int offset = (position + positionOffset) * 2;
+        return Int128.valueOf(values[offset], values[offset + 1]);
+    }
+
+    public long getInt128High(int position)
+    {
+        checkReadablePosition(this, position);
+        return values[(position + positionOffset) * 2];
+    }
+
+    public long getInt128Low(int position)
+    {
+        checkReadablePosition(this, position);
+        return values[((position + positionOffset) * 2) + 1];
     }
 
     @Override
@@ -154,7 +170,7 @@ public class Int128ArrayBlock
     }
 
     @Override
-    public Block getSingleValueBlock(int position)
+    public Int128ArrayBlock getSingleValueBlock(int position)
     {
         checkReadablePosition(this, position);
         return new Int128ArrayBlock(
@@ -167,7 +183,7 @@ public class Int128ArrayBlock
     }
 
     @Override
-    public Block copyPositions(int[] positions, int offset, int length)
+    public Int128ArrayBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
 
@@ -189,7 +205,7 @@ public class Int128ArrayBlock
     }
 
     @Override
-    public Block getRegion(int positionOffset, int length)
+    public Int128ArrayBlock getRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -197,7 +213,7 @@ public class Int128ArrayBlock
     }
 
     @Override
-    public Block copyRegion(int positionOffset, int length)
+    public Int128ArrayBlock copyRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -218,11 +234,17 @@ public class Int128ArrayBlock
     }
 
     @Override
-    public Block copyWithAppendedNull()
+    public Int128ArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, positionOffset, positionCount);
         long[] newValues = ensureCapacity(values, (positionOffset + positionCount + 1) * 2);
         return new Int128ArrayBlock(positionOffset, positionCount + 1, newValueIsNull, newValues);
+    }
+
+    @Override
+    public Int128ArrayBlock getUnderlyingValueBlock()
+    {
+        return this;
     }
 
     @Override
@@ -234,8 +256,13 @@ public class Int128ArrayBlock
         return sb.toString();
     }
 
-    Slice getValuesSlice()
+    long[] getRawValues()
     {
-        return Slices.wrappedLongArray(values, positionOffset * 2, positionCount * 2);
+        return values;
+    }
+
+    int getPositionOffset()
+    {
+        return positionOffset;
     }
 }

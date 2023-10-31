@@ -56,6 +56,7 @@ import io.trino.sql.tree.SymbolReference;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -187,7 +188,7 @@ public class SymbolMapper
         ImmutableList.Builder<List<Symbol>> newGroupingSets = ImmutableList.builder();
 
         for (List<Symbol> groupingSet : node.getGroupingSets()) {
-            ImmutableList.Builder<Symbol> newGroupingSet = ImmutableList.builder();
+            Set<Symbol> newGroupingSet = new LinkedHashSet<>();
             for (Symbol output : groupingSet) {
                 Symbol newOutput = map(output);
                 newGroupingMappings.putIfAbsent(
@@ -195,7 +196,7 @@ public class SymbolMapper
                         map(node.getGroupingColumns().get(output)));
                 newGroupingSet.add(newOutput);
             }
-            newGroupingSets.add(newGroupingSet.build());
+            newGroupingSets.add(ImmutableList.copyOf(newGroupingSet));
         }
 
         return new GroupIdNode(
@@ -508,7 +509,6 @@ public class SymbolMapper
                 map(node.getColumns()),
                 node.getColumnNames(),
                 node.getPartitioningScheme().map(partitioningScheme -> map(partitioningScheme, source.getOutputSymbols())),
-                node.getPreferredPartitioningScheme().map(partitioningScheme -> map(partitioningScheme, source.getOutputSymbols())),
                 node.getStatisticsAggregation().map(this::map),
                 node.getStatisticsAggregationDescriptor().map(descriptor -> descriptor.map(this::map)));
     }
@@ -529,8 +529,7 @@ public class SymbolMapper
                 map(node.getFragmentSymbol()),
                 map(node.getColumns()),
                 node.getColumnNames(),
-                node.getPartitioningScheme().map(partitioningScheme -> map(partitioningScheme, source.getOutputSymbols())),
-                node.getPreferredPartitioningScheme().map(partitioningScheme -> map(partitioningScheme, source.getOutputSymbols())));
+                node.getPartitioningScheme().map(partitioningScheme -> map(partitioningScheme, source.getOutputSymbols())));
     }
 
     public MergeWriterNode map(MergeWriterNode node, PlanNode source)

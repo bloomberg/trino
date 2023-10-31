@@ -19,7 +19,6 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
-import io.trino.Session;
 import io.trino.memory.context.MemoryTrackingContext;
 import io.trino.metadata.Split;
 import io.trino.operator.WorkProcessor.Transformation;
@@ -31,9 +30,11 @@ import io.trino.spi.metrics.Metrics;
 import io.trino.sql.planner.LocalExecutionPlanner.OperatorFactoryWithTypes;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.TestingTaskContext;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.Optional;
@@ -49,28 +50,31 @@ import static io.trino.testing.TestingSplit.createLocalSplit;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
+@TestInstance(PER_CLASS)
 public class TestWorkProcessorPipelineSourceOperator
 {
     private ScheduledExecutorService scheduledExecutor;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         scheduledExecutor = newSingleThreadScheduledExecutor();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         scheduledExecutor.shutdownNow();
     }
 
-    @Test(timeOut = 10_000)
+    @Test
+    @Timeout(10)
     public void testWorkProcessorPipelineSourceOperator()
             throws InterruptedException
     {
@@ -342,7 +346,7 @@ public class TestWorkProcessorPipelineSourceOperator
         }
 
         @Override
-        public WorkProcessorSourceOperator create(Session session, MemoryTrackingContext memoryTrackingContext, DriverYieldSignal yieldSignal, WorkProcessor<Split> splits)
+        public WorkProcessorSourceOperator create(OperatorContext operatorContext, MemoryTrackingContext memoryTrackingContext, DriverYieldSignal yieldSignal, WorkProcessor<Split> splits)
         {
             assertNull(sourceOperator, "source operator already created");
             sourceOperator = new TestWorkProcessorSourceOperator(

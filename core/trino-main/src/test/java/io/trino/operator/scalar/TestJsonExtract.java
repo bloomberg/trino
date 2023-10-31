@@ -15,6 +15,7 @@ package io.trino.operator.scalar;
 
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -30,6 +31,7 @@ import static io.trino.operator.scalar.JsonExtract.JsonValueJsonExtractor;
 import static io.trino.operator.scalar.JsonExtract.ObjectFieldJsonExtractor;
 import static io.trino.operator.scalar.JsonExtract.ScalarValueJsonExtractor;
 import static io.trino.operator.scalar.JsonExtract.generateExtractor;
+import static io.trino.plugin.base.util.JsonUtils.jsonFactory;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
@@ -329,6 +331,13 @@ public class TestJsonExtract
     }
 
     @Test
+    public void testExtractLongString()
+    {
+        String longString = "a".repeat(StreamReadConstraints.DEFAULT_MAX_STRING_LEN + 1);
+        assertEquals(doJsonExtract("{\"key\": \"" + longString + "\"}", "$.key"), '"' + longString + '"');
+    }
+
+    @Test
     public void testNoAutomaticEncodingDetection()
     {
         try (QueryAssertions assertions = new QueryAssertions()) {
@@ -341,7 +350,7 @@ public class TestJsonExtract
     private static String doExtract(JsonExtractor<Slice> jsonExtractor, String json)
             throws IOException
     {
-        JsonFactory jsonFactory = new JsonFactory();
+        JsonFactory jsonFactory = jsonFactory();
         JsonParser jsonParser = jsonFactory.createParser(json);
         jsonParser.nextToken(); // Advance to the first token
         Slice extract = jsonExtractor.extract(jsonParser);

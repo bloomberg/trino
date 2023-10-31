@@ -14,6 +14,7 @@
 package io.trino.plugin.hive.metastore.thrift;
 
 import com.google.common.net.HostAndPort;
+import com.google.inject.Inject;
 import io.airlift.security.pem.PemReader;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.metastore.thrift.ThriftHiveMetastoreClient.TransportSupplier;
@@ -21,7 +22,6 @@ import io.trino.spi.NodeManager;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
 
-import javax.inject.Inject;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -54,27 +54,32 @@ public class DefaultThriftMetastoreClientFactory
 {
     private final Optional<SSLContext> sslContext;
     private final Optional<HostAndPort> socksProxy;
-    private final int timeoutMillis;
+    private final int connectTimeoutMillis;
+    private final int readTimeoutMillis;
     private final HiveMetastoreAuthentication metastoreAuthentication;
     private final String hostname;
 
     private final MetastoreSupportsDateStatistics metastoreSupportsDateStatistics = new MetastoreSupportsDateStatistics();
     private final AtomicInteger chosenGetTableAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenTableParamAlternative = new AtomicInteger(Integer.MAX_VALUE);
-    private final AtomicInteger chosenGetAllViewsAlternative = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger chosenGetAllViewsPerDatabaseAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenAlterTransactionalTableAlternative = new AtomicInteger(Integer.MAX_VALUE);
     private final AtomicInteger chosenAlterPartitionsAlternative = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger chosenGetAllTablesAlternative = new AtomicInteger(Integer.MAX_VALUE);
+    private final AtomicInteger chosenGetAllViewsAlternative = new AtomicInteger(Integer.MAX_VALUE);
 
     public DefaultThriftMetastoreClientFactory(
             Optional<SSLContext> sslContext,
             Optional<HostAndPort> socksProxy,
-            Duration timeout,
+            Duration connectTimeout,
+            Duration readTimeout,
             HiveMetastoreAuthentication metastoreAuthentication,
             String hostname)
     {
         this.sslContext = requireNonNull(sslContext, "sslContext is null");
         this.socksProxy = requireNonNull(socksProxy, "socksProxy is null");
-        this.timeoutMillis = toIntExact(timeout.toMillis());
+        this.connectTimeoutMillis = toIntExact(connectTimeout.toMillis());
+        this.readTimeoutMillis = toIntExact(readTimeout.toMillis());
         this.metastoreAuthentication = requireNonNull(metastoreAuthentication, "metastoreAuthentication is null");
         this.hostname = requireNonNull(hostname, "hostname is null");
     }
@@ -93,7 +98,8 @@ public class DefaultThriftMetastoreClientFactory
                         config.getTruststorePath(),
                         Optional.ofNullable(config.getTruststorePassword())),
                 Optional.ofNullable(config.getSocksProxy()),
-                config.getMetastoreTimeout(),
+                config.getConnectTimeout(),
+                config.getReadTimeout(),
                 metastoreAuthentication,
                 nodeManager.getCurrentNode().getHost());
     }
@@ -114,6 +120,8 @@ public class DefaultThriftMetastoreClientFactory
                 metastoreSupportsDateStatistics,
                 chosenGetTableAlternative,
                 chosenTableParamAlternative,
+                chosenGetAllTablesAlternative,
+                chosenGetAllViewsPerDatabaseAlternative,
                 chosenGetAllViewsAlternative,
                 chosenAlterTransactionalTableAlternative,
                 chosenAlterPartitionsAlternative);
@@ -122,7 +130,7 @@ public class DefaultThriftMetastoreClientFactory
     private TTransport createTransport(HostAndPort address, Optional<String> delegationToken)
             throws TTransportException
     {
-        return Transport.create(address, sslContext, socksProxy, timeoutMillis, metastoreAuthentication, delegationToken);
+        return Transport.create(address, sslContext, socksProxy, connectTimeoutMillis, readTimeoutMillis, metastoreAuthentication, delegationToken);
     }
 
     private static Optional<SSLContext> buildSslContext(

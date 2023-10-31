@@ -20,17 +20,22 @@ import io.airlift.http.client.UnexpectedResponseException;
 import io.airlift.http.client.jetty.JettyHttpClient;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
 import io.trino.client.QueryResults;
 import io.trino.execution.QueryInfo;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.spi.QueryId;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.client.JsonResponseHandler.createJsonResponseHandler;
@@ -41,8 +46,9 @@ import static io.airlift.http.client.Request.Builder.preparePut;
 import static io.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
 import static io.airlift.http.client.StatusResponseHandler.createStatusResponseHandler;
 import static io.airlift.json.JsonCodec.jsonCodec;
-import static io.airlift.json.JsonCodec.listJsonCodec;
 import static io.airlift.testing.Closeables.closeAll;
+import static io.airlift.tracing.SpanSerialization.SpanDeserializer;
+import static io.airlift.tracing.SpanSerialization.SpanSerializer;
 import static io.trino.client.ProtocolHeaders.TRINO_HEADERS;
 import static io.trino.execution.QueryState.FAILED;
 import static io.trino.execution.QueryState.RUNNING;
@@ -57,19 +63,26 @@ import static io.trino.testing.TestingAccessControlManager.privilege;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_METHOD)
 public class TestQueryResource
 {
+    static final JsonCodec<List<BasicQueryInfo>> BASIC_QUERY_INFO_CODEC = new JsonCodecFactory(
+            new ObjectMapperProvider()
+                    .withJsonSerializers(Map.of(Span.class, new SpanSerializer(OpenTelemetry.noop())))
+                    .withJsonDeserializers(Map.of(Span.class, new SpanDeserializer(OpenTelemetry.noop()))))
+            .listJsonCodec(BasicQueryInfo.class);
+
     private HttpClient client;
     private TestingTrinoServer server;
 
-    @BeforeMethod
+    @BeforeEach
     public void setup()
     {
         client = new JettyHttpClient();
@@ -78,7 +91,7 @@ public class TestQueryResource
         server.createCatalog("tpch", "tpch");
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void teardown()
             throws Exception
     {
@@ -286,7 +299,7 @@ public class TestQueryResource
                 .setUri(server.resolve(path))
                 .setHeader(TRINO_HEADERS.requestUser(), "unknown")
                 .build();
-        return client.execute(request, createJsonResponseHandler(listJsonCodec(BasicQueryInfo.class)));
+        return client.execute(request, createJsonResponseHandler(BASIC_QUERY_INFO_CODEC));
     }
 
     private static void assertStateCounts(Iterable<BasicQueryInfo> infos, int expectedFinished, int expectedFailed, int expectedRunning)

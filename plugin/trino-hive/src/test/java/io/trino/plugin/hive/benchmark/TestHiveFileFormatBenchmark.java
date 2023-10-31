@@ -16,14 +16,13 @@ package io.trino.plugin.hive.benchmark;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.benchmark.BenchmarkHiveFileFormat.CompressionCounter;
 import io.trino.plugin.hive.benchmark.BenchmarkHiveFileFormat.DataSet;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 
 import static io.trino.plugin.hive.HiveCompressionCodec.SNAPPY;
-import static io.trino.plugin.hive.benchmark.BenchmarkFileFormat.HIVE_RCBINARY;
-import static io.trino.plugin.hive.benchmark.BenchmarkFileFormat.TRINO_OPTIMIZED_PARQUET;
 import static io.trino.plugin.hive.benchmark.BenchmarkFileFormat.TRINO_ORC;
+import static io.trino.plugin.hive.benchmark.BenchmarkFileFormat.TRINO_PARQUET;
 import static io.trino.plugin.hive.benchmark.BenchmarkFileFormat.TRINO_RCBINARY;
 import static io.trino.plugin.hive.benchmark.BenchmarkHiveFileFormat.DataSet.LARGE_MAP_VARCHAR_DOUBLE;
 import static io.trino.plugin.hive.benchmark.BenchmarkHiveFileFormat.DataSet.LINEITEM;
@@ -37,14 +36,11 @@ public class TestHiveFileFormatBenchmark
     {
         executeBenchmark(LINEITEM, SNAPPY, TRINO_RCBINARY);
         executeBenchmark(LINEITEM, SNAPPY, TRINO_ORC);
-        executeBenchmark(LINEITEM, SNAPPY, HIVE_RCBINARY);
-        executeBenchmark(LINEITEM, SNAPPY, TRINO_OPTIMIZED_PARQUET);
+        executeBenchmark(LINEITEM, SNAPPY, TRINO_PARQUET);
         executeBenchmark(MAP_VARCHAR_DOUBLE, SNAPPY, TRINO_RCBINARY);
         executeBenchmark(MAP_VARCHAR_DOUBLE, SNAPPY, TRINO_ORC);
-        executeBenchmark(MAP_VARCHAR_DOUBLE, SNAPPY, HIVE_RCBINARY);
         executeBenchmark(LARGE_MAP_VARCHAR_DOUBLE, SNAPPY, TRINO_RCBINARY);
         executeBenchmark(LARGE_MAP_VARCHAR_DOUBLE, SNAPPY, TRINO_ORC);
-        executeBenchmark(LARGE_MAP_VARCHAR_DOUBLE, SNAPPY, HIVE_RCBINARY);
     }
 
     @Test

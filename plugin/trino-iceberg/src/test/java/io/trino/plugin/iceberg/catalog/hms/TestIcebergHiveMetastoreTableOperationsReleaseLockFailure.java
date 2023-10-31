@@ -31,7 +31,7 @@ import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.security.PrincipalType;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -49,7 +49,8 @@ public class TestIcebergHiveMetastoreTableOperationsReleaseLockFailure
     private File baseDir;
 
     @Override
-    protected LocalQueryRunner createQueryRunner() throws Exception
+    protected LocalQueryRunner createQueryRunner()
+            throws Exception
     {
         Session session = testSessionBuilder()
                 .setCatalog(ICEBERG_CATALOG)

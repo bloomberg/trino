@@ -16,6 +16,7 @@ package io.trino.connector;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.concurrent.ThreadPoolExecutorMBean;
 import io.airlift.discovery.client.ServiceDescriptor;
 import io.airlift.discovery.client.ServiceSelector;
@@ -32,15 +33,12 @@ import io.trino.metadata.ForNodeManager;
 import io.trino.server.InternalCommunicationConfig;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.transaction.TransactionManager;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
 
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
-
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -184,11 +182,7 @@ public class CatalogPruneTask
     {
         String url = descriptor.getProperties().get(httpsRequired ? "https" : "http");
         if (url != null) {
-            try {
-                return new URI(url);
-            }
-            catch (URISyntaxException ignored) {
-            }
+            return URI.create(url);
         }
         return null;
     }

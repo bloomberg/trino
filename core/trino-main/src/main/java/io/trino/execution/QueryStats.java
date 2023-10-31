@@ -24,9 +24,8 @@ import io.trino.operator.OperatorStats;
 import io.trino.operator.TableWriterOperator;
 import io.trino.spi.eventlistener.QueryPlanOptimizerStatistics;
 import io.trino.spi.eventlistener.StageGcStatistics;
+import jakarta.annotation.Nullable;
 import org.joda.time.DateTime;
-
-import javax.annotation.Nullable;
 
 import java.util.List;
 import java.util.OptionalDouble;
@@ -35,7 +34,6 @@ import java.util.Set;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.server.DynamicFilterService.DynamicFiltersStats;
-import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
 
 public class QueryStats
@@ -53,6 +51,7 @@ public class QueryStats
     private final Duration executionTime;
     private final Duration analysisTime;
     private final Duration planningTime;
+    private final Duration planningCpuTime;
     private final Duration finishingTime;
 
     private final int totalTasks;
@@ -79,6 +78,8 @@ public class QueryStats
     private final DataSize peakTaskTotalMemory;
 
     private final boolean scheduled;
+    private final OptionalDouble progressPercentage;
+    private final OptionalDouble runningPercentage;
     private final Duration totalScheduledTime;
     private final Duration failedScheduledTime;
     private final Duration totalCpuTime;
@@ -144,6 +145,7 @@ public class QueryStats
             @JsonProperty("executionTime") Duration executionTime,
             @JsonProperty("analysisTime") Duration analysisTime,
             @JsonProperty("planningTime") Duration planningTime,
+            @JsonProperty("planningCpuTime") Duration planningCpuTime,
             @JsonProperty("finishingTime") Duration finishingTime,
 
             @JsonProperty("totalTasks") int totalTasks,
@@ -170,6 +172,8 @@ public class QueryStats
             @JsonProperty("peakTaskTotalMemory") DataSize peakTaskTotalMemory,
 
             @JsonProperty("scheduled") boolean scheduled,
+            @JsonProperty("progressPercentage") OptionalDouble progressPercentage,
+            @JsonProperty("runningPercentage") OptionalDouble runningPercentage,
             @JsonProperty("totalScheduledTime") Duration totalScheduledTime,
             @JsonProperty("failedScheduledTime") Duration failedScheduledTime,
             @JsonProperty("totalCpuTime") Duration totalCpuTime,
@@ -233,6 +237,7 @@ public class QueryStats
         this.executionTime = requireNonNull(executionTime, "executionTime is null");
         this.analysisTime = requireNonNull(analysisTime, "analysisTime is null");
         this.planningTime = requireNonNull(planningTime, "planningTime is null");
+        this.planningCpuTime = requireNonNull(planningCpuTime, "planningCpuTime is null");
         this.finishingTime = requireNonNull(finishingTime, "finishingTime is null");
 
         checkArgument(totalTasks >= 0, "totalTasks is negative");
@@ -267,6 +272,8 @@ public class QueryStats
         this.peakTaskRevocableMemory = requireNonNull(peakTaskRevocableMemory, "peakTaskRevocableMemory is null");
         this.peakTaskTotalMemory = requireNonNull(peakTaskTotalMemory, "peakTaskTotalMemory is null");
         this.scheduled = scheduled;
+        this.progressPercentage = requireNonNull(progressPercentage, "progressPercentage is null");
+        this.runningPercentage = requireNonNull(runningPercentage, "runningPercentage is null");
         this.totalScheduledTime = requireNonNull(totalScheduledTime, "totalScheduledTime is null");
         this.failedScheduledTime = requireNonNull(failedScheduledTime, "failedScheduledTime is null");
         this.totalCpuTime = requireNonNull(totalCpuTime, "totalCpuTime is null");
@@ -394,6 +401,12 @@ public class QueryStats
     public Duration getPlanningTime()
     {
         return planningTime;
+    }
+
+    @JsonProperty
+    public Duration getPlanningCpuTime()
+    {
+        return planningCpuTime;
     }
 
     @JsonProperty
@@ -526,6 +539,18 @@ public class QueryStats
     public boolean isScheduled()
     {
         return scheduled;
+    }
+
+    @JsonProperty
+    public OptionalDouble getProgressPercentage()
+    {
+        return progressPercentage;
+    }
+
+    @JsonProperty
+    public OptionalDouble getRunningPercentage()
+    {
+        return runningPercentage;
     }
 
     @JsonProperty
@@ -779,15 +804,6 @@ public class QueryStats
     public List<QueryPlanOptimizerStatistics> getOptimizerRulesSummaries()
     {
         return optimizerRulesSummaries;
-    }
-
-    @JsonProperty
-    public OptionalDouble getProgressPercentage()
-    {
-        if (!scheduled || totalDrivers == 0) {
-            return OptionalDouble.empty();
-        }
-        return OptionalDouble.of(min(100, (completedDrivers * 100.0) / totalDrivers));
     }
 
     @JsonProperty

@@ -32,10 +32,12 @@ import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.testing.DataProviders;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Timeout;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -65,18 +67,20 @@ import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
+@TestInstance(PER_CLASS)
 public class TestJdbcConnection
 {
     private final ExecutorService executor = newCachedThreadPool(daemonThreadsNamed(getClass().getName()));
 
     private TestingTrinoServer server;
 
-    @BeforeClass
+    @BeforeAll
     public void setupServer()
             throws Exception
     {
@@ -109,7 +113,7 @@ public class TestJdbcConnection
         }
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
             throws Exception
     {
@@ -274,16 +278,16 @@ public class TestJdbcConnection
             }
 
             for (String part : ImmutableList.of(",", "=", ":", "|", "/", "\\", "'", "\\'", "''", "\"", "\\\"", "[", "]")) {
-                String value = format("/tmp/presto-%s-${USER}", part);
+                String value = format("my-table-%s-name", part);
                 try {
                     try (Statement statement = connection.createStatement()) {
-                        statement.execute(format("SET SESSION hive.temporary_staging_directory_path = '%s'", value.replace("'", "''")));
+                        statement.execute(format("SET SESSION spatial_partitioning_table_name = '%s'", value.replace("'", "''")));
                     }
 
                     assertThat(listSession(connection))
                             .contains("join_distribution_type|BROADCAST|AUTOMATIC")
                             .contains("exchange_compression|true|false")
-                            .contains(format("hive.temporary_staging_directory_path|%s|/tmp/presto-${USER}", value));
+                            .contains(format("spatial_partitioning_table_name|%s|", value));
                 }
                 catch (Exception e) {
                     fail(format("Failed to set session property value to [%s]", value), e);
@@ -420,14 +424,29 @@ public class TestJdbcConnection
     public void testSessionProperties()
             throws SQLException
     {
-        try (Connection connection = createConnection("roles=hive:admin&sessionProperties=hive.temporary_staging_directory_path:/tmp;execution_policy:all-at-once")) {
+        try (Connection connection = createConnection("roles=hive:admin&sessionProperties=hive.hive_views_legacy_translation:true;execution_policy:all-at-once")) {
             TrinoConnection trinoConnection = connection.unwrap(TrinoConnection.class);
             assertThat(trinoConnection.getSessionProperties())
-                    .extractingByKeys("hive.temporary_staging_directory_path", "execution_policy")
-                    .containsExactly("/tmp", "all-at-once");
+                    .extractingByKeys("hive.hive_views_legacy_translation", "execution_policy")
+                    .containsExactly("true", "all-at-once");
             assertThat(listSession(connection)).containsAll(ImmutableSet.of(
                     "execution_policy|all-at-once|phased",
-                    "hive.temporary_staging_directory_path|/tmp|/tmp/presto-${USER}"));
+                    "hive.hive_views_legacy_translation|true|false"));
+        }
+    }
+
+    @Test
+    public void testSessionUser()
+            throws SQLException
+    {
+        try (Connection connection = createConnection()) {
+            assertThat(getSingleStringColumn(connection, "select current_user")).isEqualTo("admin");
+            TrinoConnection trinoConnection = connection.unwrap(TrinoConnection.class);
+            String impersonatedUser = "alice";
+            trinoConnection.setSessionUser(impersonatedUser);
+            assertThat(getSingleStringColumn(connection, "select current_user")).isEqualTo(impersonatedUser);
+            trinoConnection.clearSessionUser();
+            assertThat(getSingleStringColumn(connection, "select current_user")).isEqualTo("admin");
         }
     }
 
@@ -436,8 +455,17 @@ public class TestJdbcConnection
      * @see TestJdbcStatement#testConcurrentCancellationOnStatementClose()
      */
     // TODO https://github.com/trinodb/trino/issues/10096 - enable test once concurrent jdbc statements are supported
-    @Test(timeOut = 60_000, dataProviderClass = DataProviders.class, dataProvider = "trueFalse", enabled = false)
-    public void testConcurrentCancellationOnConnectionClose(boolean autoCommit)
+    @Test
+    @Timeout(60)
+    @Disabled
+    public void testConcurrentCancellationOnConnectionClose()
+            throws Exception
+    {
+        testConcurrentCancellationOnConnectionClose(true);
+        testConcurrentCancellationOnConnectionClose(false);
+    }
+
+    private void testConcurrentCancellationOnConnectionClose(boolean autoCommit)
             throws Exception
     {
         String sql = "SELECT * FROM blackhole.default.delay -- test cancellation " + randomUUID();
@@ -568,6 +596,18 @@ public class TestJdbcConnection
             throw new RuntimeException(e);
         }
         return statuses.build();
+    }
+
+    private String getSingleStringColumn(Connection connection, String sql)
+            throws SQLException
+    {
+        try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
+            assertThat(resultSet.getMetaData().getColumnCount()).isOne();
+            assertThat(resultSet.next()).isTrue();
+            String result = resultSet.getString(1);
+            assertThat(resultSet.next()).isFalse();
+            return result;
+        }
     }
 
     private static void assertConnectionSource(Connection connection, String expectedSource)

@@ -16,14 +16,15 @@ package io.trino.orc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
-import io.trino.orc.OrcTester.LocalTrinoOutputFile;
+import io.trino.filesystem.local.LocalOutputFile;
 import io.trino.orc.metadata.OrcType;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlock;
+import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.type.NamedTypeSignature;
 import io.trino.spi.type.RowFieldName;
 import io.trino.spi.type.StandardTypes;
@@ -49,7 +50,6 @@ import static io.trino.orc.TestingOrcPredicate.ORC_STRIPE_SIZE;
 import static io.trino.orc.metadata.CompressionKind.NONE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
-import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.joda.time.DateTimeZone.UTC;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNull;
@@ -57,8 +57,6 @@ import static org.testng.Assert.assertNull;
 @Test(singleThreaded = true)
 public class TestStructColumnReader
 {
-    private static final Type TEST_DATA_TYPE = VARCHAR;
-
     private static final String STRUCT_COL_NAME = "struct_col";
 
     private TempFile tempFile;
@@ -216,7 +214,7 @@ public class TestStructColumnReader
         List<String> columnNames = ImmutableList.of(STRUCT_COL_NAME);
         List<Type> types = ImmutableList.of(writerType);
         OrcWriter writer = new OrcWriter(
-                OutputStreamOrcDataSink.create(new LocalTrinoOutputFile(tempFile.getFile())),
+                OutputStreamOrcDataSink.create(new LocalOutputFile(tempFile.getFile())),
                 columnNames,
                 types,
                 OrcType.createRootOrcType(columnNames, types),
@@ -236,20 +234,17 @@ public class TestStructColumnReader
         Block[] fieldBlocks = new Block[data.size()];
 
         int entries = 10;
-        boolean[] rowIsNull = new boolean[entries];
-        Arrays.fill(rowIsNull, false);
 
-        BlockBuilder blockBuilder = TEST_DATA_TYPE.createBlockBuilder(null, entries);
-        for (int i = 0; i < data.size(); i++) {
-            byte[] bytes = data.get(i).getBytes(UTF_8);
-            for (int j = 0; j < entries; j++) {
-                blockBuilder.writeBytes(Slices.wrappedBuffer(bytes), 0, bytes.length);
-                blockBuilder.closeEntry();
+        VariableWidthBlockBuilder fieldBlockBuilder = VARCHAR.createBlockBuilder(null, entries);
+        for (int fieldId = 0; fieldId < data.size(); fieldId++) {
+            Slice fieldValue = Slices.utf8Slice(data.get(fieldId));
+            for (int rowId = 0; rowId < entries; rowId++) {
+                fieldBlockBuilder.writeEntry(fieldValue);
             }
-            fieldBlocks[i] = blockBuilder.build();
-            blockBuilder = blockBuilder.newBlockBuilderLike(null);
+            fieldBlocks[fieldId] = fieldBlockBuilder.build();
+            fieldBlockBuilder = (VariableWidthBlockBuilder) fieldBlockBuilder.newBlockBuilderLike(null);
         }
-        Block rowBlock = RowBlock.fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), fieldBlocks);
+        Block rowBlock = RowBlock.fromFieldBlocks(entries, fieldBlocks);
         writer.write(new Page(rowBlock));
         writer.close();
     }
@@ -279,7 +274,7 @@ public class TestStructColumnReader
     {
         ImmutableList.Builder<TypeSignatureParameter> typeSignatureParameters = ImmutableList.builder();
         for (String fieldName : fieldNames) {
-            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.of(new RowFieldName(fieldName)), TEST_DATA_TYPE.getTypeSignature())));
+            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.of(new RowFieldName(fieldName)), VARCHAR.getTypeSignature())));
         }
         return TESTING_TYPE_MANAGER.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
     }
@@ -289,7 +284,7 @@ public class TestStructColumnReader
         ImmutableList.Builder<TypeSignatureParameter> typeSignatureParameters = ImmutableList.builder();
 
         for (int i = 0; i < numFields; i++) {
-            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.empty(), TEST_DATA_TYPE.getTypeSignature())));
+            typeSignatureParameters.add(TypeSignatureParameter.namedTypeParameter(new NamedTypeSignature(Optional.empty(), VARCHAR.getTypeSignature())));
         }
         return TESTING_TYPE_MANAGER.getParameterizedType(StandardTypes.ROW, typeSignatureParameters.build());
     }

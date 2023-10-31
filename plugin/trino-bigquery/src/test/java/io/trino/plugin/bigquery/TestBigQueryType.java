@@ -13,7 +13,8 @@
  */
 package io.trino.plugin.bigquery;
 
-import org.testng.annotations.Test;
+import io.trino.spi.type.TimeZoneKey;
+import org.junit.jupiter.api.Test;
 
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
@@ -42,7 +43,10 @@ public class TestBigQueryType
     {
         assertThat(BigQueryType.timestampToStringConverter(
                 fromEpochSecondsAndFraction(1585658096, 123_456_000_000L, UTC_KEY)))
-                .isEqualTo("'2020-03-31 12:34:56.123456'");
+                .isEqualTo("2020-03-31 12:34:56.123456");
+        assertThat(BigQueryType.timestampToStringConverter(
+                fromEpochSecondsAndFraction(1585658096, 123_456_000_000L, TimeZoneKey.getTimeZoneKey("Asia/Kathmandu"))))
+                .isEqualTo("2020-03-31 12:34:56.123456");
     }
 
     @Test

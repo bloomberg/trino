@@ -27,11 +27,12 @@ import io.trino.operator.RetryPolicy;
 import io.trino.spi.QueryId;
 import io.trino.spi.resourcegroups.QueryType;
 import org.joda.time.DateTime;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -118,6 +119,7 @@ public class TestQueryStateInfo
                         new Duration(9, MINUTES),
                         new Duration(10, MINUTES),
                         new Duration(11, MINUTES),
+                        new Duration(1, SECONDS),
                         new Duration(12, MINUTES),
                         13,
                         14,
@@ -140,6 +142,8 @@ public class TestQueryStateInfo
                         DataSize.valueOf("28GB"),
                         DataSize.valueOf("29GB"),
                         true,
+                        OptionalDouble.of(8.88),
+                        OptionalDouble.of(0),
                         new Duration(23, MINUTES),
                         new Duration(24, MINUTES),
                         new Duration(25, MINUTES),
@@ -182,6 +186,8 @@ public class TestQueryStateInfo
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                Optional.empty(),
+                false,
                 ImmutableMap.of(),
                 ImmutableSet.of(),
                 ImmutableMap.of(),

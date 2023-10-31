@@ -21,8 +21,9 @@ import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.DictionaryBlock;
+import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.type.Type;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.OptionalInt;
@@ -45,7 +46,7 @@ public class TestLookupJoinPageBuilder
         Block block = blockBuilder.build();
         Page page = new Page(block, block);
 
-        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0, 1), ImmutableList.of(0, 1), OptionalInt.empty());
+        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0, 1), ImmutableList.of(0, 1), OptionalInt.empty(), false);
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(BIGINT, BIGINT), page);
         JoinProbe probe = joinProbeFactory.createJoinProbe(page, lookupSource);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT, BIGINT));
@@ -93,7 +94,7 @@ public class TestLookupJoinPageBuilder
         }
         Block block = blockBuilder.build();
         Page page = new Page(block);
-        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty());
+        JoinProbeFactory joinProbeFactory = new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty(), false);
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(BIGINT), page);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT));
 
@@ -101,7 +102,7 @@ public class TestLookupJoinPageBuilder
         JoinProbe probe = joinProbeFactory.createJoinProbe(page, lookupSource);
         Page output = lookupJoinPageBuilder.build(probe);
         assertEquals(output.getChannelCount(), 2);
-        assertTrue(output.getBlock(0) instanceof DictionaryBlock);
+        assertTrue(output.getBlock(0) instanceof LongArrayBlock);
         assertEquals(output.getPositionCount(), 0);
         lookupJoinPageBuilder.reset();
 
@@ -118,8 +119,8 @@ public class TestLookupJoinPageBuilder
         assertTrue(output.getBlock(0) instanceof DictionaryBlock);
         assertEquals(output.getPositionCount(), entries / 2);
         for (int i = 0; i < entries / 2; i++) {
-            assertEquals(output.getBlock(0).getLong(i, 0), i * 2);
-            assertEquals(output.getBlock(1).getLong(i, 0), i * 2);
+            assertEquals(output.getBlock(0).getLong(i, 0), i * 2L);
+            assertEquals(output.getBlock(1).getLong(i, 0), i * 2L);
         }
         lookupJoinPageBuilder.reset();
 
@@ -165,7 +166,7 @@ public class TestLookupJoinPageBuilder
 
         // nothing on the build side so we don't append anything
         LookupSource lookupSource = new TestLookupSource(ImmutableList.of(), page);
-        JoinProbe probe = (new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty())).createJoinProbe(page, lookupSource);
+        JoinProbe probe = (new JoinProbeFactory(ImmutableList.of(0), ImmutableList.of(0), OptionalInt.empty(), false)).createJoinProbe(page, lookupSource);
         LookupJoinPageBuilder lookupJoinPageBuilder = new LookupJoinPageBuilder(ImmutableList.of(BIGINT));
 
         // append the same row many times should also flush in the end

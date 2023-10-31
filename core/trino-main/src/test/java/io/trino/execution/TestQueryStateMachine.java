@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.testing.TestingTicker;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.Session;
 import io.trino.client.FailureInfo;
 import io.trino.client.NodeVersion;
@@ -28,6 +29,7 @@ import io.trino.plugin.base.security.DefaultSystemAccessControl;
 import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.CatalogHandle.CatalogVersion;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.spi.type.Type;
@@ -35,8 +37,9 @@ import io.trino.sql.analyzer.Output;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.net.URI;
@@ -70,19 +73,21 @@ import static io.trino.transaction.InMemoryTransactionManager.createTestTransact
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
+@TestInstance(PER_CLASS)
 public class TestQueryStateMachine
 {
     private static final String QUERY = "sql";
     private static final URI LOCATION = URI.create("fake://fake-query");
-    private static final SQLException FAILED_CAUSE = new SQLException("FAILED");
     private static final List<Input> INPUTS = ImmutableList.of(new Input(
             "connector",
+            new CatalogVersion("default"),
             "schema",
             "table",
             Optional.empty(),
@@ -102,7 +107,7 @@ public class TestQueryStateMachine
 
     private ExecutorService executor = newCachedThreadPool(daemonThreadsNamed(getClass().getSimpleName() + "=%s"));
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         executor.shutdownNow();
@@ -179,7 +184,7 @@ public class TestQueryStateMachine
             tryGetFutureValue(stateMachine.getStateChange(FINISHING), 2, SECONDS);
         });
 
-        assertAllTimeSpentInQueueing(FAILED, stateMachine -> stateMachine.transitionToFailed(FAILED_CAUSE));
+        assertAllTimeSpentInQueueing(FAILED, stateMachine -> stateMachine.transitionToFailed(newFailedCause()));
     }
 
     private void assertAllTimeSpentInQueueing(QueryState expectedState, Consumer<QueryStateMachine> stateTransition)
@@ -230,8 +235,8 @@ public class TestQueryStateMachine
 
         stateMachine = createQueryStateMachine();
         stateMachine.transitionToPlanning();
-        assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
-        assertState(stateMachine, FAILED, FAILED_CAUSE);
+        assertTrue(stateMachine.transitionToFailed(newFailedCause()));
+        assertState(stateMachine, FAILED, newFailedCause());
     }
 
     @Test
@@ -262,8 +267,8 @@ public class TestQueryStateMachine
 
         stateMachine = createQueryStateMachine();
         stateMachine.transitionToStarting();
-        assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
-        assertState(stateMachine, FAILED, FAILED_CAUSE);
+        assertTrue(stateMachine.transitionToFailed(newFailedCause()));
+        assertState(stateMachine, FAILED, newFailedCause());
     }
 
     @Test
@@ -292,8 +297,8 @@ public class TestQueryStateMachine
 
         stateMachine = createQueryStateMachine();
         stateMachine.transitionToRunning();
-        assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
-        assertState(stateMachine, FAILED, FAILED_CAUSE);
+        assertTrue(stateMachine.transitionToFailed(newFailedCause()));
+        assertState(stateMachine, FAILED, newFailedCause());
     }
 
     @Test
@@ -311,8 +316,8 @@ public class TestQueryStateMachine
     public void testFailed()
     {
         QueryStateMachine stateMachine = createQueryStateMachine();
-        assertTrue(stateMachine.transitionToFailed(FAILED_CAUSE));
-        assertFinalState(stateMachine, FAILED, FAILED_CAUSE);
+        assertTrue(stateMachine.transitionToFailed(newFailedCause()));
+        assertFinalState(stateMachine, FAILED, newFailedCause());
     }
 
     @Test
@@ -431,7 +436,7 @@ public class TestQueryStateMachine
         assertFalse(stateMachine.transitionToFinishing());
         assertState(stateMachine, expectedState, expectedException);
 
-        assertFalse(stateMachine.transitionToFailed(FAILED_CAUSE));
+        assertFalse(stateMachine.transitionToFailed(newFailedCause()));
         assertState(stateMachine, expectedState, expectedException);
 
         // attempt to fail with another exception, which will fail
@@ -470,6 +475,7 @@ public class TestQueryStateMachine
         assertNotNull(queryStats.getDispatchingTime());
         assertNotNull(queryStats.getExecutionTime());
         assertNotNull(queryStats.getPlanningTime());
+        assertNotNull(queryStats.getPlanningCpuTime());
         assertNotNull(queryStats.getFinishingTime());
 
         assertNotNull(queryStats.getCreateTime());
@@ -520,6 +526,7 @@ public class TestQueryStateMachine
                 transactionManager,
                 emptyEventListenerManager(),
                 new AccessControlConfig(),
+                OpenTelemetry.noop(),
                 DefaultSystemAccessControl.NAME);
         accessControl.setSystemAccessControls(List.of(AllowAllSystemAccessControl.INSTANCE));
         QueryStateMachine stateMachine = QueryStateMachine.beginWithTicker(
@@ -565,5 +572,10 @@ public class TestQueryStateMachine
         assertEquals(actual.getStart(), expected.getStart());
         assertEquals(actual.getSystemProperties(), expected.getSystemProperties());
         assertEquals(actual.getCatalogProperties(), expected.getCatalogProperties());
+    }
+
+    private static SQLException newFailedCause()
+    {
+        return new SQLException("FAILED");
     }
 }

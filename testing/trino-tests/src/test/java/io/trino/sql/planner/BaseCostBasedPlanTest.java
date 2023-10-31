@@ -19,15 +19,15 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.airlift.log.Logger;
 import io.trino.Session;
-import io.trino.execution.warnings.WarningCollector;
-import io.trino.metadata.TableHandle;
-import io.trino.metadata.TableMetadata;
+import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ConnectorFactory;
+import io.trino.sql.DynamicFilters;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.ExchangeNode;
+import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
 import io.trino.sql.planner.plan.TableScanNode;
@@ -56,6 +56,8 @@ import static io.trino.Session.SessionBuilder;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
+import static io.trino.execution.warnings.WarningCollector.NOOP;
+import static io.trino.sql.DynamicFilters.extractDynamicFilters;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
 import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
@@ -110,6 +112,8 @@ public abstract class BaseCostBasedPlanTest
         SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog(CATALOG_NAME)
                 .setSchema(schemaName)
+                // Reducing ARM and x86 floating point arithmetic differences, mostly visible at PlanNodeStatsEstimateMath::estimateCorrelatedConjunctionRowCount
+                .setSystemProperty("filter_conjunction_independence_factor", "0.750000001")
                 .setSystemProperty("task_concurrency", "1") // these tests don't handle exchanges from local parallel
                 .setSystemProperty(JOIN_REORDERING_STRATEGY, JoinReorderingStrategy.AUTOMATIC.name())
                 .setSystemProperty(JOIN_DISTRIBUTION_TYPE, JoinDistributionType.AUTOMATIC.name());
@@ -214,7 +218,8 @@ public abstract class BaseCostBasedPlanTest
     {
         try {
             return getQueryRunner().inTransaction(transactionSession -> {
-                Plan plan = getQueryRunner().createPlan(transactionSession, query, OPTIMIZED_AND_VALIDATED, false, WarningCollector.NOOP, createPlanOptimizersStatsCollector());
+                LocalQueryRunner localQueryRunner = getQueryRunner();
+                Plan plan = localQueryRunner.createPlan(transactionSession, query, localQueryRunner.getPlanOptimizers(false), OPTIMIZED_AND_VALIDATED, NOOP, createPlanOptimizersStatsCollector());
                 JoinOrderPrinter joinOrderPrinter = new JoinOrderPrinter(transactionSession);
                 plan.getRoot().accept(joinOrderPrinter, 0);
                 return joinOrderPrinter.result();
@@ -315,17 +320,28 @@ public abstract class BaseCostBasedPlanTest
         }
 
         @Override
-        public Void visitTableScan(TableScanNode node, Integer indent)
+        public Void visitFilter(FilterNode node, Integer indent)
         {
-            TableMetadata tableMetadata = getTableMetadata(node.getTable());
-            output(indent, "scan %s", tableMetadata.getTable().getTableName());
+            DynamicFilters.ExtractResult filters = extractDynamicFilters(node.getPredicate());
+            String inputs = filters.getDynamicConjuncts().stream()
+                    .map(descriptor -> descriptor.getInput().toString())
+                    .sorted()
+                    .collect(joining(", "));
 
-            return null;
+            if (!inputs.isEmpty()) {
+                output(indent, "dynamic filter ([%s])", inputs);
+                indent = indent + 1;
+            }
+            return visitPlan(node, indent);
         }
 
-        private TableMetadata getTableMetadata(TableHandle tableHandle)
+        @Override
+        public Void visitTableScan(TableScanNode node, Integer indent)
         {
-            return getQueryRunner().getMetadata().getTableMetadata(session, tableHandle);
+            CatalogSchemaTableName tableName = getQueryRunner().getMetadata().getTableName(session, node.getTable());
+            output(indent, "scan %s", tableName.getSchemaTableName().getTableName());
+
+            return null;
         }
 
         @Override

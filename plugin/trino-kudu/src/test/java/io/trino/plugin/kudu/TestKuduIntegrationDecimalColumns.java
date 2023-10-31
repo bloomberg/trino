@@ -18,14 +18,17 @@ import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TrinoSqlExecutor;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunner;
 import static java.lang.String.format;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
+@TestInstance(PER_CLASS)
 public class TestKuduIntegrationDecimalColumns
         extends AbstractTestQueryFramework
 {
@@ -46,11 +49,10 @@ public class TestKuduIntegrationDecimalColumns
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        kuduServer = new TestingKuduServer();
-        return createKuduQueryRunner(kuduServer, "decimal");
+        return createKuduQueryRunner(closeAfterClass(new TestingKuduServer()), "decimal");
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public final void destroy()
     {
         if (kuduServer != null) {

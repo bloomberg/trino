@@ -15,6 +15,7 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.ProcedureRegistry;
@@ -22,7 +23,7 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.security.AccessControl;
 import io.trino.security.InjectedConnectorAccessControl;
 import io.trino.spi.TrinoException;
-import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.Block;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
@@ -39,8 +40,6 @@ import io.trino.sql.tree.ExpressionTreeRewriter;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Parameter;
 import io.trino.transaction.TransactionManager;
-
-import javax.inject.Inject;
 
 import java.lang.invoke.MethodType;
 import java.util.ArrayList;
@@ -223,8 +222,7 @@ public class CallTask
 
     private static Object toTypeObjectValue(Session session, Type type, Object value)
     {
-        BlockBuilder blockBuilder = type.createBlockBuilder(null, 1);
-        writeNativeValue(type, blockBuilder, value);
-        return type.getObjectValue(session.toConnectorSession(), blockBuilder, 0);
+        Block block = writeNativeValue(type, value);
+        return type.getObjectValue(session.toConnectorSession(), block, 0);
     }
 }

@@ -30,9 +30,12 @@ import io.airlift.jaxrs.testing.JaxrsTestingHttpProcessor;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonModule;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.block.BlockJsonSerde;
 import io.trino.client.NodeVersion;
+import io.trino.execution.BaseTestSqlTaskManager;
 import io.trino.execution.DynamicFilterConfig;
 import io.trino.execution.DynamicFiltersCollector.VersionedDynamicFilterDomains;
 import io.trino.execution.NodeTaskMap;
@@ -47,7 +50,6 @@ import io.trino.execution.TaskManagerConfig;
 import io.trino.execution.TaskState;
 import io.trino.execution.TaskStatus;
 import io.trino.execution.TaskTestUtils;
-import io.trino.execution.TestSqlTaskManager;
 import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.metadata.BlockEncodingManager;
 import io.trino.metadata.HandleJsonModule;
@@ -71,6 +73,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
+import io.trino.spi.type.TypeSignature;
 import io.trino.sql.DynamicFilters;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
@@ -79,21 +82,23 @@ import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.tree.SymbolReference;
 import io.trino.testing.TestingSplit;
 import io.trino.type.TypeDeserializer;
-import org.testng.annotations.Test;
-
-import javax.ws.rs.Consumes;
-import javax.ws.rs.DELETE;
-import javax.ws.rs.DefaultValue;
-import javax.ws.rs.GET;
-import javax.ws.rs.HeaderParam;
-import javax.ws.rs.POST;
-import javax.ws.rs.Path;
-import javax.ws.rs.PathParam;
-import javax.ws.rs.Produces;
-import javax.ws.rs.QueryParam;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.UriInfo;
+import io.trino.type.TypeSignatureDeserializer;
+import io.trino.type.TypeSignatureKeyDeserializer;
+import jakarta.ws.rs.Consumes;
+import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.DefaultValue;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.HeaderParam;
+import jakarta.ws.rs.POST;
+import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.UriInfo;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -117,6 +122,9 @@ import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static io.airlift.testing.Assertions.assertGreaterThan;
 import static io.airlift.testing.Assertions.assertGreaterThanOrEqual;
 import static io.airlift.testing.Assertions.assertLessThan;
+import static io.airlift.tracing.SpanSerialization.SpanDeserializer;
+import static io.airlift.tracing.SpanSerialization.SpanSerializer;
+import static io.airlift.tracing.Tracing.noopTracer;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.SystemSessionProperties.REMOTE_TASK_ADAPTIVE_UPDATE_REQUEST_SIZE_ENABLED;
 import static io.trino.SystemSessionProperties.REMOTE_TASK_GUARANTEED_SPLITS_PER_REQUEST;
@@ -155,33 +163,37 @@ public class TestHttpRemoteTask
     private static final Duration FAIL_TIMEOUT = new Duration(20, SECONDS);
     private static final TaskManagerConfig TASK_MANAGER_CONFIG = new TaskManagerConfig()
             // Shorten status refresh wait and info update interval so that we can have a shorter test timeout
-            .setStatusRefreshMaxWait(new Duration(IDLE_TIMEOUT.roundTo(MILLISECONDS) / 100, MILLISECONDS))
-            .setInfoUpdateInterval(new Duration(IDLE_TIMEOUT.roundTo(MILLISECONDS) / 10, MILLISECONDS));
+            .setStatusRefreshMaxWait(new Duration(IDLE_TIMEOUT.roundTo(MILLISECONDS) / 100.0, MILLISECONDS))
+            .setInfoUpdateInterval(new Duration(IDLE_TIMEOUT.roundTo(MILLISECONDS) / 10.0, MILLISECONDS));
 
     private static final boolean TRACE_HTTP = false;
 
-    @Test(timeOut = 30000)
+    @Test
+    @Timeout(30)
     public void testRemoteTaskMismatch()
             throws Exception
     {
         runTest(FailureScenario.TASK_MISMATCH);
     }
 
-    @Test(timeOut = 30000)
+    @Test
+    @Timeout(30)
     public void testRejectedExecutionWhenVersionIsHigh()
             throws Exception
     {
         runTest(FailureScenario.TASK_MISMATCH_WHEN_VERSION_IS_HIGH);
     }
 
-    @Test(timeOut = 30000)
+    @Test
+    @Timeout(30)
     public void testRejectedExecution()
             throws Exception
     {
         runTest(FailureScenario.REJECTED_EXECUTION);
     }
 
-    @Test(timeOut = 30000)
+    @Test
+    @Timeout(30)
     public void testRegular()
             throws Exception
     {
@@ -209,7 +221,8 @@ public class TestHttpRemoteTask
         httpRemoteTaskFactory.stop();
     }
 
-    @Test(timeOut = 30000)
+    @Test
+    @Timeout(30)
     public void testDynamicFilters()
             throws Exception
     {
@@ -289,7 +302,8 @@ public class TestHttpRemoteTask
         httpRemoteTaskFactory.stop();
     }
 
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testOutboundDynamicFilters()
             throws Exception
     {
@@ -383,7 +397,8 @@ public class TestHttpRemoteTask
         httpRemoteTaskFactory.stop();
     }
 
-    @Test(timeOut = 300000)
+    @Test
+    @Timeout(300)
     public void testAdaptiveRemoteTaskRequestSize()
             throws Exception
     {
@@ -511,8 +526,10 @@ public class TestHttpRemoteTask
     {
         return httpRemoteTaskFactory.createRemoteTask(
                 session,
+                Span.getInvalid(),
                 new TaskId(new StageId("test", 1), 2, 0),
                 new InternalNode("node-id", URI.create("http://fake.invalid/"), new NodeVersion("version"), false),
+                false,
                 TaskTestUtils.PLAN_FRAGMENT,
                 ImmutableMultimap.of(),
                 PipelinedOutputBuffers.createInitial(BROADCAST),
@@ -544,6 +561,8 @@ public class TestHttpRemoteTask
                         binder.bind(JsonMapper.class).in(SINGLETON);
                         binder.bind(Metadata.class).toInstance(createTestMetadataManager());
                         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
+                        jsonBinder(binder).addDeserializerBinding(TypeSignature.class).to(TypeSignatureDeserializer.class);
+                        jsonBinder(binder).addKeyDeserializerBinding(TypeSignature.class).to(TypeSignatureKeyDeserializer.class);
                         jsonCodecBinder(binder).bindJsonCodec(TaskStatus.class);
                         jsonCodecBinder(binder).bindJsonCodec(VersionedDynamicFilterDomains.class);
                         jsonBinder(binder).addSerializerBinding(Block.class).to(BlockJsonSerde.Serializer.class);
@@ -555,6 +574,10 @@ public class TestHttpRemoteTask
                         binder.bind(TypeManager.class).toInstance(TESTING_TYPE_MANAGER);
                         binder.bind(BlockEncodingManager.class).in(SINGLETON);
                         binder.bind(BlockEncodingSerde.class).to(InternalBlockEncodingSerde.class).in(SINGLETON);
+
+                        binder.bind(OpenTelemetry.class).toInstance(OpenTelemetry.noop());
+                        jsonBinder(binder).addSerializerBinding(Span.class).to(SpanSerializer.class);
+                        jsonBinder(binder).addDeserializerBinding(Span.class).to(SpanDeserializer.class);
                     }
 
                     @Provides
@@ -573,12 +596,13 @@ public class TestHttpRemoteTask
                                 new QueryManagerConfig(),
                                 TASK_MANAGER_CONFIG,
                                 testingHttpClient,
-                                new TestSqlTaskManager.MockLocationFactory(),
+                                new BaseTestSqlTaskManager.MockLocationFactory(),
                                 taskStatusCodec,
                                 dynamicFilterDomainsCodec,
                                 taskInfoCodec,
                                 taskUpdateRequestCodec,
                                 failTaskRequestCodec,
+                                noopTracer(),
                                 new RemoteTaskStats(),
                                 dynamicFilterService);
                     }
@@ -862,11 +886,13 @@ public class TestHttpRemoteTask
                     taskState,
                     initialTaskStatus.getSelf(),
                     "fake",
+                    false,
                     initialTaskStatus.getFailures(),
                     initialTaskStatus.getQueuedPartitionedDrivers(),
                     initialTaskStatus.getRunningPartitionedDrivers(),
                     initialTaskStatus.getOutputBufferStatus(),
                     initialTaskStatus.getOutputDataSize(),
+                    initialTaskStatus.getWriterInputDataSize(),
                     initialTaskStatus.getPhysicalWrittenDataSize(),
                     initialTaskStatus.getMaxWriterCount(),
                     initialTaskStatus.getMemoryReservation(),

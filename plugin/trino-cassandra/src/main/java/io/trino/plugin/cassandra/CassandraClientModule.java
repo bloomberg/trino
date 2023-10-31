@@ -22,19 +22,21 @@ import com.datastax.oss.driver.internal.core.loadbalancing.DefaultLoadBalancingP
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.deser.std.FromStringDeserializer;
 import com.google.inject.Binder;
+import com.google.inject.Inject;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
+import com.google.inject.Singleton;
 import io.airlift.json.JsonCodec;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.instrumentation.cassandra.v4_4.CassandraTelemetry;
 import io.trino.plugin.cassandra.ptf.Query;
 import io.trino.spi.TrinoException;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeId;
 import io.trino.spi.type.TypeManager;
 
-import javax.inject.Inject;
-import javax.inject.Singleton;
 import javax.net.ssl.SSLContext;
 
 import java.io.File;
@@ -110,7 +112,11 @@ public class CassandraClientModule
 
     @Singleton
     @Provides
-    public static CassandraSession createCassandraSession(CassandraTypeManager cassandraTypeManager, CassandraClientConfig config, JsonCodec<List<ExtraColumnMetadata>> extraColumnMetadataCodec)
+    public static CassandraSession createCassandraSession(
+            CassandraTypeManager cassandraTypeManager,
+            CassandraClientConfig config,
+            JsonCodec<List<ExtraColumnMetadata>> extraColumnMetadataCodec,
+            OpenTelemetry openTelemetry)
     {
         requireNonNull(extraColumnMetadataCodec, "extraColumnMetadataCodec is null");
 
@@ -177,7 +183,8 @@ public class CassandraClientModule
                 () -> {
                     contactPoints.forEach(contactPoint -> cqlSessionBuilder.addContactPoint(
                             createInetSocketAddress(contactPoint, config.getNativeProtocolPort())));
-                    return cqlSessionBuilder.build();
+                    CassandraTelemetry cassandraTelemetry = CassandraTelemetry.create(openTelemetry);
+                    return cassandraTelemetry.wrap(cqlSessionBuilder.build());
                 },
                 config.getNoHostAvailableRetryTimeout());
     }

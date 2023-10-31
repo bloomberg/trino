@@ -21,13 +21,12 @@ import io.trino.parquet.DataPageV1;
 import io.trino.parquet.DataPageV2;
 import io.trino.parquet.DictionaryPage;
 import io.trino.parquet.Page;
+import jakarta.annotation.Nullable;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.format.CompressionCodec;
 import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.internal.column.columnindex.OffsetIndex;
-
-import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -103,6 +102,9 @@ public final class PageReader
         dataPageReadCount++;
         try {
             if (compressedPage instanceof DataPageV1 dataPageV1) {
+                if (!arePagesCompressed()) {
+                    return dataPageV1;
+                }
                 return new DataPageV1(
                         decompress(codec, dataPageV1.getSlice(), dataPageV1.getUncompressedSize()),
                         dataPageV1.getValueCount(),

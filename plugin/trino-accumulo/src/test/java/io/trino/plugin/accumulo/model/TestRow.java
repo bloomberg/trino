@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
 import io.trino.plugin.accumulo.serializers.AccumuloRowSerializer;
 import io.trino.spi.type.ArrayType;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
@@ -63,9 +63,6 @@ public class TestRow
         r1.addField(null, VARCHAR);
 
         assertEquals(r1.length(), 14);
-
-        Row r2 = new Row(r1);
-        assertEquals(r2, r1);
     }
 
     @Test

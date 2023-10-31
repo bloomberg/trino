@@ -13,8 +13,13 @@
  */
 package io.trino.plugin.deltalake.transactionlog;
 
+import io.trino.filesystem.Location;
+
+import java.util.Map;
+import java.util.Optional;
+
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.filesystem.Locations.appendPath;
-import static java.lang.String.format;
 
 public final class TransactionLogUtil
 {
@@ -27,8 +32,23 @@ public final class TransactionLogUtil
         return appendPath(tableLocation, TRANSACTION_LOG_DIRECTORY);
     }
 
-    public static String getTransactionLogJsonEntryPath(String transactionLogDir, long entryNumber)
+    public static Location getTransactionLogJsonEntryPath(String transactionLogDir, long entryNumber)
     {
-        return appendPath(transactionLogDir, format("%020d.json", entryNumber));
+        return Location.of(transactionLogDir).appendPath("%020d.json".formatted(entryNumber));
+    }
+
+    public static Map<String, Optional<String>> canonicalizePartitionValues(Map<String, String> partitionValues)
+    {
+        return partitionValues.entrySet().stream()
+                .collect(toImmutableMap(
+                        Map.Entry::getKey,
+                        entry -> {
+                            String value = entry.getValue();
+                            if (value == null || value.isEmpty()) {
+                                // For VARCHAR based partitions null and "" are treated the same
+                                return Optional.empty();
+                            }
+                            return Optional.of(value);
+                        }));
     }
 }

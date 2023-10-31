@@ -14,6 +14,7 @@
 package io.trino.plugin.hudi;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -28,29 +29,32 @@ import java.util.List;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class HudiSplit
         implements ConnectorSplit
 {
-    private final String path;
+    private static final int INSTANCE_SIZE = toIntExact(instanceSize(HudiSplit.class));
+
+    private final String location;
     private final long start;
     private final long length;
     private final long fileSize;
     private final long fileModifiedTime;
-    private final List<HostAddress> addresses;
     private final TupleDomain<HiveColumnHandle> predicate;
     private final List<HivePartitionKey> partitionKeys;
     private final SplitWeight splitWeight;
 
     @JsonCreator
     public HudiSplit(
-            @JsonProperty("path") String path,
+            @JsonProperty("location") String location,
             @JsonProperty("start") long start,
             @JsonProperty("length") long length,
             @JsonProperty("fileSize") long fileSize,
             @JsonProperty("fileModifiedTime") long fileModifiedTime,
-            @JsonProperty("addresses") List<HostAddress> addresses,
             @JsonProperty("predicate") TupleDomain<HiveColumnHandle> predicate,
             @JsonProperty("partitionKeys") List<HivePartitionKey> partitionKeys,
             @JsonProperty("splitWeight") SplitWeight splitWeight)
@@ -59,12 +63,11 @@ public class HudiSplit
         checkArgument(length >= 0, "length must be positive");
         checkArgument(start + length <= fileSize, "fileSize must be at least start + length");
 
-        this.path = requireNonNull(path, "path is null");
+        this.location = requireNonNull(location, "location is null");
         this.start = start;
         this.length = length;
         this.fileSize = fileSize;
         this.fileModifiedTime = fileModifiedTime;
-        this.addresses = ImmutableList.copyOf(requireNonNull(addresses, "addresses is null"));
         this.predicate = requireNonNull(predicate, "predicate is null");
         this.partitionKeys = ImmutableList.copyOf(requireNonNull(partitionKeys, "partitionKeys is null"));
         this.splitWeight = requireNonNull(splitWeight, "splitWeight is null");
@@ -76,18 +79,18 @@ public class HudiSplit
         return true;
     }
 
-    @JsonProperty
+    @JsonIgnore
     @Override
     public List<HostAddress> getAddresses()
     {
-        return addresses;
+        return ImmutableList.of();
     }
 
     @Override
     public Object getInfo()
     {
         return ImmutableMap.builder()
-                .put("path", path)
+                .put("location", location)
                 .put("start", start)
                 .put("length", length)
                 .put("fileSize", fileSize)
@@ -103,9 +106,9 @@ public class HudiSplit
     }
 
     @JsonProperty
-    public String getPath()
+    public String getLocation()
     {
-        return path;
+        return location;
     }
 
     @JsonProperty
@@ -145,10 +148,20 @@ public class HudiSplit
     }
 
     @Override
+    public long getRetainedSizeInBytes()
+    {
+        return INSTANCE_SIZE
+                + estimatedSizeOf(location)
+                + splitWeight.getRetainedSizeInBytes()
+                + predicate.getRetainedSizeInBytes(HiveColumnHandle::getRetainedSizeInBytes)
+                + estimatedSizeOf(partitionKeys, HivePartitionKey::getEstimatedSizeInBytes);
+    }
+
+    @Override
     public String toString()
     {
         return toStringHelper(this)
-                .addValue(path)
+                .addValue(location)
                 .addValue(start)
                 .addValue(length)
                 .addValue(fileSize)

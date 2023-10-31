@@ -17,6 +17,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.decoder.dummy.DummyRowDecoder;
 import io.trino.spi.connector.ColumnHandle;
@@ -36,9 +37,7 @@ import io.trino.spi.predicate.Ranges;
 import io.trino.spi.predicate.SortedRangeSet;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
-
-import javax.annotation.Nullable;
-import javax.inject.Inject;
+import jakarta.annotation.Nullable;
 
 import java.util.HashMap;
 import java.util.LinkedHashSet;

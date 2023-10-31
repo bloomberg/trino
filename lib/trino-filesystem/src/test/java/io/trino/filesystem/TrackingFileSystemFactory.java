@@ -17,25 +17,26 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.spi.security.ConnectorIdentity;
 
-import javax.annotation.concurrent.Immutable;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Verify.verify;
 import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.INPUT_FILE_EXISTS;
 import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.INPUT_FILE_GET_LENGTH;
+import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.INPUT_FILE_LAST_MODIFIED;
 import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.INPUT_FILE_NEW_STREAM;
 import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.OUTPUT_FILE_CREATE;
+import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.OUTPUT_FILE_CREATE_EXCLUSIVE;
 import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.OUTPUT_FILE_CREATE_OR_OVERWRITE;
-import static io.trino.filesystem.TrackingFileSystemFactory.OperationType.OUTPUT_FILE_LOCATION;
 import static java.util.Objects.requireNonNull;
 
 public class TrackingFileSystemFactory
@@ -48,8 +49,9 @@ public class TrackingFileSystemFactory
         INPUT_FILE_EXISTS,
         OUTPUT_FILE_CREATE,
         OUTPUT_FILE_CREATE_OR_OVERWRITE,
-        OUTPUT_FILE_LOCATION,
+        OUTPUT_FILE_CREATE_EXCLUSIVE,
         OUTPUT_FILE_TO_INPUT_FILE,
+        INPUT_FILE_LAST_MODIFIED,
     }
 
     private final AtomicInteger fileId = new AtomicInteger();
@@ -72,7 +74,7 @@ public class TrackingFileSystemFactory
         operationCounts.clear();
     }
 
-    private void increment(String path, int fileId, OperationType operationType)
+    private void increment(Location path, int fileId, OperationType operationType)
     {
         OperationContext context = new OperationContext(path, fileId, operationType);
         operationCounts.merge(context, 1, Math::addExact);    // merge is atomic for ConcurrentHashMap
@@ -86,7 +88,7 @@ public class TrackingFileSystemFactory
 
     private interface Tracker
     {
-        void track(String path, int fileId, OperationType operationType);
+        void track(Location path, int fileId, OperationType operationType);
     }
 
     private class TrackingFileSystem
@@ -102,25 +104,27 @@ public class TrackingFileSystemFactory
         }
 
         @Override
-        public TrinoInputFile newInputFile(String location)
+        public TrinoInputFile newInputFile(Location location)
         {
             int nextId = fileId.incrementAndGet();
             return new TrackingInputFile(
                     delegate.newInputFile(location),
+                    OptionalLong.empty(),
                     operation -> tracker.track(location, nextId, operation));
         }
 
         @Override
-        public TrinoInputFile newInputFile(String location, long length)
+        public TrinoInputFile newInputFile(Location location, long length)
         {
             int nextId = fileId.incrementAndGet();
             return new TrackingInputFile(
                     delegate.newInputFile(location, length),
+                    OptionalLong.of(length),
                     operation -> tracker.track(location, nextId, operation));
         }
 
         @Override
-        public TrinoOutputFile newOutputFile(String location)
+        public TrinoOutputFile newOutputFile(Location location)
         {
             int nextId = fileId.incrementAndGet();
             return new TrackingOutputFile(
@@ -129,38 +133,66 @@ public class TrackingFileSystemFactory
         }
 
         @Override
-        public void deleteFile(String location)
+        public void deleteFile(Location location)
                 throws IOException
         {
             delegate.deleteFile(location);
         }
 
         @Override
-        public void deleteFiles(Collection<String> locations)
+        public void deleteFiles(Collection<Location> locations)
                 throws IOException
         {
             delegate.deleteFiles(locations);
         }
 
         @Override
-        public void deleteDirectory(String location)
+        public void deleteDirectory(Location location)
                 throws IOException
         {
             delegate.deleteDirectory(location);
         }
 
         @Override
-        public void renameFile(String source, String target)
+        public void renameFile(Location source, Location target)
                 throws IOException
         {
             delegate.renameFile(source, target);
         }
 
         @Override
-        public FileIterator listFiles(String location)
+        public FileIterator listFiles(Location location)
                 throws IOException
         {
             return delegate.listFiles(location);
+        }
+
+        @Override
+        public Optional<Boolean> directoryExists(Location location)
+                throws IOException
+        {
+            return delegate.directoryExists(location);
+        }
+
+        @Override
+        public void createDirectory(Location location)
+                throws IOException
+        {
+            delegate.createDirectory(location);
+        }
+
+        @Override
+        public void renameDirectory(Location source, Location target)
+                throws IOException
+        {
+            delegate.renameDirectory(source, target);
+        }
+
+        @Override
+        public Set<Location> listDirectories(Location location)
+                throws IOException
+        {
+            return delegate.listDirectories(location);
         }
     }
 
@@ -168,11 +200,13 @@ public class TrackingFileSystemFactory
             implements TrinoInputFile
     {
         private final TrinoInputFile delegate;
+        private final OptionalLong length;
         private final Consumer<OperationType> tracker;
 
-        public TrackingInputFile(TrinoInputFile delegate, Consumer<OperationType> tracker)
+        public TrackingInputFile(TrinoInputFile delegate, OptionalLong length, Consumer<OperationType> tracker)
         {
             this.delegate = requireNonNull(delegate, "delegate is null");
+            this.length = requireNonNull(length, "length is null");
             this.tracker = requireNonNull(tracker, "tracker is null");
         }
 
@@ -180,6 +214,13 @@ public class TrackingFileSystemFactory
         public long length()
                 throws IOException
         {
+            if (length.isPresent()) {
+                // Without TrinoInputFile, known length would be returned. This is additional verification
+                long actualLength = delegate.length();
+                verify(length.getAsLong() == actualLength, "Provided length does not match actual: %s != %s", length.getAsLong(), actualLength);
+                // No call tracking -- the filesystem call is for verification only. Normally it wouldn't take place.
+                return length.getAsLong();
+            }
             tracker.accept(INPUT_FILE_GET_LENGTH);
             return delegate.length();
         }
@@ -212,13 +253,20 @@ public class TrackingFileSystemFactory
         public Instant lastModified()
                 throws IOException
         {
+            tracker.accept(INPUT_FILE_LAST_MODIFIED);
             return delegate.lastModified();
         }
 
         @Override
-        public String location()
+        public Location location()
         {
             return delegate.location();
+        }
+
+        @Override
+        public String toString()
+        {
+            return delegate.toString();
         }
     }
 
@@ -251,71 +299,33 @@ public class TrackingFileSystemFactory
         }
 
         @Override
-        public String location()
+        public OutputStream createExclusive(AggregatedMemoryContext memoryContext)
+                throws IOException
         {
-            tracker.accept(OUTPUT_FILE_LOCATION);
+            tracker.accept(OUTPUT_FILE_CREATE_EXCLUSIVE);
+            return delegate.createExclusive(memoryContext);
+        }
+
+        @Override
+        public Location location()
+        {
+            // Not tracked because it's a cheap local operation
             return delegate.location();
-        }
-    }
-
-    @Immutable
-    public static class OperationContext
-    {
-        private final String filePath;
-        private final int fileId;
-        private final OperationType operationType;
-
-        public OperationContext(String filePath, int fileId, OperationType operationType)
-        {
-            this.filePath = requireNonNull(filePath, "filePath is null");
-            this.fileId = fileId;
-            this.operationType = requireNonNull(operationType, "operationType is null");
-        }
-
-        public String getFilePath()
-        {
-            return filePath;
-        }
-
-        public int getFileId()
-        {
-            return fileId;
-        }
-
-        public OperationType getOperationType()
-        {
-            return operationType;
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            OperationContext that = (OperationContext) o;
-            return Objects.equals(filePath, that.filePath)
-                    && fileId == that.fileId
-                    && operationType == that.operationType;
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(filePath, fileId, operationType);
         }
 
         @Override
         public String toString()
         {
-            return toStringHelper(this)
-                    .add("path", filePath)
-                    .add("fileId", fileId)
-                    .add("operation", operationType)
-                    .toString();
+            return delegate.toString();
+        }
+    }
+
+    public record OperationContext(Location location, int fileId, OperationType operationType)
+    {
+        public OperationContext
+        {
+            requireNonNull(location, "location is null");
+            requireNonNull(operationType, "operationType is null");
         }
     }
 }

@@ -16,6 +16,7 @@ package io.trino.plugin.hive.metastore.thrift;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.trino.hive.thrift.metastore.Database;
 import io.trino.hive.thrift.metastore.FieldSchema;
 import io.trino.hive.thrift.metastore.Partition;
@@ -41,12 +42,11 @@ import io.trino.spi.type.Type;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.TableType;
 
-import javax.annotation.concurrent.GuardedBy;
-
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URI;
+import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
@@ -185,7 +185,7 @@ public class InMemoryThriftMetastore
         }
         else {
             File directory = new File(new Path(table.getSd().getLocation()).toUri());
-            checkArgument(directory.exists(), "Table directory does not exist");
+            checkArgument(directory.exists(), "Table directory [%s] does not exist", directory);
             if (tableType == MANAGED_TABLE) {
                 checkArgument(isParentDir(directory, baseDirectory), "Table directory must be inside of the metastore base directory");
             }
@@ -203,7 +203,7 @@ public class InMemoryThriftMetastore
         }
 
         PrincipalPrivilegeSet privileges = table.getPrivileges();
-        if (privileges != null) {
+        if (privileges != null && (!privileges.getUserPrivileges().isEmpty() || !privileges.getGroupPrivileges().isEmpty() || !privileges.getRolePrivileges().isEmpty())) {
             throw new UnsupportedOperationException();
         }
     }
@@ -324,6 +324,18 @@ public class InMemoryThriftMetastore
             }
         }
         return tables.build();
+    }
+
+    @Override
+    public synchronized Optional<List<SchemaTableName>> getAllTables()
+    {
+        return Optional.of(ImmutableList.copyOf(relations.keySet()));
+    }
+
+    @Override
+    public synchronized Optional<List<SchemaTableName>> getAllViews()
+    {
+        return Optional.of(ImmutableList.copyOf(views.keySet()));
     }
 
     @Override
@@ -548,6 +560,36 @@ public class InMemoryThriftMetastore
 
     @Override
     public void revokeTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, HivePrincipal grantor, Set<HivePrivilege> privileges, boolean grantOption)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<io.trino.hive.thrift.metastore.Function> getFunction(String databaseName, String functionName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Collection<String> getFunctions(String databaseName, String functionName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void createFunction(io.trino.hive.thrift.metastore.Function function)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void alterFunction(io.trino.hive.thrift.metastore.Function function)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropFunction(String databaseName, String functionName)
     {
         throw new UnsupportedOperationException();
     }

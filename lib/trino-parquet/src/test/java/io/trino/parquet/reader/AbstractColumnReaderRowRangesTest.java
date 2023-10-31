@@ -19,6 +19,8 @@ import io.trino.parquet.DataPage;
 import io.trino.parquet.DataPageV2;
 import io.trino.parquet.Page;
 import io.trino.parquet.PrimitiveField;
+import io.trino.parquet.reader.decoders.ValueDecoder;
+import io.trino.parquet.reader.decoders.ValueDecoders;
 import io.trino.spi.block.Block;
 import it.unimi.dsi.fastutil.booleans.BooleanArrayList;
 import it.unimi.dsi.fastutil.booleans.BooleanList;
@@ -56,9 +58,11 @@ import java.util.stream.Stream;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.parquet.ParquetTestUtils.toTrinoDictionaryPage;
 import static io.trino.parquet.ParquetTypeUtils.getParquetEncoding;
 import static io.trino.parquet.reader.FilteredRowRanges.RowRange;
-import static io.trino.parquet.reader.TestingColumnReader.toTrinoDictionaryPage;
+import static io.trino.parquet.reader.TestingRowRanges.toRowRange;
+import static io.trino.parquet.reader.TestingRowRanges.toRowRanges;
 import static io.trino.testing.DataProviders.cartesianProduct;
 import static io.trino.testing.DataProviders.concat;
 import static io.trino.testing.DataProviders.toDataProvider;
@@ -66,8 +70,6 @@ import static java.lang.Math.toIntExact;
 import static org.apache.parquet.bytes.BytesUtils.getWidthFromMaxInt;
 import static org.apache.parquet.column.Encoding.RLE_DICTIONARY;
 import static org.apache.parquet.format.CompressionCodec.UNCOMPRESSED;
-import static org.apache.parquet.internal.filter2.columnindex.TestingRowRanges.toRowRange;
-import static org.apache.parquet.internal.filter2.columnindex.TestingRowRanges.toRowRanges;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public abstract class AbstractColumnReaderRowRangesTest
@@ -150,6 +152,12 @@ public abstract class AbstractColumnReaderRowRangesTest
         ColumnReader createColumnReader();
 
         PrimitiveField getField();
+    }
+
+    protected static ValueDecoder.ValueDecodersProvider<int[]> getIntDecodersProvider(PrimitiveField field)
+    {
+        ValueDecoders valueDecoders = new ValueDecoders(field);
+        return valueDecoders::getIntDecoder;
     }
 
     @DataProvider

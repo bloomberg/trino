@@ -22,7 +22,7 @@ import io.trino.testing.AbstractTestAggregations;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.tests.tpch.TpchQueryRunnerBuilder;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.function.Predicate;
 
@@ -93,18 +93,6 @@ public class TestAggregations
         assertQuery(
                 memorySession,
                 "SELECT " +
-                        "sum(CASE WHEN sequence = 0 THEN value END), " +
-                        "min(CASE WHEN sequence = 1 THEN value ELSE null END), " +
-                        "max(CASE WHEN sequence = 0 THEN value END), " +
-                        "sum(CASE WHEN sequence = 1 THEN value * 2 ELSE 0 END) " +
-                        "FROM test_table " +
-                        "WHERE sequence = 42",
-                "VALUES (null, null, null, null)",
-                plan -> assertAggregationNodeCount(plan, 4));
-
-        assertQuery(
-                memorySession,
-                "SELECT " +
                         "key, " +
                         "sum(CASE WHEN sequence = 0 THEN value END), " +
                         "min(CASE WHEN sequence = 1 THEN value ELSE null END), " +
@@ -152,6 +140,22 @@ public class TestAggregations
                         "sum(CASE WHEN sequence = 24 THEN cast(value * 2 as real) END) " +
                         "FROM test_table",
                 "VALUES (0, null, 0, null)",
+                plan -> assertAggregationNodeCount(plan, 4));
+    }
+
+    @Test
+    public void testPreAggregateWithFilter()
+    {
+        assertQuery(
+                memorySession,
+                "SELECT " +
+                        "sum(CASE WHEN sequence = 0 THEN value END), " +
+                        "min(CASE WHEN sequence = 1 THEN value ELSE null END), " +
+                        "max(CASE WHEN sequence = 0 THEN value END), " +
+                        "sum(CASE WHEN sequence = 1 THEN value * 2 ELSE 0 END) " +
+                        "FROM test_table " +
+                        "WHERE sequence = 42",
+                "VALUES (null, null, null, null)",
                 plan -> assertAggregationNodeCount(plan, 4));
     }
 

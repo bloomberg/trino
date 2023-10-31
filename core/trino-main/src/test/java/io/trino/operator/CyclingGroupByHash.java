@@ -13,16 +13,10 @@
  */
 package io.trino.operator;
 
-import com.google.common.collect.ImmutableList;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
-import io.trino.spi.block.BlockBuilder;
-import io.trino.spi.type.Type;
-
-import java.util.List;
 
 import static io.airlift.slice.SizeOf.instanceSize;
-import static io.trino.spi.type.BigintType.BIGINT;
 
 /**
  * GroupByHash that provides a round robin group ID assignment.
@@ -48,12 +42,6 @@ public class CyclingGroupByHash
     }
 
     @Override
-    public List<Type> getTypes()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
     public int getGroupCount()
     {
         return maxGroupId + 1;
@@ -72,25 +60,19 @@ public class CyclingGroupByHash
     }
 
     @Override
-    public Work<GroupByIdBlock> getGroupIds(Page page)
+    public Work<int[]> getGroupIds(Page page)
     {
-        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, page.getChannelCount());
+        int[] groupIds = new int[page.getPositionCount()];
         for (int i = 0; i < page.getPositionCount(); i++) {
-            BIGINT.writeLong(blockBuilder, currentGroupId);
+            groupIds[i] = currentGroupId;
             maxGroupId = Math.max(currentGroupId, maxGroupId);
             currentGroupId = (currentGroupId + 1) % totalGroupCount;
         }
-        return new CompletedWork<>(new GroupByIdBlock(getGroupCount(), blockBuilder.build()));
+        return new CompletedWork<>(groupIds);
     }
 
     @Override
-    public boolean contains(int position, Page page, int[] hashChannels)
-    {
-        throw new UnsupportedOperationException("Not yet supported");
-    }
-
-    @Override
-    public long getRawHash(int groupyId)
+    public long getRawHash(int groupId)
     {
         throw new UnsupportedOperationException("Not yet supported");
     }

@@ -16,6 +16,7 @@ package io.trino.plugin.elasticsearch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.plugin.base.expression.ConnectorExpressions;
 import io.trino.plugin.elasticsearch.client.ElasticsearchClient;
@@ -42,13 +43,11 @@ import io.trino.plugin.elasticsearch.ptf.RawQuery.RawQueryFunctionHandle;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
-import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableProperties;
-import io.trino.spi.connector.ConnectorTableSchema;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.LimitApplicationResult;
@@ -60,17 +59,15 @@ import io.trino.spi.expression.Call;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.Constant;
 import io.trino.spi.expression.Variable;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -89,6 +86,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterators.singletonIterator;
 import static io.airlift.slice.SliceUtf8.getCodePointAt;
+import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
 import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.QUERY;
 import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.SCAN;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
@@ -460,7 +458,6 @@ public class ElasticsearchMetadata
                 handle.getConstraint(),
                 Optional.empty(),
                 Optional.empty(),
-                Optional.empty(),
                 ImmutableList.of());
     }
 
@@ -596,7 +593,7 @@ public class ElasticsearchMetadata
         int position = 0;
         while (position < pattern.length()) {
             int currentChar = getCodePointAt(pattern, position);
-            position += 1;
+            position += lengthOfCodePoint(currentChar);
             checkEscape(!escaped || currentChar == '%' || currentChar == '_' || currentChar == escapeChar.get());
             if (!escaped && escapeChar.isPresent() && currentChar == escapeChar.get()) {
                 escaped = true;
@@ -659,13 +656,7 @@ public class ElasticsearchMetadata
         }
 
         ConnectorTableHandle tableHandle = ((RawQueryFunctionHandle) handle).getTableHandle();
-        ConnectorTableSchema tableSchema = getTableSchema(session, tableHandle);
-        Map<String, ColumnHandle> columnHandlesByName = getColumnHandles(session, tableHandle);
-        List<ColumnHandle> columnHandles = tableSchema.getColumns().stream()
-                .map(ColumnSchema::getName)
-                .map(columnHandlesByName::get)
-                .collect(toImmutableList());
-
+        List<ColumnHandle> columnHandles = ImmutableList.copyOf(getColumnHandles(session, tableHandle).values());
         return Optional.of(new TableFunctionApplicationResult<>(tableHandle, columnHandles));
     }
 

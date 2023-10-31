@@ -44,8 +44,8 @@ public class TestSnowflakeConfig
                 .put("snowflake.database", "MYDATABASE")
                 .put("snowflake.role", "MYROLE")
                 .put("snowflake.warehouse", "MYWAREHOUSE")
-                .put("snowflake.httpProxy", "MYPROXY")
-                .put("snowflake.timestampNoTimezoneAsUtc", "true")
+                .put("snowflake.http-proxy", "MYPROXY")
+                .put("snowflake.timestamp-no-timezone-as-utc", "true")
                 .buildOrThrow();
 
         SnowflakeConfig expected = new SnowflakeConfig()

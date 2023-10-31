@@ -33,53 +33,35 @@ import static io.trino.plugin.oracle.TestingOracleServer.TEST_USER;
 import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 
 public abstract class BaseOracleConnectorTest
         extends BaseJdbcConnectorTest
 {
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_TOPN_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT:
-                return true;
-
-            case SUPPORTS_JOIN_PUSHDOWN:
-                return true;
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM:
-                return false;
-
-            case SUPPORTS_CREATE_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_JOIN_PUSHDOWN -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                    SUPPORTS_ARRAY,
+                    SUPPORTS_CREATE_SCHEMA,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TOPN_PUSHDOWN -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -93,17 +75,13 @@ public abstract class BaseOracleConnectorTest
     {
         String typeName = dataMappingTestSetup.getTrinoTypeName();
         if (typeName.equals("date")) {
-            // TODO (https://github.com/trinodb/trino/issues) Oracle connector stores wrong result when the date value <= 1582-10-14
-            if (dataMappingTestSetup.getSampleValueLiteral().equals("DATE '0001-01-01'")
-                    || dataMappingTestSetup.getSampleValueLiteral().equals("DATE '1582-10-04'")
-                    || dataMappingTestSetup.getSampleValueLiteral().equals("DATE '1582-10-05'")
-                    || dataMappingTestSetup.getSampleValueLiteral().equals("DATE '1582-10-14'")) {
+            // Oracle TO_DATE function returns +10 days during julian and gregorian calendar switch
+            if (dataMappingTestSetup.getSampleValueLiteral().equals("DATE '1582-10-05'")) {
                 return Optional.empty();
             }
         }
         if (typeName.equals("time") ||
                 typeName.equals("time(6)") ||
-                typeName.equals("timestamp(6)") ||
                 typeName.equals("timestamp(6) with time zone")) {
             return Optional.of(dataMappingTestSetup.asUnsupported());
         }
@@ -137,13 +115,14 @@ public abstract class BaseOracleConnectorTest
                 "(one NUMBER(19), two NUMBER, three VARCHAR2(10 CHAR))");
     }
 
-    @Test
+    @org.junit.jupiter.api.Test
     @Override
     public void testShowColumns()
     {
         assertThat(query("SHOW COLUMNS FROM orders")).matches(getDescribeOrdersResult());
     }
 
+    @org.junit.jupiter.api.Test
     @Override
     public void testInformationSchemaFiltering()
     {
@@ -198,6 +177,18 @@ public abstract class BaseOracleConnectorTest
                         "   shippriority decimal(10, 0),\n" +
                         "   comment varchar(79)\n" +
                         ")");
+    }
+
+    @Test
+    public void testTimestampOutOfPrecisionRounded()
+    {
+        String tableName = "test_timestamp_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + " (t timestamp(12))");
+
+        assertEquals(getColumnType(tableName, "t"), "timestamp(9)");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Override
@@ -386,13 +377,6 @@ public abstract class BaseOracleConnectorTest
     {
         // override because Oracle requires the FROM clause, and it needs explicit type
         assertQuery("SELECT * FROM TABLE(system.query(query => 'SELECT CAST(1 AS number(2, 1)) FROM DUAL'))", ("VALUES 1"));
-    }
-
-    @Override
-    public void testNativeQueryColumnAlias()
-    {
-        assertThat(query(format("SELECT region_name FROM TABLE(system.query(query => 'SELECT name AS region_name FROM %s.region WHERE regionkey = 0'))", getSession().getSchema().orElseThrow())))
-                .matches("VALUES CAST('AFRICA' AS VARCHAR(25))");
     }
 
     @Override

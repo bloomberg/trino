@@ -13,20 +13,22 @@
  */
 package io.trino.execution.querystats;
 
+import com.google.errorprone.annotations.ThreadSafe;
 import io.trino.spi.eventlistener.QueryPlanOptimizerStatistics;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
 
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
+@ThreadSafe
 public class PlanOptimizersStatsCollector
 {
-    private final Map<Class<?>, QueryPlanOptimizerStats> stats = new HashMap<>();
+    private final Map<Class<?>, QueryPlanOptimizerStats> stats = new ConcurrentHashMap<>();
     private final int queryReportedRuleStatsLimit;
 
     public PlanOptimizersStatsCollector(int queryReportedRuleStatsLimit)
@@ -37,26 +39,26 @@ public class PlanOptimizersStatsCollector
     public void recordRule(Rule<?> rule, boolean invoked, boolean applied, long elapsedNanos)
     {
         if (invoked) {
-            stats.computeIfAbsent(rule.getClass(), (key) -> new QueryPlanOptimizerStats(key.getCanonicalName()))
+            statsForClass(rule.getClass())
                     .record(elapsedNanos, applied);
         }
     }
 
     public void recordOptimizer(PlanOptimizer planOptimizer, long duration)
     {
-        stats.computeIfAbsent(planOptimizer.getClass(), (key) -> new QueryPlanOptimizerStats(key.getCanonicalName()))
+        statsForClass(planOptimizer.getClass())
                 .record(duration, true);
     }
 
     public void recordFailure(Rule<?> rule)
     {
-        stats.computeIfAbsent(rule.getClass(), (key) -> new QueryPlanOptimizerStats(key.getCanonicalName()))
+        statsForClass(rule.getClass())
                 .recordFailure();
     }
 
     public void recordFailure(PlanOptimizer rule)
     {
-        stats.computeIfAbsent(rule.getClass(), (key) -> new QueryPlanOptimizerStats(key.getCanonicalName()))
+        statsForClass(rule.getClass())
                 .recordFailure();
     }
 
@@ -67,17 +69,21 @@ public class PlanOptimizersStatsCollector
 
     public List<QueryPlanOptimizerStatistics> getTopRuleStats(int limit)
     {
-        return stats.entrySet().stream()
-                .sorted(Comparator.<Map.Entry<Class<?>, QueryPlanOptimizerStats>, Long>comparing(entry -> entry.getValue().getTotalTime()).reversed())
+        return stats.values().stream()
+                .map(QueryPlanOptimizerStats::snapshot)
+                .sorted(Comparator.comparing(QueryPlanOptimizerStatistics::totalTime).reversed())
                 .limit(limit)
-                .map((Map.Entry<Class<?>, QueryPlanOptimizerStats> entry) -> entry.getValue().snapshot(entry.getKey().getCanonicalName()))
                 .collect(toImmutableList());
     }
 
-    public void add(PlanOptimizersStatsCollector collector)
+    public void add(PlanOptimizersStatsCollector other)
     {
-        collector.stats.entrySet().stream()
-                .forEach(entry -> this.stats.computeIfAbsent(entry.getKey(), key -> new QueryPlanOptimizerStats(key.getCanonicalName())).merge(entry.getValue()));
+        other.stats.forEach((key, value) -> statsForClass(key).merge(value));
+    }
+
+    private QueryPlanOptimizerStats statsForClass(Class<?> clazz)
+    {
+        return stats.computeIfAbsent(clazz, key -> new QueryPlanOptimizerStats(key.getCanonicalName()));
     }
 
     public static PlanOptimizersStatsCollector createPlanOptimizersStatsCollector()

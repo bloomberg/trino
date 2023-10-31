@@ -22,11 +22,12 @@ import io.trino.spi.type.Decimals;
 import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.RealType;
+import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 
-import java.util.function.Function;
-
 import static io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DecimalConversions.doubleToLongDecimal;
 import static io.trino.spi.type.DecimalConversions.doubleToShortDecimal;
 import static io.trino.spi.type.DecimalConversions.longDecimalToDouble;
@@ -41,7 +42,10 @@ import static io.trino.spi.type.DecimalConversions.shortToLongCast;
 import static io.trino.spi.type.DecimalConversions.shortToShortCast;
 import static io.trino.spi.type.Decimals.longTenToNth;
 import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
+import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.TinyintType.TINYINT;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 
@@ -49,7 +53,7 @@ public final class DecimalCoercers
 {
     private DecimalCoercers() {}
 
-    public static Function<Block, Block> createDecimalToDecimalCoercer(DecimalType fromType, DecimalType toType)
+    public static TypeCoercer<DecimalType, DecimalType> createDecimalToDecimalCoercer(DecimalType fromType, DecimalType toType)
     {
         if (fromType.isShort()) {
             if (toType.isShort()) {
@@ -148,7 +152,7 @@ public final class DecimalCoercers
         }
     }
 
-    public static Function<Block, Block> createDecimalToDoubleCoercer(DecimalType fromType)
+    public static TypeCoercer<DecimalType, DoubleType> createDecimalToDoubleCoercer(DecimalType fromType)
     {
         if (fromType.isShort()) {
             return new ShortDecimalToDoubleCoercer(fromType);
@@ -191,7 +195,7 @@ public final class DecimalCoercers
         }
     }
 
-    public static Function<Block, Block> createDecimalToRealCoercer(DecimalType fromType)
+    public static TypeCoercer<DecimalType, RealType> createDecimalToRealCoercer(DecimalType fromType)
     {
         if (fromType.isShort()) {
             return new ShortDecimalToRealCoercer(fromType);
@@ -234,7 +238,7 @@ public final class DecimalCoercers
         }
     }
 
-    public static Function<Block, Block> createDecimalToVarcharCoercer(DecimalType fromType, VarcharType toType)
+    public static TypeCoercer<DecimalType, VarcharType> createDecimalToVarcharCoercer(DecimalType fromType, VarcharType toType)
     {
         if (fromType.isShort()) {
             return new ShortDecimalToVarcharCoercer(fromType, toType);
@@ -288,7 +292,101 @@ public final class DecimalCoercers
         }
     }
 
-    public static Function<Block, Block> createDoubleToDecimalCoercer(DecimalType toType)
+    public static <T extends Type> TypeCoercer<DecimalType, T> createDecimalToInteger(DecimalType fromType, T toType)
+    {
+        if (fromType.isShort()) {
+            return new ShortDecimalToIntegerCoercer<>(fromType, toType);
+        }
+        return new LongDecimalToIntegerCoercer<T>(fromType, toType);
+    }
+
+    private abstract static class AbstractDecimalToIntegerNumberCoercer<T extends Type>
+            extends TypeCoercer<DecimalType, T>
+    {
+        protected final long minValue;
+        protected final long maxValue;
+
+        public AbstractDecimalToIntegerNumberCoercer(DecimalType fromType, T toType)
+        {
+            super(fromType, toType);
+
+            if (toType.equals(TINYINT)) {
+                minValue = Byte.MIN_VALUE;
+                maxValue = Byte.MAX_VALUE;
+            }
+            else if (toType.equals(SMALLINT)) {
+                minValue = Short.MIN_VALUE;
+                maxValue = Short.MAX_VALUE;
+            }
+            else if (toType.equals(INTEGER)) {
+                minValue = Integer.MIN_VALUE;
+                maxValue = Integer.MAX_VALUE;
+            }
+            else if (toType.equals(BIGINT)) {
+                minValue = Long.MIN_VALUE;
+                maxValue = Long.MAX_VALUE;
+            }
+            else {
+                throw new TrinoException(NOT_SUPPORTED, format("Could not create Coercer from Decimal to %s", toType));
+            }
+        }
+
+        @Override
+        protected void applyCoercedValue(BlockBuilder blockBuilder, Block block, int position)
+        {
+            String stringValue = getStringValue(block, position);
+            int dotPosition = stringValue.indexOf(".");
+            long longValue;
+            try {
+                longValue = Long.parseLong(stringValue.substring(0, dotPosition > 0 ? dotPosition : stringValue.length()));
+            }
+            catch (NumberFormatException e) {
+                blockBuilder.appendNull();
+                return;
+            }
+            // Hive truncates digits (also before the decimal point), which can be perceived as a bug
+            if (longValue < minValue || longValue > maxValue) {
+                blockBuilder.appendNull();
+            }
+            else {
+                toType.writeLong(blockBuilder, longValue);
+            }
+        }
+
+        protected abstract String getStringValue(Block block, int position);
+    }
+
+    private static class LongDecimalToIntegerCoercer<T extends Type>
+            extends AbstractDecimalToIntegerNumberCoercer<T>
+    {
+        public LongDecimalToIntegerCoercer(DecimalType fromType, T toType)
+        {
+            super(fromType, toType);
+        }
+
+        @Override
+        protected String getStringValue(Block block, int position)
+        {
+            return Decimals.toString((Int128) fromType.getObject(block, position), fromType.getScale());
+        }
+    }
+
+    private static class ShortDecimalToIntegerCoercer<T extends Type>
+            extends AbstractDecimalToIntegerNumberCoercer<T>
+    {
+        public ShortDecimalToIntegerCoercer(DecimalType fromType, T toType)
+        {
+            super(fromType, toType);
+        }
+
+        @Override
+        protected String getStringValue(Block block, int position)
+        {
+            return Decimals.toString(fromType.getLong(block, position), fromType.getScale());
+        }
+    }
+
+    public static TypeCoercer<DoubleType, DecimalType> createDoubleToDecimalCoercer(DecimalType toType)
     {
         if (toType.isShort()) {
             return new DoubleToShortDecimalCoercer(toType);
@@ -328,7 +426,7 @@ public final class DecimalCoercers
         }
     }
 
-    public static Function<Block, Block> createRealToDecimalCoercer(DecimalType toType)
+    public static TypeCoercer<RealType, DecimalType> createRealToDecimalCoercer(DecimalType toType)
     {
         if (toType.isShort()) {
             return new RealToShortDecimalCoercer(toType);
@@ -348,7 +446,7 @@ public final class DecimalCoercers
         protected void applyCoercedValue(BlockBuilder blockBuilder, Block block, int position)
         {
             toType.writeLong(blockBuilder,
-                    realToShortDecimal(fromType.getLong(block, position), toType.getPrecision(), toType.getScale()));
+                    realToShortDecimal(fromType.getFloat(block, position), toType.getPrecision(), toType.getScale()));
         }
     }
 
@@ -364,7 +462,7 @@ public final class DecimalCoercers
         protected void applyCoercedValue(BlockBuilder blockBuilder, Block block, int position)
         {
             toType.writeObject(blockBuilder,
-                    realToLongDecimal(fromType.getLong(block, position), toType.getPrecision(), toType.getScale()));
+                    realToLongDecimal(fromType.getFloat(block, position), toType.getPrecision(), toType.getScale()));
         }
     }
 }

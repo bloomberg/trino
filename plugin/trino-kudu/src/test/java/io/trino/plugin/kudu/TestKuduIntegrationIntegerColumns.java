@@ -16,8 +16,7 @@ package io.trino.plugin.kudu;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunner;
 import static org.testng.Assert.assertEquals;
@@ -34,23 +33,11 @@ public class TestKuduIntegrationIntegerColumns
             new TestInt("BIGINT", 64),
     };
 
-    private TestingKuduServer kuduServer;
-
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        kuduServer = new TestingKuduServer();
-        return createKuduQueryRunner(kuduServer, "test_integer");
-    }
-
-    @AfterClass(alwaysRun = true)
-    public final void destroy()
-    {
-        if (kuduServer != null) {
-            kuduServer.close();
-            kuduServer = null;
-        }
+        return createKuduQueryRunner(closeAfterClass(new TestingKuduServer()), "test_integer");
     }
 
     @Test

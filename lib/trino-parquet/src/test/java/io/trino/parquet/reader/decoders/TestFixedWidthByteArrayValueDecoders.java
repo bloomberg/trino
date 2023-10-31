@@ -14,7 +14,6 @@
 package io.trino.parquet.reader.decoders;
 
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.Slices;
 import io.trino.parquet.ParquetEncoding;
 import io.trino.parquet.PrimitiveField;
 import io.trino.parquet.reader.SimpleSliceInputStream;
@@ -36,7 +35,7 @@ import java.nio.ByteOrder;
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.Random;
-import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.BiConsumer;
 import java.util.stream.IntStream;
 
@@ -148,9 +147,10 @@ public final class TestFixedWidthByteArrayValueDecoders
     {
         DecimalType decimalType = DecimalType.createDecimalType(precision, 2);
         PrimitiveField primitiveField = createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), decimalType);
+        ValueDecoders valueDecoders = new ValueDecoders(primitiveField);
         return new TestType<>(
                 primitiveField,
-                ValueDecoders::getFixedWidthShortDecimalDecoder,
+                valueDecoders::getFixedWidthShortDecimalDecoder,
                 valuesReader -> new ShortDecimalApacheParquetValueDecoder(valuesReader, primitiveField.getDescriptor()),
                 LONG_ADAPTER,
                 (actual, expected) -> assertThat(actual).isEqualTo(expected));
@@ -160,9 +160,11 @@ public final class TestFixedWidthByteArrayValueDecoders
     {
         int precision = maxPrecision(typeLength);
         DecimalType decimalType = DecimalType.createDecimalType(precision, 2);
+        PrimitiveField field = createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), decimalType);
+        ValueDecoders valueDecoders = new ValueDecoders(field);
         return new TestType<>(
-                createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), decimalType),
-                ValueDecoders::getFixedWidthLongDecimalDecoder,
+                field,
+                valueDecoders::getFixedWidthLongDecimalDecoder,
                 LongDecimalApacheParquetValueDecoder::new,
                 INT128_ADAPTER,
                 (actual, expected) -> assertThat(actual).isEqualTo(expected));
@@ -170,9 +172,11 @@ public final class TestFixedWidthByteArrayValueDecoders
 
     private static TestType<long[]> createUuidTestType()
     {
+        PrimitiveField field = createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(16), UuidType.UUID);
+        ValueDecoders valueDecoders = new ValueDecoders(field);
         return new TestType<>(
-                createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(16), UuidType.UUID),
-                ValueDecoders::getUuidDecoder,
+                field,
+                valueDecoders::getUuidDecoder,
                 UuidApacheParquetValueDecoder::new,
                 INT128_ADAPTER,
                 (actual, expected) -> assertThat(actual).isEqualTo(expected));
@@ -180,9 +184,11 @@ public final class TestFixedWidthByteArrayValueDecoders
 
     private static TestType<BinaryBuffer> createVarbinaryTestType(int typeLength)
     {
+        PrimitiveField field = createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), VARBINARY);
+        ValueDecoders valueDecoders = new ValueDecoders(field);
         return new TestType<>(
-                createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), VARBINARY),
-                ValueDecoders::getFixedWidthBinaryDecoder,
+                field,
+                valueDecoders::getFixedWidthBinaryDecoder,
                 BinaryApacheParquetValueDecoder::new,
                 BINARY_ADAPTER,
                 BINARY_ASSERT);
@@ -190,9 +196,11 @@ public final class TestFixedWidthByteArrayValueDecoders
 
     private static TestType<BinaryBuffer> createVarcharTestType(int typeLength)
     {
+        PrimitiveField field = createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), VARCHAR);
+        ValueDecoders valueDecoders = new ValueDecoders(field);
         return new TestType<>(
-                createField(FIXED_LEN_BYTE_ARRAY, OptionalInt.of(typeLength), VARCHAR),
-                ValueDecoders::getFixedWidthBinaryDecoder,
+                field,
+                valueDecoders::getFixedWidthBinaryDecoder,
                 BinaryApacheParquetValueDecoder::new,
                 BINARY_ADAPTER,
                 BINARY_ASSERT);
@@ -250,13 +258,9 @@ public final class TestFixedWidthByteArrayValueDecoders
         @Override
         public DataBuffer write(ValuesWriter valuesWriter, int dataSize)
         {
-            byte[][] bytes = new byte[dataSize][];
+            byte[][] bytes = new byte[dataSize][16];
             for (int i = 0; i < dataSize; i++) {
-                UUID uuid = UUID.randomUUID();
-                bytes[i] = Slices.wrappedLongArray(
-                                uuid.getMostSignificantBits(),
-                                uuid.getLeastSignificantBits())
-                        .getBytes();
+                ThreadLocalRandom.current().nextBytes(bytes[i]);
             }
             return writeBytes(valuesWriter, bytes);
         }

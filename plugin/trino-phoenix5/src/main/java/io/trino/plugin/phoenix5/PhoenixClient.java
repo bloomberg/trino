@@ -16,7 +16,10 @@ package io.trino.plugin.phoenix5;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
+import io.trino.plugin.base.mapping.RemoteIdentifiers;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.ColumnMapping;
 import io.trino.plugin.jdbc.ConnectionFactory;
@@ -40,7 +43,6 @@ import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.connector.ColumnHandle;
@@ -98,8 +100,6 @@ import org.apache.phoenix.schema.types.PDataType;
 import org.apache.phoenix.schema.types.PhoenixArray;
 import org.apache.phoenix.util.SchemaUtil;
 
-import javax.inject.Inject;
-
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -117,6 +117,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.function.BiFunction;
@@ -174,6 +175,7 @@ import static io.trino.plugin.phoenix5.TypeUtils.jdbcObjectArrayToBlock;
 import static io.trino.plugin.phoenix5.TypeUtils.toBoxedArray;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -309,7 +311,7 @@ public class PhoenixClient
                 table,
                 columnHandles,
                 Optional.of(split));
-        QueryPlan queryPlan = getQueryPlan((PhoenixPreparedStatement) query);
+        QueryPlan queryPlan = getQueryPlan(query.unwrap(PhoenixPreparedStatement.class));
         ResultSet resultSet = getResultSet(((PhoenixSplit) split).getPhoenixInputSplit(), queryPlan);
         return new DelegatePreparedStatement(query)
         {
@@ -357,6 +359,12 @@ public class PhoenixClient
     {
         // There are multiple splits and TopN is not guaranteed across them.
         return false;
+    }
+
+    @Override
+    public OptionalLong update(ConnectorSession session, JdbcTableHandle handle)
+    {
+        throw new TrinoException(NOT_SUPPORTED, MODIFYING_ROWS_MESSAGE);
     }
 
     @Override
@@ -613,8 +621,9 @@ public class PhoenixClient
 
         try (Connection connection = connectionFactory.openConnection(session)) {
             ConnectorIdentity identity = session.getIdentity();
-            schema = getIdentifierMapping().toRemoteSchemaName(identity, connection, schema);
-            table = getIdentifierMapping().toRemoteTableName(identity, connection, schema, table);
+            RemoteIdentifiers remoteIdentifiers = getRemoteIdentifiers(connection);
+            schema = getIdentifierMapping().toRemoteSchemaName(remoteIdentifiers, identity, schema);
+            table = getIdentifierMapping().toRemoteTableName(remoteIdentifiers, identity, schema, table);
             schema = toPhoenixSchemaName(schema);
             LinkedList<ColumnMetadata> tableColumns = new LinkedList<>(tableMetadata.getColumns());
             Map<String, Object> tableProperties = tableMetadata.getProperties();
@@ -638,7 +647,7 @@ public class PhoenixClient
                 if (column.getComment() != null) {
                     throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with column comment");
                 }
-                String columnName = getIdentifierMapping().toRemoteColumnName(connection, column.getName());
+                String columnName = getIdentifierMapping().toRemoteColumnName(remoteIdentifiers, column.getName());
                 columnNames.add(columnName);
                 columnTypes.add(column.getType());
                 String typeStatement = toWriteMapping(session, column.getType()).getDataType();
@@ -943,7 +952,8 @@ public class PhoenixClient
                 Optional.of(getUpdatedScanColumnHandles(session, tableHandle, scanColumnHandles, mergeRowIdColumnHandle)),
                 tableHandle.getOtherReferencedTables(),
                 tableHandle.getNextSyntheticColumnId(),
-                tableHandle.getAuthorization());
+                tableHandle.getAuthorization(),
+                tableHandle.getUpdateAssignments());
     }
 
     private List<JdbcColumnHandle> getUpdatedScanColumnHandles(ConnectorSession session, JdbcTableHandle tableHandle, List<JdbcColumnHandle> scanColumnHandles, JdbcColumnHandle mergeRowIdColumnHandle)

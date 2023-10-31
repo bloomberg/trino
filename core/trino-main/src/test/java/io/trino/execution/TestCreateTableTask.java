@@ -33,8 +33,11 @@ import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.SaveMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.AccessDeniedException;
+import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.planner.TestingConnectorTransactionHandle;
 import io.trino.sql.tree.ColumnDefinition;
@@ -49,9 +52,10 @@ import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.TestingAccessControlManager;
 import io.trino.testing.TestingMetadata.TestingTableHandle;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 import java.util.Map;
@@ -69,12 +73,16 @@ import static io.trino.spi.session.PropertyMetadata.stringProperty;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_NANOS;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.QueryUtil.identifier;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
 import static io.trino.sql.tree.LikeClause.PropertiesOption.INCLUDING;
+import static io.trino.sql.tree.SaveMode.FAIL;
+import static io.trino.sql.tree.SaveMode.IGNORE;
+import static io.trino.sql.tree.SaveMode.REPLACE;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.SELECT_COLUMN;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.SHOW_CREATE_TABLE;
 import static io.trino.testing.TestingAccessControlManager.privilege;
@@ -86,11 +94,12 @@ import static java.util.Collections.emptyList;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_METHOD)
 public class TestCreateTableTask
 {
     private static final String OTHER_CATALOG_NAME = "other_catalog";
@@ -98,6 +107,10 @@ public class TestCreateTableTask
             new SchemaTableName("schema", "parent_table"),
             List.of(new ColumnMetadata("a", SMALLINT), new ColumnMetadata("b", BIGINT)),
             Map.of("baz", "property_value"));
+
+    private static final ConnectorTableMetadata PARENT_TABLE_WITH_COERCED_TYPE = new ConnectorTableMetadata(
+            new SchemaTableName("schema", "parent_table_with_coerced_type"),
+            List.of(new ColumnMetadata("a", TIMESTAMP_NANOS)));
 
     private LocalQueryRunner queryRunner;
     private Session testSession;
@@ -109,7 +122,7 @@ public class TestCreateTableTask
     private CatalogHandle testCatalogHandle;
     private CatalogHandle otherCatalogHandle;
 
-    @BeforeMethod
+    @BeforeEach
     public void setUp()
     {
         queryRunner = LocalQueryRunner.create(testSessionBuilder()
@@ -138,7 +151,7 @@ public class TestCreateTableTask
         plannerContext = plannerContextBuilder().withMetadata(metadata).build();
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void tearDown()
     {
         if (queryRunner != null) {
@@ -156,8 +169,8 @@ public class TestCreateTableTask
     public void testCreateTableNotExistsTrue()
     {
         CreateTable statement = new CreateTable(QualifiedName.of("test_table"),
-                ImmutableList.of(new ColumnDefinition(identifier("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
-                true,
+                ImmutableList.of(new ColumnDefinition(QualifiedName.of("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
+                IGNORE,
                 ImmutableList.of(),
                 Optional.empty());
 
@@ -170,8 +183,8 @@ public class TestCreateTableTask
     public void testCreateTableNotExistsFalse()
     {
         CreateTable statement = new CreateTable(QualifiedName.of("test_table"),
-                ImmutableList.of(new ColumnDefinition(identifier("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
-                false,
+                ImmutableList.of(new ColumnDefinition(QualifiedName.of("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
+                FAIL,
                 ImmutableList.of(),
                 Optional.empty());
 
@@ -184,11 +197,27 @@ public class TestCreateTableTask
     }
 
     @Test
+    public void testReplaceTable()
+    {
+        CreateTable statement = new CreateTable(QualifiedName.of("test_table"),
+                ImmutableList.of(new ColumnDefinition(QualifiedName.of("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
+                REPLACE,
+                ImmutableList.of(),
+                Optional.empty());
+
+        CreateTableTask createTableTask = new CreateTableTask(plannerContext, new AllowAllAccessControl(), columnPropertyManager, tablePropertyManager);
+        getFutureValue(createTableTask.internalExecute(statement, testSession, emptyList(), output -> {}));
+        assertEquals(metadata.getCreateTableCallCount(), 1);
+        assertThat(metadata.getReceivedTableMetadata().get(0).getColumns())
+                .isEqualTo(ImmutableList.of(new ColumnMetadata("a", BIGINT)));
+    }
+
+    @Test
     public void testCreateTableWithMaterializedViewPropertyFails()
     {
         CreateTable statement = new CreateTable(QualifiedName.of("test_table"),
-                ImmutableList.of(new ColumnDefinition(identifier("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
-                false,
+                ImmutableList.of(new ColumnDefinition(QualifiedName.of("a"), toSqlType(BIGINT), true, emptyList(), Optional.empty())),
+                FAIL,
                 ImmutableList.of(new Property(new Identifier("foo"), new StringLiteral("bar"))),
                 Optional.empty());
 
@@ -205,10 +234,10 @@ public class TestCreateTableTask
     {
         metadata.setConnectorCapabilities(NOT_NULL_COLUMN_CONSTRAINT);
         List<TableElement> inputColumns = ImmutableList.of(
-                new ColumnDefinition(identifier("a"), toSqlType(DATE), true, emptyList(), Optional.empty()),
-                new ColumnDefinition(identifier("b"), toSqlType(VARCHAR), false, emptyList(), Optional.empty()),
-                new ColumnDefinition(identifier("c"), toSqlType(VARBINARY), false, emptyList(), Optional.empty()));
-        CreateTable statement = new CreateTable(QualifiedName.of("test_table"), inputColumns, true, ImmutableList.of(), Optional.empty());
+                new ColumnDefinition(QualifiedName.of("a"), toSqlType(DATE), true, emptyList(), Optional.empty()),
+                new ColumnDefinition(QualifiedName.of("b"), toSqlType(VARCHAR), false, emptyList(), Optional.empty()),
+                new ColumnDefinition(QualifiedName.of("c"), toSqlType(VARBINARY), false, emptyList(), Optional.empty()));
+        CreateTable statement = new CreateTable(QualifiedName.of("test_table"), inputColumns, IGNORE, ImmutableList.of(), Optional.empty());
 
         CreateTableTask createTableTask = new CreateTableTask(plannerContext, new AllowAllAccessControl(), columnPropertyManager, tablePropertyManager);
         getFutureValue(createTableTask.internalExecute(statement, testSession, emptyList(), output -> {}));
@@ -233,13 +262,13 @@ public class TestCreateTableTask
     public void testCreateWithUnsupportedConnectorThrowsWhenNotNull()
     {
         List<TableElement> inputColumns = ImmutableList.of(
-                new ColumnDefinition(identifier("a"), toSqlType(DATE), true, emptyList(), Optional.empty()),
-                new ColumnDefinition(identifier("b"), toSqlType(VARCHAR), false, emptyList(), Optional.empty()),
-                new ColumnDefinition(identifier("c"), toSqlType(VARBINARY), false, emptyList(), Optional.empty()));
+                new ColumnDefinition(QualifiedName.of("a"), toSqlType(DATE), true, emptyList(), Optional.empty()),
+                new ColumnDefinition(QualifiedName.of("b"), toSqlType(VARCHAR), false, emptyList(), Optional.empty()),
+                new ColumnDefinition(QualifiedName.of("c"), toSqlType(VARBINARY), false, emptyList(), Optional.empty()));
         CreateTable statement = new CreateTable(
                 QualifiedName.of("test_table"),
                 inputColumns,
-                true,
+                IGNORE,
                 ImmutableList.of(),
                 Optional.empty());
 
@@ -331,6 +360,64 @@ public class TestCreateTableTask
                 .hasMessageContaining("Cannot reference properties of table");
     }
 
+    @Test
+    public void testUnsupportedCreateTableWithField()
+    {
+        CreateTable statement = new CreateTable(
+                QualifiedName.of("test_table"),
+                ImmutableList.of(new ColumnDefinition(QualifiedName.of("a", "b"), toSqlType(DATE), true, emptyList(), Optional.empty())),
+                FAIL,
+                ImmutableList.of(),
+                Optional.empty());
+
+        CreateTableTask createTableTask = new CreateTableTask(plannerContext, new AllowAllAccessControl(), columnPropertyManager, tablePropertyManager);
+        assertTrinoExceptionThrownBy(() ->
+                getFutureValue(createTableTask.internalExecute(statement, testSession, emptyList(), output -> {})))
+                .hasErrorCode(NOT_SUPPORTED)
+                .hasMessage("Column name 'a.b' must not be qualified");
+    }
+
+    @Test
+    public void testCreateTableWithCoercedType()
+    {
+        CreateTable statement = new CreateTable(QualifiedName.of("test_table"),
+                ImmutableList.of(
+                        new ColumnDefinition(
+                                QualifiedName.of("a"),
+                                toSqlType(TIMESTAMP_NANOS),
+                                true,
+                                emptyList(),
+                                Optional.empty())),
+                IGNORE,
+                ImmutableList.of(),
+                Optional.empty());
+        CreateTableTask createTableTask = new CreateTableTask(plannerContext, new AllowAllAccessControl(), columnPropertyManager, tablePropertyManager);
+        getFutureValue(createTableTask.internalExecute(statement, testSession, List.of(), output -> {}));
+        assertThat(metadata.getReceivedTableMetadata().get(0).getColumns().get(0).getType()).isEqualTo(TIMESTAMP_MILLIS);
+    }
+
+    @Test
+    public void testCreateTableLikeWithCoercedType()
+    {
+        CreateTable statement = new CreateTable(
+                QualifiedName.of("test_table"),
+                List.of(
+                        new LikeClause(
+                                QualifiedName.of(PARENT_TABLE_WITH_COERCED_TYPE.getTable().getTableName()),
+                                Optional.of(INCLUDING))),
+                IGNORE,
+                ImmutableList.of(),
+                Optional.empty());
+
+        CreateTableTask createTableTask = new CreateTableTask(plannerContext, new AllowAllAccessControl(), columnPropertyManager, tablePropertyManager);
+        getFutureValue(createTableTask.internalExecute(statement, testSession, List.of(), output -> {}));
+        assertEquals(metadata.getCreateTableCallCount(), 1);
+
+        assertThat(metadata.getReceivedTableMetadata().get(0).getColumns())
+                .isEqualTo(ImmutableList.of(new ColumnMetadata("a", TIMESTAMP_MILLIS)));
+        assertThat(metadata.getReceivedTableMetadata().get(0).getProperties()).isEmpty();
+    }
+
     private static CreateTable getCreateLikeStatement(boolean includingProperties)
     {
         return getCreateLikeStatement(QualifiedName.of("test_table"), includingProperties);
@@ -341,7 +428,7 @@ public class TestCreateTableTask
         return new CreateTable(
                 name,
                 List.of(new LikeClause(QualifiedName.of(PARENT_TABLE.getTable().getTableName()), includingProperties ? Optional.of(INCLUDING) : Optional.empty())),
-                true,
+                IGNORE,
                 ImmutableList.of(),
                 Optional.empty());
     }
@@ -353,10 +440,13 @@ public class TestCreateTableTask
         private Set<ConnectorCapabilities> connectorCapabilities = ImmutableSet.of();
 
         @Override
-        public void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
+        public void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, SaveMode saveMode)
         {
+            if (saveMode == SaveMode.REPLACE) {
+                tables.removeIf(table -> table.getTable().equals(tableMetadata.getTable()));
+            }
             tables.add(tableMetadata);
-            if (!ignoreExisting) {
+            if (saveMode == SaveMode.FAIL) {
                 throw new TrinoException(ALREADY_EXISTS, "Table already exists");
             }
         }
@@ -383,6 +473,22 @@ public class TestCreateTableTask
                                 new TestingTableHandle(tableName.asSchemaTableName()),
                                 TestingConnectorTransactionHandle.INSTANCE));
             }
+            if (tableName.asSchemaTableName().equals(PARENT_TABLE_WITH_COERCED_TYPE.getTable())) {
+                return Optional.of(
+                        new TableHandle(
+                                TEST_CATALOG_HANDLE,
+                                new TestingTableHandle(tableName.asSchemaTableName()),
+                                TestingConnectorTransactionHandle.INSTANCE));
+            }
+            return Optional.empty();
+        }
+
+        @Override
+        public Optional<Type> getSupportedType(Session session, CatalogHandle catalogHandle, Map<String, Object> tableProperties, Type type)
+        {
+            if (type instanceof TimestampType) {
+                return Optional.of(TIMESTAMP_MILLIS);
+            }
             return Optional.empty();
         }
 
@@ -392,6 +498,9 @@ public class TestCreateTableTask
             if ((tableHandle.getConnectorHandle() instanceof TestingTableHandle)) {
                 if (((TestingTableHandle) tableHandle.getConnectorHandle()).getTableName().equals(PARENT_TABLE.getTable())) {
                     return new TableMetadata(TEST_CATALOG_NAME, PARENT_TABLE);
+                }
+                if (((TestingTableHandle) tableHandle.getConnectorHandle()).getTableName().equals(PARENT_TABLE_WITH_COERCED_TYPE.getTable())) {
+                    return new TableMetadata(TEST_CATALOG_NAME, PARENT_TABLE_WITH_COERCED_TYPE);
                 }
             }
 

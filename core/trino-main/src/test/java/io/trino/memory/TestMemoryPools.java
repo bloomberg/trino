@@ -37,8 +37,9 @@ import io.trino.spiller.SpillSpaceTracker;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.PageConsumerOperator.PageConsumerOutputFactory;
-import org.testng.annotations.AfterMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 import java.util.Map;
@@ -57,11 +58,12 @@ import static io.trino.testing.TestingTaskContext.createTaskContext;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_METHOD)
 public class TestMemoryPools
 {
     private static final DataSize TEN_MEGABYTES = DataSize.of(10, MEGABYTE);
@@ -81,12 +83,9 @@ public class TestMemoryPools
         Session session = testSessionBuilder()
                 .setCatalog("tpch")
                 .setSchema("tiny")
-                .setSystemProperty("task_default_concurrency", "1")
                 .build();
 
-        localQueryRunner = LocalQueryRunner.builder(session)
-                .withInitialTransaction()
-                .build();
+        localQueryRunner = LocalQueryRunner.create(session);
 
         // add tpch
         localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(1), ImmutableMap.of());
@@ -137,24 +136,13 @@ public class TestMemoryPools
         return createOperator.get();
     }
 
-    @AfterMethod(alwaysRun = true)
+    @AfterEach
     public void tearDown()
     {
         if (localQueryRunner != null) {
             localQueryRunner.close();
             localQueryRunner = null;
         }
-    }
-
-    @Test
-    public void testBlockingOnUserMemory()
-    {
-        setUpCountStarFromOrdersWithJoin();
-        assertTrue(userPool.tryReserve(fakeTaskId, "test", TEN_MEGABYTES.toBytes()));
-        runDriversUntilBlocked(waitingForUserMemory());
-        assertTrue(userPool.getFreeBytes() <= 0, format("Expected empty pool but got [%d]", userPool.getFreeBytes()));
-        userPool.free(fakeTaskId, "test", TEN_MEGABYTES.toBytes());
-        assertDriversProgress(waitingForUserMemory());
     }
 
     @Test
@@ -339,6 +327,33 @@ public class TestMemoryPools
         assertThat(testPool.getTaskMemoryReservation(q1task1)).isEqualTo(0L);
         assertThat(testPool.getTaskMemoryReservation(q1task2)).isEqualTo(0L);
         assertThat(testPool.getTaskMemoryReservation(q2task1)).isEqualTo(9L);
+    }
+
+    @Test
+    public void testGlobalRevocableAllocations()
+    {
+        MemoryPool testPool = new MemoryPool(DataSize.ofBytes(1000));
+
+        assertThat(testPool.tryReserveRevocable(999)).isTrue();
+        assertThat(testPool.tryReserveRevocable(2)).isFalse();
+        assertThat(testPool.getReservedBytes()).isEqualTo(0);
+        assertThat(testPool.getReservedRevocableBytes()).isEqualTo(999);
+        assertThat(testPool.getTaskMemoryReservations()).isEmpty();
+        assertThat(testPool.getQueryMemoryReservations()).isEmpty();
+        assertThat(testPool.getTaggedMemoryAllocations()).isEmpty();
+
+        // non-revocable allocation should block
+        QueryId query = new QueryId("test_query1");
+        TaskId task = new TaskId(new StageId(query, 0), 0, 0);
+        ListenableFuture<Void> memoryFuture = testPool.reserve(task, "tag", 2);
+        assertThat(memoryFuture).isNotDone();
+
+        // non-revocable allocation should unblock after global revocable is freed
+        testPool.freeRevocable(999);
+        assertThat(memoryFuture).isDone();
+
+        assertThat(testPool.getReservedBytes()).isEqualTo(2L);
+        assertThat(testPool.getReservedRevocableBytes()).isEqualTo(0);
     }
 
     @Test

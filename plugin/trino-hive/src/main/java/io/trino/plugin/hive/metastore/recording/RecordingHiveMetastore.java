@@ -18,6 +18,8 @@ import io.trino.plugin.hive.HiveType;
 import io.trino.plugin.hive.PartitionStatistics;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.plugin.hive.metastore.Database;
+import io.trino.plugin.hive.metastore.DatabaseFunctionKey;
+import io.trino.plugin.hive.metastore.DatabaseFunctionSignatureKey;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HivePrincipal;
 import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
@@ -28,10 +30,13 @@ import io.trino.plugin.hive.metastore.PrincipalPrivileges;
 import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.metastore.TablesWithParameterCacheKey;
 import io.trino.plugin.hive.metastore.UserTableKey;
+import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -141,6 +146,18 @@ public class RecordingHiveMetastore
     public List<String> getAllViews(String databaseName)
     {
         return recording.getAllViews(databaseName, () -> delegate.getAllViews(databaseName));
+    }
+
+    @Override
+    public Optional<List<SchemaTableName>> getAllTables()
+    {
+        return recording.getAllTables(delegate::getAllTables);
+    }
+
+    @Override
+    public Optional<List<SchemaTableName>> getAllViews()
+    {
+        return recording.getAllViews(delegate::getAllViews);
     }
 
     @Override
@@ -294,6 +311,49 @@ public class RecordingHiveMetastore
         return recording.listTablePrivileges(
                 new UserTableKey(principal, databaseName, tableName, tableOwner),
                 () -> delegate.listTablePrivileges(databaseName, tableName, tableOwner, principal));
+    }
+
+    @Override
+    public boolean functionExists(String databaseName, String functionName, String signatureToken)
+    {
+        return recording.functionExists(
+                new DatabaseFunctionSignatureKey(databaseName, functionName, signatureToken),
+                () -> delegate.functionExists(databaseName, functionName, signatureToken));
+    }
+
+    @Override
+    public Collection<LanguageFunction> getFunctions(String databaseName)
+    {
+        return recording.getFunctions(databaseName, () -> delegate.getFunctions(databaseName));
+    }
+
+    @Override
+    public Collection<LanguageFunction> getFunctions(String databaseName, String functionName)
+    {
+        return recording.getFunctions(
+                new DatabaseFunctionKey(databaseName, functionName),
+                () -> delegate.getFunctions(databaseName, functionName));
+    }
+
+    @Override
+    public void createFunction(String databaseName, String functionName, LanguageFunction function)
+    {
+        verifyRecordingMode();
+        delegate.createFunction(databaseName, functionName, function);
+    }
+
+    @Override
+    public void replaceFunction(String databaseName, String functionName, LanguageFunction function)
+    {
+        verifyRecordingMode();
+        delegate.replaceFunction(databaseName, functionName, function);
+    }
+
+    @Override
+    public void dropFunction(String databaseName, String functionName, String signatureToken)
+    {
+        verifyRecordingMode();
+        delegate.dropFunction(databaseName, functionName, signatureToken);
     }
 
     @Override

@@ -21,7 +21,10 @@ import io.trino.hdfs.DynamicHdfsConfiguration;
 import io.trino.hdfs.HdfsConfig;
 import io.trino.hdfs.HdfsConfigurationInitializer;
 import io.trino.hdfs.HdfsEnvironment;
+import io.trino.hdfs.TrinoHdfsFileSystemStats;
 import io.trino.hdfs.authentication.NoHdfsAuthentication;
+import io.trino.hdfs.s3.HiveS3Config;
+import io.trino.hdfs.s3.TrinoS3ConfigurationInitializer;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.hive.TrinoViewHiveMetastore;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
@@ -30,15 +33,14 @@ import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastore;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreConfig;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreFactory;
-import io.trino.plugin.hive.s3.HiveS3Config;
-import io.trino.plugin.hive.s3.TrinoS3ConfigurationInitializer;
 import io.trino.plugin.iceberg.IcebergSchemaProperties;
 import io.trino.plugin.iceberg.catalog.BaseTrinoCatalogTest;
 import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.type.TestingTypeManager;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Map;
 import java.util.Optional;
@@ -52,7 +54,9 @@ import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestTrinoHiveCatalogWithHiveMetastore
         extends BaseTrinoCatalogTest
 {
@@ -61,14 +65,14 @@ public class TestTrinoHiveCatalogWithHiveMetastore
     // Use MinIO for storage, since HDFS is hard to get working in a unit test
     private HiveMinioDataLake dataLake;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         dataLake = new HiveMinioDataLake(bucketName, HIVE3_IMAGE);
         dataLake.start();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
             throws Exception
     {
@@ -93,11 +97,12 @@ public class TestTrinoHiveCatalogWithHiveMetastore
                                         .setS3PathStyleAccess(true)))),
                         ImmutableSet.of()),
                 new HdfsConfig(),
-                new NoHdfsAuthentication()));
+                new NoHdfsAuthentication()),
+                new TrinoHdfsFileSystemStats());
         ThriftMetastore thriftMetastore = testingThriftHiveMetastoreBuilder()
                 .thriftMetastoreConfig(new ThriftMetastoreConfig()
                         // Read timed out sometimes happens with the default timeout
-                        .setMetastoreTimeout(new Duration(1, MINUTES)))
+                        .setReadTimeout(new Duration(1, MINUTES)))
                 .metastoreClient(dataLake.getHiveHadoop().getHiveMetastoreEndpoint())
                 .build();
         CachingHiveMetastore metastore = memoizeMetastore(new BridgingHiveMetastore(thriftMetastore), 1000);

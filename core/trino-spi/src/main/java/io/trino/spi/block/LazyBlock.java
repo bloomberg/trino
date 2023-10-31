@@ -14,9 +14,7 @@
 package io.trino.spi.block;
 
 import io.airlift.slice.Slice;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.NotThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -31,8 +29,8 @@ import static java.lang.String.format;
 import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 
-@NotThreadSafe
-public class LazyBlock
+// This class is not considered thread-safe.
+public final class LazyBlock
         implements Block
 {
     private static final int INSTANCE_SIZE = instanceSize(LazyBlock.class) + instanceSize(LazyData.class);
@@ -95,62 +93,7 @@ public class LazyBlock
     }
 
     @Override
-    public boolean bytesEqual(int position, int offset, Slice otherSlice, int otherOffset, int length)
-    {
-        return getBlock().bytesEqual(position, offset, otherSlice, otherOffset, length);
-    }
-
-    @Override
-    public int bytesCompare(int position, int offset, int length, Slice otherSlice, int otherOffset, int otherLength)
-    {
-        return getBlock().bytesCompare(
-                position,
-                offset,
-                length,
-                otherSlice,
-                otherOffset,
-                otherLength);
-    }
-
-    @Override
-    public void writeBytesTo(int position, int offset, int length, BlockBuilder blockBuilder)
-    {
-        getBlock().writeBytesTo(position, offset, length, blockBuilder);
-    }
-
-    @Override
-    public boolean equals(int position, int offset, Block otherBlock, int otherPosition, int otherOffset, int length)
-    {
-        return getBlock().equals(
-                position,
-                offset,
-                otherBlock,
-                otherPosition,
-                otherOffset,
-                length);
-    }
-
-    @Override
-    public long hash(int position, int offset, int length)
-    {
-        return getBlock().hash(position, offset, length);
-    }
-
-    @Override
-    public int compareTo(int leftPosition, int leftOffset, int leftLength, Block rightBlock, int rightPosition, int rightOffset, int rightLength)
-    {
-        return getBlock().compareTo(
-                leftPosition,
-                leftOffset,
-                leftLength,
-                rightBlock,
-                rightPosition,
-                rightOffset,
-                rightLength);
-    }
-
-    @Override
-    public Block getSingleValueBlock(int position)
+    public ValueBlock getSingleValueBlock(int position)
     {
         return getBlock().getSingleValueBlock(position);
     }
@@ -270,7 +213,7 @@ public class LazyBlock
     }
 
     @Override
-    public final List<Block> getChildren()
+    public List<Block> getChildren()
     {
         return singletonList(getBlock());
     }
@@ -290,6 +233,18 @@ public class LazyBlock
     public Block getLoadedBlock()
     {
         return lazyData.getFullyLoadedBlock();
+    }
+
+    @Override
+    public ValueBlock getUnderlyingValueBlock()
+    {
+        return getBlock().getUnderlyingValueBlock();
+    }
+
+    @Override
+    public int getUnderlyingValuePosition(int position)
+    {
+        return getBlock().getUnderlyingValuePosition(position);
     }
 
     public static void listenForLoads(Block block, Consumer<Block> listener)
@@ -435,7 +390,7 @@ public class LazyBlock
         }
 
         /**
-         * If block is unloaded, add the listeners; otherwise call this method on child blocks
+         * If the block is unloaded, add the listeners; otherwise call this method on child blocks
          */
         @SuppressWarnings("AccessingNonPublicFieldOfAnotherObject")
         private static void addListenersRecursive(Block block, List<Consumer<Block>> listeners)

@@ -20,6 +20,8 @@ import io.trino.hive.formats.line.Column;
 import io.trino.hive.formats.line.LineSerializer;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.Chars;
@@ -57,7 +59,6 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
-import static java.lang.Float.intBitsToFloat;
 import static java.time.temporal.ChronoField.DAY_OF_MONTH;
 import static java.time.temporal.ChronoField.HOUR_OF_DAY;
 import static java.time.temporal.ChronoField.MINUTE_OF_HOUR;
@@ -141,13 +142,13 @@ public class OpenXJsonSerializer
             return BIGINT.getLong(block, position);
         }
         else if (INTEGER.equals(type)) {
-            return INTEGER.getLong(block, position);
+            return INTEGER.getInt(block, position);
         }
         else if (SMALLINT.equals(type)) {
-            return SMALLINT.getLong(block, position);
+            return SMALLINT.getShort(block, position);
         }
         else if (TINYINT.equals(type)) {
-            return TINYINT.getLong(block, position);
+            return TINYINT.getByte(block, position);
         }
         else if (type instanceof DecimalType) {
             // decimal type is read-only in Hive, but we support it
@@ -155,7 +156,7 @@ public class OpenXJsonSerializer
             return value.toBigDecimal().toString();
         }
         else if (REAL.equals(type)) {
-            return intBitsToFloat((int) REAL.getLong(block, position));
+            return REAL.getFloat(block, position);
         }
         else if (DOUBLE.equals(type)) {
             return DOUBLE.getDouble(block, position);
@@ -197,12 +198,16 @@ public class OpenXJsonSerializer
                 throw new RuntimeException("Unsupported map key type: " + keyType);
             }
             Type valueType = mapType.getValueType();
-            Block mapBlock = mapType.getObject(block, position);
+            SqlMap sqlMap = mapType.getObject(block, position);
+
+            int rawOffset = sqlMap.getRawOffset();
+            Block rawKeyBlock = sqlMap.getRawKeyBlock();
+            Block rawValueBlock = sqlMap.getRawValueBlock();
 
             Map<String, Object> jsonMap = new LinkedHashMap<>();
-            for (int mapIndex = 0; mapIndex < mapBlock.getPositionCount(); mapIndex += 2) {
+            for (int mapIndex = 0; mapIndex < sqlMap.getSize(); mapIndex++) {
                 try {
-                    Object key = writeValue(keyType, mapBlock, mapIndex);
+                    Object key = writeValue(keyType, rawKeyBlock, rawOffset + mapIndex);
                     if (key == null) {
                         throw new RuntimeException("OpenX JsonSerDe can not write a null map key");
                     }
@@ -217,7 +222,7 @@ public class OpenXJsonSerializer
                         fieldName = key.toString();
                     }
 
-                    Object value = writeValue(valueType, mapBlock, mapIndex + 1);
+                    Object value = writeValue(valueType, rawValueBlock, rawOffset + mapIndex);
                     jsonMap.put(fieldName, value);
                 }
                 catch (InvalidJsonException ignored) {
@@ -227,13 +232,15 @@ public class OpenXJsonSerializer
         }
         else if (type instanceof RowType rowType) {
             List<Field> fields = rowType.getFields();
-            Block rowBlock = rowType.getObject(block, position);
+            SqlRow sqlRow = rowType.getObject(block, position);
+            int rawIndex = sqlRow.getRawIndex();
 
             Map<String, Object> jsonObject = new LinkedHashMap<>();
             for (int fieldIndex = 0; fieldIndex < fields.size(); fieldIndex++) {
                 Field field = fields.get(fieldIndex);
+                Block fieldBlock = sqlRow.getRawFieldBlock(fieldIndex);
                 String fieldName = field.getName().orElseThrow();
-                Object fieldValue = writeValue(field.getType(), rowBlock, fieldIndex);
+                Object fieldValue = writeValue(field.getType(), fieldBlock, rawIndex);
                 if (options.isExplicitNull() || fieldValue != null) {
                     jsonObject.put(fieldName, fieldValue);
                 }

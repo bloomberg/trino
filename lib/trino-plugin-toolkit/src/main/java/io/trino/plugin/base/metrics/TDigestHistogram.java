@@ -26,6 +26,7 @@ import io.trino.spi.metrics.Distribution;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.ToStringHelper;
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -175,7 +176,7 @@ public class TDigestHistogram
     public String toString()
     {
         ToStringHelper helper = toStringHelper("")
-                .add("count", formatDouble(digest.getCount()))
+                .add("count", getTotal())
                 .add("p01", formatDouble(getP01()))
                 .add("p05", formatDouble(getP05()))
                 .add("p10", formatDouble(getP10()))
@@ -188,6 +189,15 @@ public class TDigestHistogram
                 .add("min", formatDouble(getMin()))
                 .add("max", formatDouble(getMax()));
         return helper.toString();
+    }
+
+    public static Optional<TDigestHistogram> merge(List<TDigestHistogram> histograms)
+    {
+        if (histograms.isEmpty()) {
+            return Optional.empty();
+        }
+
+        return Optional.of(histograms.get(0).mergeWith(histograms.subList(1, histograms.size())));
     }
 
     private static String formatDouble(double value)

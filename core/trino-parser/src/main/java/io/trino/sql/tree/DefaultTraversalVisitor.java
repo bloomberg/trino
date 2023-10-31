@@ -607,18 +607,6 @@ public abstract class DefaultTraversalVisitor<C>
     }
 
     @Override
-    protected Void visitCube(Cube node, C context)
-    {
-        return null;
-    }
-
-    @Override
-    protected Void visitRollup(Rollup node, C context)
-    {
-        return null;
-    }
-
-    @Override
     protected Void visitSimpleGroupBy(SimpleGroupBy node, C context)
     {
         for (Expression expression : node.getExpressions()) {
@@ -999,6 +987,36 @@ public abstract class DefaultTraversalVisitor<C>
     {
         for (TableFunctionArgument argument : node.getArguments()) {
             process(argument.getValue(), context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected Void visitJsonTable(JsonTable node, C context)
+    {
+        process(node.getJsonPathInvocation(), context);
+        for (JsonTableColumnDefinition column : node.getColumns()) {
+            process(column, context);
+        }
+
+        return null;
+    }
+
+    @Override
+    protected Void visitValueColumn(ValueColumn node, C context)
+    {
+        node.getEmptyDefault().ifPresent(expression -> process(expression, context));
+        node.getErrorDefault().ifPresent(expression -> process(expression, context));
+
+        return null;
+    }
+
+    @Override
+    protected Void visitNestedColumns(NestedColumns node, C context)
+    {
+        for (JsonTableColumnDefinition column : node.getColumns()) {
+            process(column, context);
         }
 
         return null;

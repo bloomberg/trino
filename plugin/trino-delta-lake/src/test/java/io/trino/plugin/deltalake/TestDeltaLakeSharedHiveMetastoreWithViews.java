@@ -19,23 +19,26 @@ import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Map;
 
+import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestDeltaLakeSharedHiveMetastoreWithViews
         extends AbstractTestQueryFramework
 {
     protected final String schema = "test_shared_schema_with_hive_views_" + randomNameSuffix();
     private final String bucketName = "delta-lake-shared-hive-with-views-" + randomNameSuffix();
-
     private HiveMinioDataLake hiveMinioDataLake;
 
     @Override
@@ -45,7 +48,7 @@ public class TestDeltaLakeSharedHiveMetastoreWithViews
         this.hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
         this.hiveMinioDataLake.start();
 
-        DistributedQueryRunner queryRunner = DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner(
+        DistributedQueryRunner queryRunner = createS3DeltaLakeQueryRunner(
                 "delta",
                 schema,
                 ImmutableMap.of("delta.enable-non-concurrent-writes", "true"),
@@ -76,7 +79,7 @@ public class TestDeltaLakeSharedHiveMetastoreWithViews
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
     {
         assertQuerySucceeds("DROP TABLE IF EXISTS hive." + schema + ".hive_table");

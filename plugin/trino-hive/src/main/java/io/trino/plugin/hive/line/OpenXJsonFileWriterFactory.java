@@ -13,13 +13,11 @@
  */
 package io.trino.plugin.hive.line;
 
+import com.google.inject.Inject;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.hive.formats.line.openxjson.OpenXJsonSerializerFactory;
 import io.trino.hive.formats.line.text.TextLineWriterFactory;
-import io.trino.plugin.hive.HiveSessionProperties;
 import io.trino.spi.type.TypeManager;
-
-import javax.inject.Inject;
 
 public class OpenXJsonFileWriterFactory
         extends LineFileWriterFactory
@@ -31,7 +29,6 @@ public class OpenXJsonFileWriterFactory
                 typeManager,
                 new OpenXJsonSerializerFactory(),
                 new TextLineWriterFactory(),
-                HiveSessionProperties::isOpenXJsonNativeWriterEnabled,
                 true);
     }
 }

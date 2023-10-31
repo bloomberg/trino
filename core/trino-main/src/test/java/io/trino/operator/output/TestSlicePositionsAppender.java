@@ -17,17 +17,14 @@ import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.RunLengthEncodedBlock;
-import io.trino.spi.block.VariableWidthBlock;
-import it.unimi.dsi.fastutil.ints.IntArrayList;
-import org.testng.annotations.Test;
+import io.trino.spi.block.ValueBlock;
+import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
-import java.util.Optional;
 
 import static io.trino.block.BlockAssertions.assertBlockEquals;
 import static io.trino.block.BlockAssertions.createStringsBlock;
 import static io.trino.operator.output.SlicePositionsAppender.duplicateBytes;
-import static io.trino.spi.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static org.testng.internal.junit.ArrayAsserts.assertArrayEquals;
 
@@ -38,31 +35,12 @@ public class TestSlicePositionsAppender
     {
         // test SlicePositionAppender.appendRle with empty value (Slice with length 0)
         PositionsAppender positionsAppender = new SlicePositionsAppender(1, 100);
-        Block value = createStringsBlock("");
+        ValueBlock value = createStringsBlock("");
         positionsAppender.appendRle(value, 10);
 
         Block actualBlock = positionsAppender.build();
 
         assertBlockEquals(VARCHAR, actualBlock, RunLengthEncodedBlock.create(value, 10));
-    }
-
-    // test append with VariableWidthBlock using Slice not backed by byte array
-    // to test special handling in SlicePositionsAppender.copyBytes
-    @Test
-    public void testAppendSliceNotBackedByByteArray()
-    {
-        PositionsAppender positionsAppender = new SlicePositionsAppender(1, DEFAULT_MAX_PAGE_SIZE_IN_BYTES);
-        Block block = new VariableWidthBlock(3, Slices.wrappedLongArray(257, 2), new int[] {0, 1, Long.BYTES, 2 * Long.BYTES}, Optional.empty());
-        positionsAppender.append(IntArrayList.wrap(new int[] {0, 2}), block);
-
-        Block actual = positionsAppender.build();
-
-        Block expected = new VariableWidthBlock(
-                2,
-                Slices.wrappedBuffer(new byte[] {1, 2, 0, 0, 0, 0, 0, 0, 0}),
-                new int[] {0, 1, Long.BYTES + 1},
-                Optional.empty());
-        assertBlockEquals(VARCHAR, actual, expected);
     }
 
     @Test

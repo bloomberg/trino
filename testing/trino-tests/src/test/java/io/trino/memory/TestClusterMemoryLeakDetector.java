@@ -25,7 +25,7 @@ import io.trino.server.BasicQueryStats;
 import io.trino.spi.QueryId;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import org.joda.time.DateTime;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.util.Optional;
@@ -104,7 +104,8 @@ public class TestClusterMemoryLeakDetector
                         new Duration(33, MINUTES),
                         true,
                         ImmutableSet.of(WAITING_FOR_MEMORY),
-                        OptionalDouble.of(20)),
+                        OptionalDouble.of(20),
+                        OptionalDouble.of(0)),
                 null,
                 null,
                 Optional.empty(),

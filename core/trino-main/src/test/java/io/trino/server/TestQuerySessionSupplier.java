@@ -13,30 +13,28 @@
  */
 package io.trino.server;
 
-import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ListMultimap;
 import io.airlift.jaxrs.testing.GuavaMultivaluedMap;
+import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
+import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.server.protocol.PreparedStatementEncoder;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.sql.SqlEnvironmentConfig;
 import io.trino.sql.SqlPath;
-import io.trino.sql.SqlPathElement;
-import io.trino.sql.tree.Identifier;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.Test;
+import jakarta.ws.rs.core.MultivaluedMap;
+import org.junit.jupiter.api.Test;
 
-import javax.ws.rs.core.MultivaluedMap;
-
-import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -44,6 +42,8 @@ import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.MAX_HASH_PARTITION_COUNT;
 import static io.trino.SystemSessionProperties.QUERY_MAX_MEMORY;
 import static io.trino.client.ProtocolHeaders.TRINO_HEADERS;
+import static io.trino.metadata.GlobalFunctionCatalog.BUILTIN_SCHEMA;
+import static io.trino.metadata.LanguageFunctionManager.QUERY_LOCAL_SCHEMA;
 import static io.trino.metadata.MetadataManager.createTestMetadataManager;
 import static io.trino.metadata.MetadataManager.testMetadataManagerBuilder;
 import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
@@ -79,14 +79,14 @@ public class TestQuerySessionSupplier
     {
         SessionContext context = SESSION_CONTEXT_FACTORY.createSessionContext(TEST_HEADERS, Optional.empty(), Optional.of("testRemote"), Optional.empty());
         QuerySessionSupplier sessionSupplier = createSessionSupplier(new SqlEnvironmentConfig());
-        Session session = sessionSupplier.createSession(new QueryId("test_query_id"), context);
+        Session session = sessionSupplier.createSession(new QueryId("test_query_id"), Span.getInvalid(), context);
 
         assertEquals(session.getQueryId(), new QueryId("test_query_id"));
         assertEquals(session.getUser(), "testUser");
         assertEquals(session.getSource().get(), "testSource");
         assertEquals(session.getCatalog().get(), "testCatalog");
         assertEquals(session.getSchema().get(), "testSchema");
-        assertEquals(session.getPath().getRawPath().get(), "testPath");
+        assertEquals(session.getPath().getRawPath(), "testPath");
         assertEquals(session.getLocale(), Locale.TAIWAN);
         assertEquals(session.getTimeZoneKey(), getTimeZoneKey("Asia/Taipei"));
         assertEquals(session.getRemoteUserAddress().get(), "testRemote");
@@ -142,7 +142,7 @@ public class TestQuerySessionSupplier
                 .build());
         SessionContext context = SESSION_CONTEXT_FACTORY.createSessionContext(headers, Optional.empty(), Optional.of("remoteAddress"), Optional.empty());
         QuerySessionSupplier sessionSupplier = createSessionSupplier(new SqlEnvironmentConfig());
-        assertThatThrownBy(() -> sessionSupplier.createSession(new QueryId("test_query_id"), context))
+        assertThatThrownBy(() -> sessionSupplier.createSession(new QueryId("test_query_id"), Span.getInvalid(), context))
                 .isInstanceOf(TrinoException.class)
                 .hasMessage("Time zone not supported: unknown_timezone");
     }
@@ -150,28 +150,26 @@ public class TestQuerySessionSupplier
     @Test
     public void testSqlPathCreation()
     {
-        ImmutableList.Builder<SqlPathElement> correctValues = ImmutableList.builder();
-        correctValues.add(new SqlPathElement(
-                Optional.of(new Identifier("normal")),
-                new Identifier("schema")));
-        correctValues.add(new SqlPathElement(
-                Optional.of(new Identifier("who.uses.periods")),
-                new Identifier("in.schema.names")));
-        correctValues.add(new SqlPathElement(
-                Optional.of(new Identifier("same,deal")),
-                new Identifier("with,commas")));
-        correctValues.add(new SqlPathElement(
-                Optional.of(new Identifier("aterrible")),
-                new Identifier("thing!@#$%^&*()")));
-        List<SqlPathElement> expected = correctValues.build();
-
-        SqlPath path = new SqlPath(Optional.of("normal.schema,"
+        String rawPath = "normal.schema,"
                 + "\"who.uses.periods\".\"in.schema.names\","
                 + "\"same,deal\".\"with,commas\","
-                + "aterrible.\"thing!@#$%^&*()\""));
+                + "aterrible.\"thing!@#$%^&*()\"";
+        SqlPath path = SqlPath.buildPath(
+                rawPath,
+                Optional.empty());
 
-        assertEquals(path.getParsedPath(), expected);
-        assertEquals(path.toString(), Joiner.on(", ").join(expected));
+        assertEquals(
+                path.getPath(),
+                ImmutableList.<CatalogSchemaName>builder()
+                        .add(new CatalogSchemaName(GlobalSystemConnector.NAME, QUERY_LOCAL_SCHEMA))
+                        .add(new CatalogSchemaName(GlobalSystemConnector.NAME, BUILTIN_SCHEMA))
+                        .add(new CatalogSchemaName("normal", "schema"))
+                        .add(new CatalogSchemaName("who.uses.periods", "in.schema.names"))
+                        .add(new CatalogSchemaName("same,deal", "with,commas"))
+                        .add(new CatalogSchemaName("aterrible", "thing!@#$%^&*()"))
+                        .build());
+
+        assertEquals(path.toString(), rawPath);
     }
 
     @Test
@@ -237,7 +235,7 @@ public class TestQuerySessionSupplier
         MultivaluedMap<String, String> headerMap = new GuavaMultivaluedMap<>(headers);
         SessionContext context = SESSION_CONTEXT_FACTORY.createSessionContext(headerMap, Optional.empty(), Optional.of("testRemote"), Optional.empty());
         QuerySessionSupplier sessionSupplier = createSessionSupplier(config);
-        return sessionSupplier.createSession(new QueryId("test_query_id"), context);
+        return sessionSupplier.createSession(new QueryId("test_query_id"), Span.getInvalid(), context);
     }
 
     private static QuerySessionSupplier createSessionSupplier(SqlEnvironmentConfig config)

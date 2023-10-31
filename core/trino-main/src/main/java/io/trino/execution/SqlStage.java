@@ -15,8 +15,12 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.OutputBuffers;
@@ -26,9 +30,6 @@ import io.trino.metadata.Split;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.HashSet;
 import java.util.List;
@@ -82,6 +83,7 @@ public final class SqlStage
             boolean summarizeTaskInfo,
             NodeTaskMap nodeTaskMap,
             Executor stateMachineExecutor,
+            Tracer tracer,
             SplitSchedulerStats schedulerStats)
     {
         requireNonNull(stageId, "stageId is null");
@@ -92,11 +94,21 @@ public final class SqlStage
         requireNonNull(session, "session is null");
         requireNonNull(nodeTaskMap, "nodeTaskMap is null");
         requireNonNull(stateMachineExecutor, "stateMachineExecutor is null");
+        requireNonNull(tracer, "tracer is null");
         requireNonNull(schedulerStats, "schedulerStats is null");
+
+        StageStateMachine stateMachine = new StageStateMachine(
+                stageId,
+                fragment,
+                tables,
+                stateMachineExecutor,
+                tracer,
+                session.getQuerySpan(),
+                schedulerStats);
 
         SqlStage sqlStage = new SqlStage(
                 session,
-                new StageStateMachine(stageId, fragment, tables, stateMachineExecutor, schedulerStats),
+                stateMachine,
                 remoteTaskFactory,
                 nodeTaskMap,
                 summarizeTaskInfo);
@@ -134,6 +146,11 @@ public final class SqlStage
     public StageId getStageId()
     {
         return stateMachine.getStageId();
+    }
+
+    public Span getStageSpan()
+    {
+        return stateMachine.getStageSpan();
     }
 
     public StageState getState()
@@ -228,7 +245,8 @@ public final class SqlStage
             OutputBuffers outputBuffers,
             Multimap<PlanNodeId, Split> splits,
             Set<PlanNodeId> noMoreSplits,
-            Optional<DataSize> estimatedMemory)
+            Optional<DataSize> estimatedMemory,
+            boolean speculative)
     {
         if (stateMachine.getState().isDone()) {
             return Optional.empty();
@@ -240,8 +258,10 @@ public final class SqlStage
 
         RemoteTask task = remoteTaskFactory.createRemoteTask(
                 session,
+                stateMachine.getStageSpan(),
                 taskId,
                 node,
+                speculative,
                 stateMachine.getFragment().withBucketToPartition(bucketToPartition),
                 splits,
                 outputBuffers,

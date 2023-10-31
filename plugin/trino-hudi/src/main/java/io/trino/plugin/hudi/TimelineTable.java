@@ -14,7 +14,10 @@
 package io.trino.plugin.hudi;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.filesystem.TrinoFileSystem;
 import io.trino.plugin.hive.metastore.Table;
+import io.trino.plugin.hudi.model.HudiInstant;
+import io.trino.plugin.hudi.table.HudiTableMetaClient;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
@@ -25,9 +28,6 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hudi.common.table.HoodieTableMetaClient;
-import org.apache.hudi.common.table.timeline.HoodieInstant;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -43,10 +43,10 @@ public class TimelineTable
 {
     private final ConnectorTableMetadata tableMetadata;
     private final List<Type> types;
-    private final Configuration configuration;
+    private final TrinoFileSystem fileSystem;
     private final String location;
 
-    public TimelineTable(Configuration configuration, SchemaTableName tableName, Table hudiTable)
+    public TimelineTable(TrinoFileSystem fileSystem, SchemaTableName tableName, Table hudiTable)
     {
         this.tableMetadata = new ConnectorTableMetadata(requireNonNull(tableName, "tableName is null"),
                 ImmutableList.<ColumnMetadata>builder()
@@ -55,7 +55,7 @@ public class TimelineTable
                         .add(new ColumnMetadata("state", VARCHAR))
                         .build());
         this.types = tableMetadata.getColumns().stream().map(ColumnMetadata::getType).collect(toImmutableList());
-        this.configuration = requireNonNull(configuration, "configuration is null");
+        this.fileSystem = requireNonNull(fileSystem, "fileSystem is null");
         this.location = requireNonNull(hudiTable.getStorage().getLocation(), "location is null");
     }
 
@@ -74,12 +74,12 @@ public class TimelineTable
     @Override
     public RecordCursor cursor(ConnectorTransactionHandle transactionHandle, ConnectorSession session, TupleDomain<Integer> constraint)
     {
-        HoodieTableMetaClient metaClient = buildTableMetaClient(configuration, location);
+        HudiTableMetaClient metaClient = buildTableMetaClient(fileSystem, location);
         Iterable<List<Object>> records = () -> metaClient.getCommitsTimeline().getInstants().map(this::getRecord).iterator();
         return new InMemoryRecordSet(types, records).cursor();
     }
 
-    private List<Object> getRecord(HoodieInstant hudiInstant)
+    private List<Object> getRecord(HudiInstant hudiInstant)
     {
         List<Object> columns = new ArrayList<>();
         columns.add(hudiInstant.getTimestamp());

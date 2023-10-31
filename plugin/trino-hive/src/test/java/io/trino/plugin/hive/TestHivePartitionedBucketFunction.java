@@ -138,10 +138,10 @@ public class TestHivePartitionedBucketFunction
         BlockBuilder bucketColumn = BIGINT.createFixedSizeBlockBuilder(10);
         BlockBuilder partitionColumn = BIGINT.createFixedSizeBlockBuilder(10);
         for (int i = 0; i < 100; ++i) {
-            bucketColumn.writeLong(i);
-            partitionColumn.writeLong(42);
+            BIGINT.writeLong(bucketColumn, i);
+            BIGINT.writeLong(partitionColumn, 42);
         }
-        Page page = new Page(bucketColumn, partitionColumn);
+        Page page = new Page(bucketColumn.build(), partitionColumn.build());
 
         BucketFunction hivePartitionedBucketFunction = partitionedBucketFunction(hiveBucketingVersion, 10, ImmutableList.of(HIVE_LONG), ImmutableList.of(BIGINT), 4000);
         List<Integer> positions = new ArrayList<>();

@@ -25,9 +25,12 @@ import io.trino.plugin.iceberg.catalog.TrinoCatalog;
 import io.trino.plugin.iceberg.catalog.rest.IcebergRestCatalogConfig.SessionType;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorViewDefinition;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
@@ -37,6 +40,7 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.SessionCatalog;
@@ -49,19 +53,23 @@ import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.apache.iceberg.rest.auth.OAuth2Properties;
 
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.filesystem.Locations.appendPath;
 import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_CATALOG_ERROR;
 import static io.trino.plugin.iceberg.IcebergUtil.quotedTableName;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
-import static java.lang.String.join;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 
@@ -191,6 +199,26 @@ public class TrinoRestCatalog
     }
 
     @Override
+    public Optional<Iterator<RelationColumnsMetadata>> streamRelationColumns(
+            ConnectorSession session,
+            Optional<String> namespace,
+            UnaryOperator<Set<SchemaTableName>> relationFilter,
+            Predicate<SchemaTableName> isRedirected)
+    {
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<Iterator<RelationCommentMetadata>> streamRelationComments(
+            ConnectorSession session,
+            Optional<String> namespace,
+            UnaryOperator<Set<SchemaTableName>> relationFilter,
+            Predicate<SchemaTableName> isRedirected)
+    {
+        return Optional.empty();
+    }
+
+    @Override
     public Transaction newCreateTableTransaction(
             ConnectorSession session,
             SchemaTableName schemaTableName,
@@ -209,7 +237,25 @@ public class TrinoRestCatalog
     }
 
     @Override
-    public void registerTable(ConnectorSession session, SchemaTableName tableName, String tableLocation, String metadataLocation)
+    public Transaction newCreateOrReplaceTableTransaction(
+            ConnectorSession session,
+            SchemaTableName schemaTableName,
+            Schema schema,
+            PartitionSpec partitionSpec,
+            SortOrder sortOrder,
+            String location,
+            Map<String, String> properties)
+    {
+        return restSessionCatalog.buildTable(convert(session), toIdentifier(schemaTableName), schema)
+                .withPartitionSpec(partitionSpec)
+                .withSortOrder(sortOrder)
+                .withLocation(location)
+                .withProperties(properties)
+                .createOrReplaceTransaction();
+    }
+
+    @Override
+    public void registerTable(ConnectorSession session, SchemaTableName tableName, TableMetadata tableMetadata)
     {
         throw new TrinoException(NOT_SUPPORTED, "registerTable is not supported for Iceberg REST catalog");
     }
@@ -226,6 +272,14 @@ public class TrinoRestCatalog
         if (!restSessionCatalog.purgeTable(convert(session), toIdentifier(schemaTableName))) {
             throw new TrinoException(ICEBERG_CATALOG_ERROR, format("Failed to drop table: %s", schemaTableName));
         }
+    }
+
+    @Override
+    public void dropCorruptedTable(ConnectorSession session, SchemaTableName schemaTableName)
+    {
+        // Since it is currently not possible to obtain the table location, even if we drop the table from the metastore,
+        // it is still impossible to delete the table location.
+        throw new TrinoException(NOT_SUPPORTED, "Cannot drop corrupted table %s from Iceberg REST catalog".formatted(schemaTableName));
     }
 
     @Override
@@ -260,6 +314,12 @@ public class TrinoRestCatalog
     }
 
     @Override
+    public Map<SchemaTableName, List<ColumnMetadata>> tryGetColumnMetadata(ConnectorSession session, List<SchemaTableName> tables)
+    {
+        return ImmutableMap.of();
+    }
+
+    @Override
     public void updateTableComment(ConnectorSession session, SchemaTableName schemaTableName, Optional<String> comment)
     {
         Table icebergTable = restSessionCatalog.loadTable(convert(session), toIdentifier(schemaTableName));
@@ -283,7 +343,7 @@ public class TrinoRestCatalog
         if (databaseLocation.endsWith("/")) {
             return databaseLocation + tableName;
         }
-        return join("/", databaseLocation, tableName);
+        return appendPath(databaseLocation, tableName);
     }
 
     private String createLocationForTable(String baseTableName)
@@ -356,6 +416,12 @@ public class TrinoRestCatalog
     }
 
     @Override
+    public void updateMaterializedViewColumnComment(ConnectorSession session, SchemaTableName schemaViewName, String columnName, Optional<String> comment)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "updateMaterializedViewColumnComment is not supported for Iceberg REST catalog");
+    }
+
+    @Override
     public void dropMaterializedView(ConnectorSession session, SchemaTableName viewName)
     {
         throw new TrinoException(NOT_SUPPORTED, "dropMaterializedView is not supported for Iceberg REST catalog");
@@ -382,7 +448,7 @@ public class TrinoRestCatalog
     }
 
     @Override
-    public Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName)
+    public Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName, String hiveCatalogName)
     {
         return Optional.empty();
     }
@@ -402,7 +468,7 @@ public class TrinoRestCatalog
     private SessionCatalog.SessionContext convert(ConnectorSession session)
     {
         return switch (sessionType) {
-            case NONE -> SessionCatalog.SessionContext.createEmpty();
+            case NONE -> new SessionContext(randomUUID().toString(), null, null, ImmutableMap.of(), session.getIdentity());
             case USER -> {
                 String sessionId = format("%s-%s", session.getUser(), session.getSource().orElse("default"));
 
@@ -429,7 +495,7 @@ public class TrinoRestCatalog
                         .put(OAuth2Properties.JWT_TOKEN_TYPE, subjectJwt)
                         .buildOrThrow();
 
-                yield new SessionCatalog.SessionContext(sessionId, session.getUser(), credentials, properties);
+                yield new SessionCatalog.SessionContext(sessionId, session.getUser(), credentials, properties, session.getIdentity());
             }
         };
     }

@@ -24,8 +24,8 @@ import io.trino.plugin.base.type.DecodedTimestamp;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.ByteArrayBlock;
 import io.trino.spi.block.DictionaryBlock;
+import io.trino.spi.block.Fixed12Block;
 import io.trino.spi.block.Int128ArrayBlock;
-import io.trino.spi.block.Int96ArrayBlock;
 import io.trino.spi.block.IntArrayBlock;
 import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
@@ -41,6 +41,7 @@ import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Timestamps;
 import io.trino.spi.type.Type;
+import jakarta.annotation.Nullable;
 import org.apache.parquet.bytes.HeapByteBufferAllocator;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.column.values.ValuesWriter;
@@ -59,10 +60,6 @@ import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
 import org.testng.annotations.DataProvider;
 
-import javax.annotation.Nullable;
-
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.math.BigInteger;
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -72,7 +69,7 @@ import java.util.function.IntFunction;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.MoreCollectors.onlyElement;
-import static io.trino.parquet.ParquetTypeUtils.getParquetEncoding;
+import static io.trino.parquet.ParquetTestUtils.toTrinoDictionaryPage;
 import static io.trino.parquet.ParquetTypeUtils.paddingBigInteger;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
@@ -135,14 +132,14 @@ public class TestingColumnReader
             .put(TIME_MILLIS, LongArrayBlock.class)
             .put(TIMESTAMP_MILLIS, LongArrayBlock.class)
             .put(TIMESTAMP_TZ_MILLIS, LongArrayBlock.class)
-            .put(TIMESTAMP_TZ_NANOS, Int96ArrayBlock.class)
-            .put(TIMESTAMP_PICOS, Int96ArrayBlock.class)
+            .put(TIMESTAMP_TZ_NANOS, Fixed12Block.class)
+            .put(TIMESTAMP_PICOS, Fixed12Block.class)
             .put(UUID, Int128ArrayBlock.class)
             .buildOrThrow();
 
     private static final IntFunction<DictionaryValuesWriter> DICTIONARY_INT_WRITER =
             length -> new PlainIntegerDictionaryValuesWriter(Integer.MAX_VALUE, Encoding.RLE, Encoding.PLAIN, HeapByteBufferAllocator.getInstance());
-    private static final IntFunction<DictionaryValuesWriter> DICTIONARY_LONG_WRITER =
+    public static final IntFunction<DictionaryValuesWriter> DICTIONARY_LONG_WRITER =
             length -> new PlainLongDictionaryValuesWriter(Integer.MAX_VALUE, Encoding.RLE, Encoding.PLAIN, HeapByteBufferAllocator.getInstance());
     private static final IntFunction<DictionaryValuesWriter> DICTIONARY_FIXED_LENGTH_WRITER =
             length -> new PlainFixedLenArrayDictionaryValuesWriter(Integer.MAX_VALUE, length, Encoding.RLE, Encoding.PLAIN, HeapByteBufferAllocator.getInstance());
@@ -211,7 +208,7 @@ public class TestingColumnReader
         }
         return result;
     };
-    private static final Writer<Number> WRITE_LONG_TIMESTAMP = (writer, values) -> {
+    public static final Writer<Number> WRITE_LONG_TIMESTAMP = (writer, values) -> {
         Number[] result = new Number[values.length];
         for (int i = 0; i < values.length; i++) {
             if (values[i] != null) {
@@ -535,7 +532,7 @@ public class TestingColumnReader
         };
     }
 
-    private static Assertion<Number> assertLongTimestamp(int precision)
+    public static Assertion<Number> assertLongTimestamp(int precision)
     {
         int multiplier = IntMath.pow(10, precision);
         return (values, block, offset, blockOffset) ->
@@ -596,19 +593,6 @@ public class TestingColumnReader
         return toTrinoDictionaryPage(apacheDictionaryPage);
     }
 
-    public static DictionaryPage toTrinoDictionaryPage(org.apache.parquet.column.page.DictionaryPage dictionary)
-    {
-        try {
-            return new DictionaryPage(
-                    Slices.wrappedBuffer(dictionary.getBytes().toByteArray()),
-                    dictionary.getDictionarySize(),
-                    getParquetEncoding(dictionary.getEncoding()));
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
     @DataProvider(name = "readersWithPageVersions")
     public static Object[][] readersWithPageVersions()
     {
@@ -651,6 +635,8 @@ public class TestingColumnReader
                 new ColumnReaderFormat<>(FLOAT, DoubleType.DOUBLE, PLAIN_WRITER, DICTIONARY_FLOAT_WRITER, WRITE_FLOAT, ASSERT_DOUBLE_STORED_AS_FLOAT),
                 new ColumnReaderFormat<>(DOUBLE, DoubleType.DOUBLE, PLAIN_WRITER, DICTIONARY_DOUBLE_WRITER, WRITE_DOUBLE, ASSERT_DOUBLE),
                 new ColumnReaderFormat<>(INT32, decimalType(0, 8), createDecimalType(8), PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_INT, ASSERT_INT),
+                // INT32 can be read as a ShortDecimalType in Trino without decimal logical type annotation as well
+                new ColumnReaderFormat<>(INT32, createDecimalType(8, 0), PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_INT, ASSERT_INT),
                 new ColumnReaderFormat<>(INT32, BIGINT, PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_INT, ASSERT_LONG),
                 new ColumnReaderFormat<>(INT32, INTEGER, PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_INT, ASSERT_INT),
                 new ColumnReaderFormat<>(INT32, SMALLINT, PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_SHORT, ASSERT_SHORT),
@@ -667,6 +653,7 @@ public class TestingColumnReader
                 new ColumnReaderFormat<>(FIXED_LEN_BYTE_ARRAY, 16, uuidType(), UUID, FIXED_LENGTH_WRITER, DICTIONARY_FIXED_LENGTH_WRITER, WRITE_UUID, ASSERT_INT_128),
                 new ColumnReaderFormat<>(FIXED_LEN_BYTE_ARRAY, 16, null, UUID, FIXED_LENGTH_WRITER, DICTIONARY_FIXED_LENGTH_WRITER, WRITE_UUID, ASSERT_INT_128),
                 // Trino type precision is irrelevant since the data is always stored as picoseconds
+                new ColumnReaderFormat<>(INT32, timeType(false, MILLIS), TimeType.TIME_MILLIS, PLAIN_WRITER, DICTIONARY_INT_WRITER, WRITE_INT, assertTime(9)),
                 new ColumnReaderFormat<>(INT64, timeType(false, MICROS), TimeType.TIME_MICROS, PLAIN_WRITER, DICTIONARY_LONG_WRITER, WRITE_LONG, assertTime(6)),
                 // Reading a column TimeLogicalTypeAnnotation as a BIGINT
                 new ColumnReaderFormat<>(INT64, timeType(false, MICROS), BIGINT, PLAIN_WRITER, DICTIONARY_LONG_WRITER, WRITE_LONG, ASSERT_LONG),

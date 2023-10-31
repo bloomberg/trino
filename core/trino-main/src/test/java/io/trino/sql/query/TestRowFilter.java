@@ -29,7 +29,6 @@ import io.trino.spi.type.VarcharType;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.TestingAccessControlManager;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
@@ -65,11 +64,10 @@ public class TestRowFilter
             .setIdentity(Identity.forUser(USER).build())
             .build();
 
-    private QueryAssertions assertions;
-    private TestingAccessControlManager accessControl;
+    private final QueryAssertions assertions;
+    private final TestingAccessControlManager accessControl;
 
-    @BeforeAll
-    public void init()
+    public TestRowFilter()
     {
         LocalQueryRunner runner = LocalQueryRunner.builder(SESSION).build();
 
@@ -84,7 +82,8 @@ public class TestRowFilter
                         new ConnectorViewDefinition.ViewColumn("name", VarcharType.createVarcharType(25).getTypeId(), Optional.empty())),
                 Optional.empty(),
                 Optional.of(VIEW_OWNER),
-                false);
+                false,
+                ImmutableList.of());
 
         MockConnectorFactory mock = MockConnectorFactory.builder()
                 .withGetViews((s, prefix) -> ImmutableMap.of(new SchemaTableName("default", "nation_view"), view))
@@ -144,9 +143,7 @@ public class TestRowFilter
     @AfterAll
     public void teardown()
     {
-        accessControl = null;
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -156,14 +153,14 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "orderkey < 10"));
+                ViewExpression.builder().expression("orderkey < 10").build());
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '7'");
 
         accessControl.reset();
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "NULL"));
+                ViewExpression.builder().expression("NULL").build());
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '0'");
     }
 
@@ -174,12 +171,12 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "orderkey < 10"));
+                ViewExpression.builder().expression("orderkey < 10").build());
 
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "orderkey > 5"));
+                ViewExpression.builder().expression("orderkey > 5").build());
 
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '2'");
     }
@@ -191,7 +188,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "EXISTS (SELECT 1 FROM nation WHERE nationkey = orderkey)"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("EXISTS (SELECT 1 FROM nation WHERE nationkey = orderkey)")
+                        .build());
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '7'");
     }
 
@@ -203,7 +204,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "nation"),
                 VIEW_OWNER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey = 1"));
+                ViewExpression.builder().expression("nationkey = 1").build());
 
         assertThat(assertions.query(
                 Session.builder(SESSION)
@@ -217,7 +218,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "nation"),
                 VIEW_OWNER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "nationkey = 1"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("nationkey = 1")
+                        .build());
 
         assertThat(assertions.query(
                 Session.builder(SESSION)
@@ -231,7 +236,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "nation"),
                 RUN_AS_USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "nationkey = 1"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("nationkey = 1")
+                        .build());
 
         Session session = Session.builder(SESSION)
                 .setIdentity(Identity.forUser(RUN_AS_USER).build())
@@ -244,7 +253,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "default", "nation_view"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "nationkey = 1"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("nationkey = 1")
+                        .build());
         assertThat(assertions.query("SELECT name FROM mock.default.nation_view")).matches("VALUES CAST('ARGENTINA' AS VARCHAR(25))");
     }
 
@@ -255,7 +268,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "orderkey = 1"));
+                ViewExpression.builder().expression("orderkey = 1").build());
         assertThat(assertions.query("WITH t AS (SELECT count(*) FROM orders) SELECT * FROM t")).matches("VALUES BIGINT '1'");
     }
 
@@ -266,7 +279,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("sf1"), "(SELECT count(*) FROM customer) = 150000")); // Filter is TRUE only if evaluating against sf1.customer
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("sf1") // Filter is TRUE only if evaluating against sf1.customer
+                        .expression("(SELECT count(*) FROM customer) = 150000")
+                        .build());
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '15000'");
     }
 
@@ -277,12 +294,21 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 RUN_AS_USER,
-                new ViewExpression(Optional.of(RUN_AS_USER), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey = 1"));
+                ViewExpression.builder()
+                        .identity(RUN_AS_USER)
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey = 1")
+                        .build());
 
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.of(RUN_AS_USER), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey IN (SELECT orderkey FROM orders)"));
+                ViewExpression.builder()
+                        .identity(RUN_AS_USER)
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny").expression("orderkey IN (SELECT orderkey FROM orders)")
+                        .build());
 
         assertThat(assertions.query("SELECT count(*) FROM orders")).matches("VALUES BIGINT '1'");
     }
@@ -294,7 +320,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey IN (SELECT orderkey FROM orders)"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey IN (SELECT orderkey FROM orders)")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessageMatching(".*\\QRow filter for 'local.tiny.orders' is recursive\\E.*");
@@ -304,7 +334,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey IN (SELECT local.tiny.orderkey FROM orders)"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey IN (SELECT local.tiny.orderkey FROM orders)")
+                        .build());
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessageMatching(".*\\QRow filter for 'local.tiny.orders' is recursive\\E.*");
 
@@ -313,12 +347,20 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 RUN_AS_USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey IN (SELECT orderkey FROM orders)"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey IN (SELECT orderkey FROM orders)")
+                        .build());
 
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey IN (SELECT orderkey FROM orders)"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey IN (SELECT orderkey FROM orders)")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessageMatching(".*\\QRow filter for 'local.tiny.orders' is recursive\\E.*");
@@ -331,7 +373,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "customer"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey = 1"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey = 1")
+                        .build());
         assertThatThrownBy(() -> assertions.query(
                 "SELECT (SELECT min(name) FROM customer WHERE customer.custkey = orders.custkey) FROM orders"))
                 .hasMessage("line 1:31: Invalid row filter for 'local.tiny.customer': Column 'orderkey' cannot be resolved");
@@ -344,7 +390,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "regionkey IN (SELECT regionkey FROM region WHERE name = 'ASIA')"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("regionkey IN (SELECT regionkey FROM region WHERE name = 'ASIA')")
+                        .build());
         assertThat(assertions.query(
                 "WITH region(regionkey, name) AS (VALUES (0, 'ASIA'), (1, 'ASIA'), (2, 'ASIA'), (3, 'ASIA'), (4, 'ASIA'))" +
                         "SELECT name FROM nation ORDER BY name LIMIT 1"))
@@ -359,7 +409,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "$$$"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("$$$")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:22: Invalid row filter for 'local.tiny.orders': mismatched input '$'. Expecting: <expression>");
@@ -369,7 +423,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "unknown_column"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("unknown_column")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:22: Invalid row filter for 'local.tiny.orders': Column 'unknown_column' cannot be resolved");
@@ -379,7 +437,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "1"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("1")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:22: Expected row filter for 'local.tiny.orders' to be of type BOOLEAN, but was integer");
@@ -389,7 +451,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "count(*) > 0"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("count(*) > 0")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:10: Row filter for 'local.tiny.orders' cannot contain aggregations, window functions or grouping operations: [count(*)]");
@@ -399,7 +465,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "row_number() OVER () > 0"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("row_number() OVER () > 0")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:22: Row filter for 'local.tiny.orders' cannot contain aggregations, window functions or grouping operations: [row_number() OVER ()]");
@@ -409,7 +479,11 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "grouping(orderkey) = 0"));
+                ViewExpression.builder()
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("grouping(orderkey) = 0")
+                        .build());
 
         assertThatThrownBy(() -> assertions.query("SELECT count(*) FROM orders"))
                 .hasMessage("line 1:20: Row filter for 'local.tiny.orders' cannot contain aggregations, window functions or grouping operations: [GROUPING (orderkey)]");
@@ -422,7 +496,12 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(LOCAL_CATALOG, "tiny", "orders"),
                 USER,
-                new ViewExpression(Optional.of(RUN_AS_USER), Optional.of(LOCAL_CATALOG), Optional.of("tiny"), "orderkey = 0"));
+                ViewExpression.builder()
+                        .identity(RUN_AS_USER)
+                        .catalog(LOCAL_CATALOG)
+                        .schema("tiny")
+                        .expression("orderkey = 0")
+                        .build());
 
         assertThat(assertions.query("SHOW STATS FOR (SELECT * FROM tiny.orders)"))
                 .containsAll(
@@ -442,7 +521,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey < 10"));
+                ViewExpression.builder().expression("nationkey < 10").build());
 
         // Within allowed row filter
         assertions.query("DELETE FROM mock.tiny.nation WHERE nationkey < 3")
@@ -474,7 +553,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey < 10"));
+                ViewExpression.builder().expression("nationkey < 10").build());
 
         // Within allowed row filter
         assertThatThrownBy(() -> assertions.query("""
@@ -507,7 +586,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey < 10"));
+                ViewExpression.builder().expression("nationkey < 10").build());
 
         // Within allowed row filter
         assertThatThrownBy(() -> assertions.query("UPDATE mock.tiny.nation SET regionkey = regionkey * 2 WHERE nationkey < 3"))
@@ -547,7 +626,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey < 10"));
+                ViewExpression.builder().expression("nationkey < 10").build());
 
         // Within allowed row filter
         assertThatThrownBy(() -> assertions.query("""
@@ -604,7 +683,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey > 100"));
+                ViewExpression.builder().expression("nationkey > 100").build());
 
         // Within allowed row filter
         assertions.query("INSERT INTO mock.tiny.nation VALUES (101, 'POLAND', 0, 'No comment')")
@@ -635,7 +714,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey > 100"));
+                ViewExpression.builder().expression("nationkey > 100").build());
 
         // Within allowed row filter
         assertThatThrownBy(() -> assertions.query("""
@@ -670,7 +749,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation_with_hidden_column"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "nationkey < 1"));
+                ViewExpression.builder().expression("nationkey < 1").build());
 
         assertions.query("SELECT * FROM mock.tiny.nation_with_hidden_column")
                 .assertThat()
@@ -703,7 +782,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG, "tiny", "nation_with_hidden_column"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "\"$hidden\" < 1"));
+                ViewExpression.builder().expression("\"$hidden\" < 1").build());
 
         assertions.query("SELECT count(*) FROM mock.tiny.nation_with_hidden_column")
                 .assertThat()
@@ -730,7 +809,7 @@ public class TestRowFilter
         accessControl.rowFilter(
                 new QualifiedObjectName(MOCK_CATALOG_MISSING_COLUMNS, "tiny", "nation_with_optional_column"),
                 USER,
-                new ViewExpression(Optional.empty(), Optional.empty(), Optional.empty(), "length(optional) > 2"));
+                ViewExpression.builder().expression("length(optional) > 2").build());
 
         assertions.query("INSERT INTO mockmissingcolumns.tiny.nation_with_optional_column(nationkey, name, regionkey, comment, optional) VALUES (0, 'POLAND', 0, 'No comment', 'some string')")
                 .assertThat()

@@ -35,11 +35,20 @@ public interface TrinoOutputFile
         return createOrOverwrite(newSimpleAggregatedMemoryContext());
     }
 
+    default OutputStream createExclusive()
+            throws IOException
+    {
+        return createExclusive(newSimpleAggregatedMemoryContext());
+    }
+
     OutputStream create(AggregatedMemoryContext memoryContext)
             throws IOException;
 
     OutputStream createOrOverwrite(AggregatedMemoryContext memoryContext)
             throws IOException;
 
-    String location();
+    OutputStream createExclusive(AggregatedMemoryContext memoryContext)
+            throws IOException;
+
+    Location location();
 }

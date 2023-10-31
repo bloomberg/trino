@@ -14,7 +14,9 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
+import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.MaterializedViewDefinition;
 import io.trino.metadata.MaterializedViewPropertyManager;
@@ -32,8 +34,6 @@ import io.trino.sql.tree.CreateMaterializedView;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Parameter;
-
-import javax.inject.Inject;
 
 import java.time.Duration;
 import java.util.List;
@@ -156,6 +156,10 @@ public class CreateMaterializedViewTask
                 gracePeriod,
                 statement.getComment(),
                 session.getIdentity(),
+                session.getPath().getPath().stream()
+                        // system path elements are not stored
+                        .filter(element -> !element.getCatalogName().equals(GlobalSystemConnector.NAME))
+                        .collect(toImmutableList()),
                 Optional.empty(),
                 properties);
 

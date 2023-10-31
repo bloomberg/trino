@@ -14,6 +14,7 @@
 package io.trino.plugin.ignite;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.plugin.jdbc.DefaultJdbcMetadata;
 import io.trino.plugin.jdbc.JdbcClient;
@@ -38,8 +39,6 @@ import io.trino.spi.connector.RetryMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.type.Type;
-
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.List;
@@ -120,7 +119,7 @@ public class IgniteMetadata
     {
         JdbcTableHandle handle = (JdbcTableHandle) table;
         return new ConnectorTableMetadata(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 getColumnMetadata(session, handle),
                 igniteClient.getTableProperties(session, handle));
     }
@@ -138,7 +137,7 @@ public class IgniteMetadata
     {
         JdbcTableHandle handle = (JdbcTableHandle) table;
         return new ConnectorTableSchema(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 getColumnMetadata(session, handle).stream()
                         .map(ColumnMetadata::getColumnSchema)
                         .collect(toImmutableList()));

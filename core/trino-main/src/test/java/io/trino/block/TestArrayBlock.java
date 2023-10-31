@@ -19,8 +19,9 @@ import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.ByteArrayBlock;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
 import java.util.Optional;
 import java.util.Random;
 
@@ -45,18 +46,16 @@ public class TestArrayBlock
             expectedValues[i] = rand.longs(ARRAY_SIZES[i]).toArray();
         }
 
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 0, 1, 3, 4, 7);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 2, 3, 5, 6);
+        Block block = createBlockBuilderWithValues(expectedValues).build();
+        assertBlock(block, expectedValues);
+        assertBlockFilteredPositions(expectedValues, block, 0, 1, 3, 4, 7);
+        assertBlockFilteredPositions(expectedValues, block, 2, 3, 5, 6);
 
         long[][] expectedValuesWithNull = alternatingNullValues(expectedValues);
-        BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull, expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull.build(), expectedValuesWithNull);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 0, 1, 5, 6, 7, 10, 11, 12, 15);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 2, 3, 4, 9, 13, 14);
+        Block blockWithNull = createBlockBuilderWithValues(expectedValuesWithNull).build();
+        assertBlock(blockWithNull, expectedValuesWithNull);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 0, 1, 5, 6, 7, 10, 11, 12, 15);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 2, 3, 4, 9, 13, 14);
     }
 
     @Test
@@ -70,19 +69,16 @@ public class TestArrayBlock
             }
         }
 
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 0, 1, 3, 4, 7);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 2, 3, 5, 6);
+        Block block = createBlockBuilderWithValues(expectedValues).build();
+        assertBlock(block, expectedValues);
+        assertBlockFilteredPositions(expectedValues, block, 0, 1, 3, 4, 7);
+        assertBlockFilteredPositions(expectedValues, block, 2, 3, 5, 6);
 
         Slice[][] expectedValuesWithNull = alternatingNullValues(expectedValues);
-        BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull, expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull.build(), expectedValuesWithNull);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 0, 1, 5, 6, 7, 10, 11, 12, 15);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 2, 3, 4, 9, 13, 14);
+        Block blockWithNull = createBlockBuilderWithValues(expectedValuesWithNull).build();
+        assertBlock(blockWithNull, expectedValuesWithNull);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 0, 1, 5, 6, 7, 10, 11, 12, 15);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 2, 3, 4, 9, 13, 14);
     }
 
     @Test
@@ -90,19 +86,16 @@ public class TestArrayBlock
     {
         long[][][] expectedValues = createExpectedValues();
 
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 0, 1, 3, 4, 7);
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), 2, 3, 5, 6);
+        Block block = createBlockBuilderWithValues(expectedValues).build();
+        assertBlock(block, expectedValues);
+        assertBlockFilteredPositions(expectedValues, block, 0, 1, 3, 4, 7);
+        assertBlockFilteredPositions(expectedValues, block, 2, 3, 5, 6);
 
         long[][][] expectedValuesWithNull = alternatingNullValues(expectedValues);
-        BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull, expectedValuesWithNull);
-        assertBlock(blockBuilderWithNull.build(), expectedValuesWithNull);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 0, 1, 5, 6, 7, 10, 11, 12, 15);
-        assertBlockFilteredPositions(expectedValuesWithNull, blockBuilderWithNull.build(), 2, 3, 4, 9, 13, 14);
+        Block blockWithNull = createBlockBuilderWithValues(expectedValuesWithNull).build();
+        assertBlock(blockWithNull, expectedValuesWithNull);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 0, 1, 5, 6, 7, 10, 11, 12, 15);
+        assertBlockFilteredPositions(expectedValuesWithNull, blockWithNull, 2, 3, 4, 9, 13, 14);
     }
 
     private static long[][][] createExpectedValues()
@@ -130,7 +123,7 @@ public class TestArrayBlock
         for (int i = 0; i < ARRAY_SIZES.length; i++) {
             expectedValues[i] = rand.longs(ARRAY_SIZES[i]).toArray();
         }
-        BlockBuilder emptyBlockBuilder = new ArrayBlockBuilder(BIGINT, null, 0, 0);
+        ArrayBlockBuilder emptyBlockBuilder = new ArrayBlockBuilder(BIGINT, null, 0, 0);
 
         BlockBuilder blockBuilder = new ArrayBlockBuilder(BIGINT, null, 100, 100);
         assertEquals(blockBuilder.getSizeInBytes(), emptyBlockBuilder.getSizeInBytes());
@@ -149,12 +142,10 @@ public class TestArrayBlock
     public void testEstimatedDataSizeForStats()
     {
         long[][][] expectedValues = alternatingNullValues(createExpectedValues());
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-        Block block = blockBuilder.build();
+        Block block = createBlockBuilderWithValues(expectedValues).build();
         assertEquals(block.getPositionCount(), expectedValues.length);
         for (int i = 0; i < block.getPositionCount(); i++) {
             int expectedSize = getExpectedEstimatedDataSize(expectedValues[i]);
-            assertEquals(blockBuilder.getEstimatedDataSizeForStats(i), expectedSize);
             assertEquals(block.getEstimatedDataSizeForStats(i), expectedSize);
         }
     }
@@ -191,26 +182,22 @@ public class TestArrayBlock
 
     private static BlockBuilder createBlockBuilderWithValues(long[][][] expectedValues)
     {
-        BlockBuilder blockBuilder = new ArrayBlockBuilder(new ArrayBlockBuilder(BIGINT, null, 100, 100), null, 100);
+        ArrayBlockBuilder blockBuilder = new ArrayBlockBuilder(new ArrayBlockBuilder(BIGINT, null, 100, 100), null, 100);
         for (long[][] expectedValue : expectedValues) {
             if (expectedValue == null) {
                 blockBuilder.appendNull();
             }
             else {
-                BlockBuilder intermediateBlockBuilder = blockBuilder.beginBlockEntry();
-                for (int j = 0; j < expectedValue.length; j++) {
-                    if (expectedValue[j] == null) {
-                        intermediateBlockBuilder.appendNull();
-                    }
-                    else {
-                        BlockBuilder innerMostBlockBuilder = intermediateBlockBuilder.beginBlockEntry();
-                        for (long v : expectedValue[j]) {
-                            BIGINT.writeLong(innerMostBlockBuilder, v);
+                blockBuilder.buildEntry(elementBuilder -> {
+                    for (long[] values : expectedValue) {
+                        if (values == null) {
+                            elementBuilder.appendNull();
                         }
-                        intermediateBlockBuilder.closeEntry();
+                        else {
+                            ((ArrayBlockBuilder) elementBuilder).buildEntry(innerBuilder -> Arrays.stream(values).forEach(value -> BIGINT.writeLong(innerBuilder, value)));
+                        }
                     }
-                }
-                blockBuilder.closeEntry();
+                });
             }
         }
         return blockBuilder;
@@ -218,7 +205,7 @@ public class TestArrayBlock
 
     private static BlockBuilder createBlockBuilderWithValues(long[][] expectedValues)
     {
-        BlockBuilder blockBuilder = new ArrayBlockBuilder(BIGINT, null, 100, 100);
+        ArrayBlockBuilder blockBuilder = new ArrayBlockBuilder(BIGINT, null, 100, 100);
         return writeValues(expectedValues, blockBuilder);
     }
 
@@ -229,11 +216,11 @@ public class TestArrayBlock
                 blockBuilder.appendNull();
             }
             else {
-                BlockBuilder elementBlockBuilder = blockBuilder.beginBlockEntry();
-                for (long v : expectedValue) {
-                    BIGINT.writeLong(elementBlockBuilder, v);
-                }
-                blockBuilder.closeEntry();
+                ((ArrayBlockBuilder) blockBuilder).buildEntry(elementBuilder -> {
+                    for (long v : expectedValue) {
+                        BIGINT.writeLong(elementBuilder, v);
+                    }
+                });
             }
         }
         return blockBuilder;
@@ -241,17 +228,17 @@ public class TestArrayBlock
 
     private static BlockBuilder createBlockBuilderWithValues(Slice[][] expectedValues)
     {
-        BlockBuilder blockBuilder = new ArrayBlockBuilder(VARCHAR, null, 100, 100);
+        ArrayBlockBuilder blockBuilder = new ArrayBlockBuilder(VARCHAR, null, 100, 100);
         for (Slice[] expectedValue : expectedValues) {
             if (expectedValue == null) {
                 blockBuilder.appendNull();
             }
             else {
-                BlockBuilder elementBlockBuilder = blockBuilder.beginBlockEntry();
-                for (Slice v : expectedValue) {
-                    VARCHAR.writeSlice(elementBlockBuilder, v);
-                }
-                blockBuilder.closeEntry();
+                blockBuilder.buildEntry(elementBuilder -> {
+                    for (Slice v : expectedValue) {
+                        VARCHAR.writeSlice(elementBuilder, v);
+                    }
+                });
             }
         }
         return blockBuilder;

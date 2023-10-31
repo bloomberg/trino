@@ -30,10 +30,10 @@ import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.type.Type;
 import io.trino.tpch.LineItem;
 import io.trino.tpch.LineItemGenerator;
-import org.assertj.core.api.Assertions;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import javax.crypto.SecretKey;
 
@@ -51,20 +51,23 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static io.trino.util.Ciphers.createRandomAesEncryptionKey;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 
+@TestInstance(PER_CLASS)
 public class TestPagesSerde
 {
     private BlockEncodingSerde blockEncodingSerde;
 
-    @BeforeClass
+    @BeforeAll
     public void setup()
     {
         blockEncodingSerde = new InternalBlockEncodingSerde(new BlockEncodingManager(), TESTING_TYPE_MANAGER);
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void teardown()
     {
         blockEncodingSerde = null;
@@ -277,17 +280,18 @@ public class TestPagesSerde
         VariableWidthBlock expected = (VariableWidthBlock) page.getBlock(0);
         VariableWidthBlock actual = (VariableWidthBlock) deserialized.getBlock(0);
 
-        Assertions.assertThat(actual.getRawSlice().getBytes()).isEqualTo(expected.getRawSlice().getBytes());
+        assertThat(actual.getRawSlice().getBytes()).isEqualTo(expected.getRawSlice().getBytes());
     }
 
     private static Page createTestPage(int numberOfEntries)
     {
         VariableWidthBlockBuilder blockBuilder = new VariableWidthBlockBuilder(null, 1, 1000);
-        blockBuilder.writeInt(numberOfEntries);
-        for (int i = 0; i < numberOfEntries; i++) {
-            blockBuilder.writeLong(i);
-        }
-        blockBuilder.closeEntry();
+        blockBuilder.buildEntry(value -> {
+            value.writeInt(numberOfEntries);
+            for (int i = 0; i < numberOfEntries; i++) {
+                value.writeLong(i);
+            }
+        });
         return new Page(blockBuilder.build());
     }
 
@@ -299,12 +303,13 @@ public class TestPagesSerde
         {
             int numberOfEntries = input.readInt();
             VariableWidthBlockBuilder blockBuilder = new VariableWidthBlockBuilder(null, 1, 1000);
-            blockBuilder.writeInt(numberOfEntries);
-            for (int i = 0; i < numberOfEntries; ++i) {
-                // read 8 bytes at a time
-                blockBuilder.writeLong(input.readLong());
-            }
-            blockBuilder.closeEntry();
+            blockBuilder.buildEntry(value -> {
+                value.writeInt(numberOfEntries);
+                for (int i = 0; i < numberOfEntries; ++i) {
+                    // read 8 bytes at a time
+                    value.writeLong(input.readLong());
+                }
+            });
             return blockBuilder.build();
         }
 

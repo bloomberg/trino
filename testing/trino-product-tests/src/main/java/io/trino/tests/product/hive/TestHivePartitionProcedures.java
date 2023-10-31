@@ -15,7 +15,6 @@ package io.trino.tests.product.hive;
 
 import com.google.inject.Inject;
 import io.trino.tempto.ProductTest;
-import io.trino.tempto.assertions.QueryAssert;
 import io.trino.tempto.fulfillment.table.hive.HiveDataSource;
 import io.trino.tempto.hadoop.hdfs.HdfsClient;
 import io.trino.tempto.internal.hadoop.hdfs.HdfsDataSourceWriter;
@@ -23,11 +22,11 @@ import io.trino.tempto.query.QueryResult;
 import io.trino.testng.services.Flaky;
 import org.testng.annotations.Test;
 
-import java.net.URISyntaxException;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
 import static io.trino.tempto.fulfillment.table.hive.InlineDataSource.createResourceDataSource;
 import static io.trino.tests.product.TestGroups.HIVE_PARTITIONING;
 import static io.trino.tests.product.TestGroups.SMOKE;
@@ -55,7 +54,6 @@ public class TestHivePartitionProcedures
     @Test(groups = {HIVE_PARTITIONING, SMOKE})
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testUnregisterPartition()
-            throws URISyntaxException
     {
         createPartitionedTable(FIRST_TABLE);
 
@@ -78,7 +76,7 @@ public class TestHivePartitionProcedures
         createPartitionedTable(FIRST_TABLE);
         createView(VIEW_TABLE, FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> dropPartition(VIEW_TABLE, "col", "a"))
+        assertQueryFailure(() -> dropPartition(VIEW_TABLE, "col", "a"))
                 .hasMessageContaining("Table is a view: default." + VIEW_TABLE);
     }
 
@@ -88,7 +86,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> dropPartition("missing_table", "col", "f"))
+        assertQueryFailure(() -> dropPartition("missing_table", "col", "f"))
                 .hasMessageContaining("Table 'default.missing_table' not found");
     }
 
@@ -98,7 +96,7 @@ public class TestHivePartitionProcedures
     {
         createUnpartitionedTable(SECOND_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> dropPartition(SECOND_TABLE, "col", "a"))
+        assertQueryFailure(() -> dropPartition(SECOND_TABLE, "col", "a"))
                 .hasMessageContaining("Table is not partitioned: default." + SECOND_TABLE);
     }
 
@@ -108,7 +106,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> dropPartition(FIRST_TABLE, "not_existing_partition_col", "a"))
+        assertQueryFailure(() -> dropPartition(FIRST_TABLE, "not_existing_partition_col", "a"))
                 .hasMessageContaining("Provided partition column names do not match actual partition column names: [col]");
     }
 
@@ -118,7 +116,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> dropPartition(FIRST_TABLE, "col", "f"))
+        assertQueryFailure(() -> dropPartition(FIRST_TABLE, "col", "f"))
                 .hasMessageContaining("Partition 'col=f' does not exist");
     }
 
@@ -126,7 +124,7 @@ public class TestHivePartitionProcedures
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testRegisterPartitionMissingTableShouldFail()
     {
-        QueryAssert.assertQueryFailure(() -> addPartition("missing_table", "col", "f", "/"))
+        assertQueryFailure(() -> addPartition("missing_table", "col", "f", "/"))
                 .hasMessageContaining("Table 'default.missing_table' not found");
     }
 
@@ -136,7 +134,7 @@ public class TestHivePartitionProcedures
     {
         createUnpartitionedTable(SECOND_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> addPartition(SECOND_TABLE, "col", "a", "/"))
+        assertQueryFailure(() -> addPartition(SECOND_TABLE, "col", "a", "/"))
                 .hasMessageContaining("Table is not partitioned: default." + SECOND_TABLE);
     }
 
@@ -147,7 +145,7 @@ public class TestHivePartitionProcedures
         createPartitionedTable(FIRST_TABLE);
         createView(VIEW_TABLE, FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> addPartition(VIEW_TABLE, "col", "a", "/"))
+        assertQueryFailure(() -> addPartition(VIEW_TABLE, "col", "a", "/"))
                 .hasMessageContaining("Table is a view: default." + VIEW_TABLE);
     }
 
@@ -157,7 +155,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> addPartition(FIRST_TABLE, "col", "a", "/"))
+        assertQueryFailure(() -> addPartition(FIRST_TABLE, "col", "a", "/"))
                 .hasMessageContaining("Partition [col=a] is already registered");
     }
 
@@ -167,7 +165,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> addPartition(FIRST_TABLE, "not_existing_partition_col", "a", "/"))
+        assertQueryFailure(() -> addPartition(FIRST_TABLE, "not_existing_partition_col", "a", "/"))
                 .hasMessageContaining("Provided partition column names do not match actual partition column names: [col]");
     }
 
@@ -177,7 +175,7 @@ public class TestHivePartitionProcedures
     {
         createPartitionedTable(FIRST_TABLE);
 
-        QueryAssert.assertQueryFailure(() -> addPartition(FIRST_TABLE, "col", "f", "/some/non/existing/path"))
+        assertQueryFailure(() -> addPartition(FIRST_TABLE, "col", "f", "/some/non/existing/path"))
                 .hasMessageContaining("Partition location does not exist: /some/non/existing/path");
     }
 
@@ -202,7 +200,6 @@ public class TestHivePartitionProcedures
     @Test(groups = {HIVE_PARTITIONING, SMOKE})
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testRegisterPartition()
-            throws URISyntaxException
     {
         createPartitionedTable(FIRST_TABLE);
         createPartitionedTable(SECOND_TABLE);

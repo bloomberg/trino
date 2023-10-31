@@ -16,6 +16,7 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.connector.CatalogProperties;
 import io.trino.cost.StatsAndCosts;
@@ -24,6 +25,8 @@ import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.FunctionManager;
+import io.trino.metadata.LanguageFunctionManager;
+import io.trino.metadata.LanguageScalarFunctionData;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableProperties.TablePartitioning;
@@ -50,11 +53,10 @@ import io.trino.sql.planner.plan.TableFinishNode;
 import io.trino.sql.planner.plan.TableFunctionNode;
 import io.trino.sql.planner.plan.TableFunctionProcessorNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.sql.planner.plan.TableUpdateNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.transaction.TransactionManager;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -89,13 +91,14 @@ import static java.util.Objects.requireNonNull;
 public class PlanFragmenter
 {
     private static final String TOO_MANY_STAGES_MESSAGE = "" +
-            "If the query contains multiple aggregates with DISTINCT over different columns, please set the 'use_mark_distinct' session property to false. " +
+            "If the query contains multiple aggregates with DISTINCT over different columns, please set the 'mark_distinct_strategy' session property to 'none'. " +
             "If the query contains WITH clauses that are referenced more than once, please create temporary table(s) for the queries in those clauses.";
 
     private final Metadata metadata;
     private final FunctionManager functionManager;
     private final TransactionManager transactionManager;
     private final CatalogManager catalogManager;
+    private final LanguageFunctionManager languageFunctionManager;
     private final int stageCountWarningThreshold;
 
     @Inject
@@ -104,6 +107,7 @@ public class PlanFragmenter
             FunctionManager functionManager,
             TransactionManager transactionManager,
             CatalogManager catalogManager,
+            LanguageFunctionManager languageFunctionManager,
             QueryManagerConfig queryManagerConfig)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
@@ -111,6 +115,7 @@ public class PlanFragmenter
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
         this.stageCountWarningThreshold = requireNonNull(queryManagerConfig, "queryManagerConfig is null").getStageCountWarningThreshold();
+        this.languageFunctionManager = requireNonNull(languageFunctionManager, "languageFunctionManager is null");
     }
 
     public SubPlan createSubPlans(Session session, Plan plan, boolean forceSingleNode, WarningCollector warningCollector)
@@ -119,7 +124,8 @@ public class PlanFragmenter
                 .map(CatalogInfo::getCatalogHandle)
                 .flatMap(catalogHandle -> catalogManager.getCatalogProperties(catalogHandle).stream())
                 .collect(toImmutableList());
-        Fragmenter fragmenter = new Fragmenter(session, metadata, functionManager, plan.getTypes(), plan.getStatsAndCosts(), activeCatalogs);
+        List<LanguageScalarFunctionData> languageScalarFunctions = languageFunctionManager.serializeFunctionsForWorkers(session);
+        Fragmenter fragmenter = new Fragmenter(session, metadata, functionManager, plan.getTypes(), plan.getStatsAndCosts(), activeCatalogs, languageScalarFunctions);
 
         FragmentProperties properties = new FragmentProperties(new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), plan.getRoot().getOutputSymbols()));
         if (forceSingleNode || isForceSingleNodeOutput(session)) {
@@ -195,6 +201,7 @@ public class PlanFragmenter
                         outputPartitioningScheme.getPartitionCount()),
                 fragment.getStatsAndCosts(),
                 fragment.getActiveCatalogs(),
+                fragment.getLanguageFunctions(),
                 fragment.getJsonRepresentation());
 
         ImmutableList.Builder<SubPlan> childrenBuilder = ImmutableList.builder();
@@ -215,9 +222,17 @@ public class PlanFragmenter
         private final TypeProvider types;
         private final StatsAndCosts statsAndCosts;
         private final List<CatalogProperties> activeCatalogs;
-        private int nextFragmentId = ROOT_FRAGMENT_ID + 1;
+        private final List<LanguageScalarFunctionData> languageFunctions;
+        private final PlanFragmentIdAllocator idAllocator = new PlanFragmentIdAllocator(ROOT_FRAGMENT_ID + 1);
 
-        public Fragmenter(Session session, Metadata metadata, FunctionManager functionManager, TypeProvider types, StatsAndCosts statsAndCosts, List<CatalogProperties> activeCatalogs)
+        public Fragmenter(
+                Session session,
+                Metadata metadata,
+                FunctionManager functionManager,
+                TypeProvider types,
+                StatsAndCosts statsAndCosts,
+                List<CatalogProperties> activeCatalogs,
+                List<LanguageScalarFunctionData> languageFunctions)
         {
             this.session = requireNonNull(session, "session is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
@@ -225,16 +240,12 @@ public class PlanFragmenter
             this.types = requireNonNull(types, "types is null");
             this.statsAndCosts = requireNonNull(statsAndCosts, "statsAndCosts is null");
             this.activeCatalogs = requireNonNull(activeCatalogs, "activeCatalogs is null");
+            this.languageFunctions = requireNonNull(languageFunctions, "languageFunctions is null");
         }
 
         public SubPlan buildRootFragment(PlanNode root, FragmentProperties properties)
         {
             return buildFragment(root, properties, new PlanFragmentId(String.valueOf(ROOT_FRAGMENT_ID)));
-        }
-
-        private PlanFragmentId nextFragmentId()
-        {
-            return new PlanFragmentId(String.valueOf(nextFragmentId++));
         }
 
         private SubPlan buildFragment(PlanNode root, FragmentProperties properties, PlanFragmentId fragmentId)
@@ -257,6 +268,7 @@ public class PlanFragmenter
                     properties.getPartitioningScheme(),
                     statsAndCosts.getForSubplan(root),
                     activeCatalogs,
+                    languageFunctions,
                     Optional.of(jsonFragmentPlan(root, symbols, metadata, functionManager, session)));
 
             return new SubPlan(fragment, properties.getChildren());
@@ -302,6 +314,13 @@ public class PlanFragmenter
 
         @Override
         public PlanNode visitTableDelete(TableDeleteNode node, RewriteContext<FragmentProperties> context)
+        {
+            context.get().setCoordinatorOnlyDistribution();
+            return context.defaultRewrite(node, context.get());
+        }
+
+        @Override
+        public PlanNode visitTableUpdate(TableUpdateNode node, RewriteContext<FragmentProperties> context)
         {
             context.get().setCoordinatorOnlyDistribution();
             return context.defaultRewrite(node, context.get());
@@ -434,7 +453,7 @@ public class PlanFragmenter
 
         private SubPlan buildSubPlan(PlanNode node, FragmentProperties properties, RewriteContext<FragmentProperties> context)
         {
-            PlanFragmentId planFragmentId = nextFragmentId();
+            PlanFragmentId planFragmentId = idAllocator.getNextId();
             PlanNode child = context.rewrite(node, properties);
             return buildFragment(child, properties, planFragmentId);
         }

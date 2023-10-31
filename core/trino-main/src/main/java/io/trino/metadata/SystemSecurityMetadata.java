@@ -16,6 +16,7 @@ package io.trino.metadata;
 import io.trino.Session;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.security.GrantInfo;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
@@ -139,6 +140,11 @@ public interface SystemSecurityMetadata
     void setViewOwner(Session session, CatalogSchemaTableName view, TrinoPrincipal principal);
 
     /**
+     * Get the identity to run the function as
+     */
+    Optional<Identity> getFunctionRunAsIdentity(Session session, CatalogSchemaFunctionName functionName);
+
+    /**
      * A schema was created
      */
     void schemaCreated(Session session, CatalogSchemaName schema);
@@ -167,4 +173,19 @@ public interface SystemSecurityMetadata
      * A table or view was dropped
      */
     void tableDropped(Session session, CatalogSchemaTableName table);
+
+    /**
+     * A column was created
+     */
+    void columnCreated(Session session, CatalogSchemaTableName table, String column);
+
+    /**
+     * A column was renamed
+     */
+    void columnRenamed(Session session, CatalogSchemaTableName table, String oldName, String newName);
+
+    /**
+     * A column was dropped
+     */
+    void columnDropped(Session session, CatalogSchemaTableName table, String column);
 }

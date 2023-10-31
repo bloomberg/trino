@@ -14,7 +14,6 @@
 package io.trino.sql.query;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -24,19 +23,12 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 @TestInstance(PER_CLASS)
 public class TestCorrelatedAggregation
 {
-    protected QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    protected final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -481,5 +473,35 @@ public class TestCorrelatedAggregation
                 "LATERAL (SELECT checksum(value) FILTER (WHERE value > 1) FROM (VALUES (1, 1), (2, 2)) t2(key, value) WHERE t2.key <= t.key) " +
                 "ON TRUE"))
                 .matches("VALUES (1, null), (2, x'd0f70cebd131ec61')");
+    }
+
+    @Test
+    public void testCorrelatedSubqueryWithGroupedAggregation()
+    {
+        assertThat(assertions.query("WITH" +
+                "    t(k, v) AS (VALUES ('A', 1), ('B', NULL), ('C', 2), ('D', 3)), " +
+                "    u(k, v) AS (VALUES (1, 10), (1, 20), (2, 30)) " +
+                "SELECT" +
+                "    k," +
+                "    (" +
+                "        SELECT max(v) FROM u WHERE t.v = u.k GROUP BY k" +
+                "     ) AS cols " +
+                "FROM t"))
+                .matches("VALUES ('A', 20), ('B', NULL), ('C', 30), ('D', NULL)");
+    }
+
+    @Test
+    public void testCorrelatedSubqueryWithGlobalAggregation()
+    {
+        assertThat(assertions.query("WITH" +
+                "    t(k, v) AS (VALUES ('A', 1), ('B', NULL), ('C', 2), ('D', 3)), " +
+                "    u(k, v) AS (VALUES (1, 10), (1, 20), (2, 30)) " +
+                "SELECT" +
+                "    k," +
+                "    (" +
+                "        SELECT max(v) FROM u WHERE t.v = u.k" +
+                "     ) AS cols " +
+                "FROM t"))
+                .matches("VALUES ('A', 20), ('B', NULL), ('C', 30), ('D', NULL)");
     }
 }

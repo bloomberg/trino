@@ -14,8 +14,10 @@
 package io.trino.plugin.deltalake.transactionlog.checkpoint;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.plugin.deltalake.DeltaLakeColumnMetadata;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
+import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.BooleanType;
@@ -29,19 +31,26 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
 
-import javax.inject.Inject;
-
 import java.util.List;
 import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.extractSchema;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.isDeletionVectorEnabled;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogAccess.columnsWithStats;
 import static java.util.Objects.requireNonNull;
 
 public class CheckpointSchemaManager
 {
     private final TypeManager typeManager;
+
+    private static final RowType DELETION_VECTORS_TYPE = RowType.from(ImmutableList.<RowType.Field>builder()
+            .add(RowType.field("storageType", VarcharType.VARCHAR))
+            .add(RowType.field("pathOrInlineDv", VarcharType.VARCHAR))
+            .add(RowType.field("offset", IntegerType.INTEGER))
+            .add(RowType.field("sizeInBytes", IntegerType.INTEGER))
+            .add(RowType.field("cardinality", BigintType.BIGINT))
+            .build());
 
     private static final RowType TXN_ENTRY_TYPE = RowType.from(ImmutableList.of(
             RowType.field("appId", VarcharType.createUnboundedVarcharType()),
@@ -53,19 +62,16 @@ public class CheckpointSchemaManager
             RowType.field("deletionTimestamp", BigintType.BIGINT),
             RowType.field("dataChange", BooleanType.BOOLEAN)));
 
-    private static final RowType PROTOCOL_ENTRY_TYPE = RowType.from(ImmutableList.of(
-            RowType.field("minReaderVersion", IntegerType.INTEGER),
-            RowType.field("minWriterVersion", IntegerType.INTEGER)));
-
     private final RowType metadataEntryType;
     private final RowType commitInfoEntryType;
+    private final ArrayType stringList;
 
     @Inject
     public CheckpointSchemaManager(TypeManager typeManager)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
 
-        ArrayType stringList = (ArrayType) this.typeManager.getType(TypeSignature.arrayType(VarcharType.VARCHAR.getTypeSignature()));
+        stringList = (ArrayType) this.typeManager.getType(TypeSignature.arrayType(VarcharType.VARCHAR.getTypeSignature()));
         MapType stringMap = (MapType) this.typeManager.getType(TypeSignature.mapType(VarcharType.VARCHAR.getTypeSignature(), VarcharType.VARCHAR.getTypeSignature()));
 
         metadataEntryType = RowType.from(ImmutableList.of(
@@ -106,10 +112,11 @@ public class CheckpointSchemaManager
         return metadataEntryType;
     }
 
-    public RowType getAddEntryType(MetadataEntry metadataEntry, boolean requireWriteStatsAsJson, boolean requireWriteStatsAsStruct)
+    public RowType getAddEntryType(MetadataEntry metadataEntry, ProtocolEntry protocolEntry, boolean requireWriteStatsAsJson, boolean requireWriteStatsAsStruct)
     {
-        List<DeltaLakeColumnMetadata> allColumns = extractSchema(metadataEntry, typeManager);
-        List<DeltaLakeColumnMetadata> minMaxColumns = columnsWithStats(metadataEntry, typeManager);
+        List<DeltaLakeColumnMetadata> allColumns = extractSchema(metadataEntry, protocolEntry, typeManager);
+        List<DeltaLakeColumnMetadata> minMaxColumns = columnsWithStats(metadataEntry, protocolEntry, typeManager);
+        boolean deletionVectorEnabled = isDeletionVectorEnabled(metadataEntry, protocolEntry);
 
         ImmutableList.Builder<RowType.Field> minMaxFields = ImmutableList.builder();
         for (DeltaLakeColumnMetadata dataColumn : minMaxColumns) {
@@ -143,6 +150,9 @@ public class CheckpointSchemaManager
         addFields.add(RowType.field("size", BigintType.BIGINT));
         addFields.add(RowType.field("modificationTime", BigintType.BIGINT));
         addFields.add(RowType.field("dataChange", BooleanType.BOOLEAN));
+        if (deletionVectorEnabled) {
+            addFields.add(RowType.field("deletionVector", DELETION_VECTORS_TYPE));
+        }
         if (requireWriteStatsAsJson) {
             addFields.add(RowType.field("stats", VarcharType.createUnboundedVarcharType()));
         }
@@ -176,9 +186,18 @@ public class CheckpointSchemaManager
         return TXN_ENTRY_TYPE;
     }
 
-    public RowType getProtocolEntryType()
+    public RowType getProtocolEntryType(boolean requireReaderFeatures, boolean requireWriterFeatures)
     {
-        return PROTOCOL_ENTRY_TYPE;
+        ImmutableList.Builder<RowType.Field> fields = ImmutableList.builder();
+        fields.add(RowType.field("minReaderVersion", IntegerType.INTEGER));
+        fields.add(RowType.field("minWriterVersion", IntegerType.INTEGER));
+        if (requireReaderFeatures) {
+            fields.add(RowType.field("readerFeatures", stringList));
+        }
+        if (requireWriterFeatures) {
+            fields.add(RowType.field("writerFeatures", stringList));
+        }
+        return RowType.from(fields.build());
     }
 
     public RowType getCommitInfoEntryType()

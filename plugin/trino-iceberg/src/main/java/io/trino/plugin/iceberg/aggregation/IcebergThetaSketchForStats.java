@@ -13,8 +13,8 @@
  */
 package io.trino.plugin.iceberg.aggregation;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
 import io.trino.spi.function.BlockIndex;
@@ -26,14 +26,13 @@ import io.trino.spi.function.SqlType;
 import io.trino.spi.function.TypeParameter;
 import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
-import org.apache.datasketches.Family;
+import jakarta.annotation.Nullable;
+import org.apache.datasketches.common.Family;
 import org.apache.datasketches.theta.SetOperation;
 import org.apache.datasketches.theta.Sketch;
 import org.apache.datasketches.theta.Union;
 import org.apache.datasketches.theta.UpdateSketch;
 import org.apache.iceberg.types.Conversions;
-
-import javax.annotation.Nullable;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,7 +53,7 @@ public final class IcebergThetaSketchForStats
 
     @InputFunction
     @TypeParameter("T")
-    public static void input(@TypeParameter("T") Type type, @AggregationState DataSketchState state, @BlockPosition @SqlType("T") Block block, @BlockIndex int index)
+    public static void input(@TypeParameter("T") Type type, @AggregationState DataSketchState state, @BlockPosition @SqlType("T") ValueBlock block, @BlockIndex int index)
     {
         verify(!block.isNull(index), "Input function is not expected to be called on a NULL input");
 

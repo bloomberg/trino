@@ -16,17 +16,29 @@ package io.trino.plugin.deltalake;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.MoreExecutors;
+import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
 import io.airlift.units.DataSize;
-import io.trino.plugin.deltalake.metastore.DeltaLakeMetastore;
+import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.plugin.deltalake.statistics.CachingExtendedStatisticsAccess;
+import io.trino.plugin.deltalake.statistics.ExtendedStatistics;
+import io.trino.plugin.deltalake.statistics.MetaDirStatisticsAccess;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
+import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
+import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointSchemaManager;
+import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointWriterManager;
+import io.trino.plugin.deltalake.transactionlog.checkpoint.LastCheckpoint;
+import io.trino.plugin.deltalake.transactionlog.writer.NoIsolationSynchronizer;
+import io.trino.plugin.deltalake.transactionlog.writer.TransactionLogSynchronizerManager;
+import io.trino.plugin.deltalake.transactionlog.writer.TransactionLogWriterFactory;
+import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveTransactionHandle;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.Table;
+import io.trino.plugin.hive.NodeVersion;
+import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
+import io.trino.plugin.hive.metastore.UnimplementedHiveMetastore;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.SplitWeight;
@@ -35,19 +47,21 @@ import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
-import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.TypeManager;
 import io.trino.testing.TestingConnectorContext;
 import io.trino.testing.TestingConnectorSession;
-import org.testng.annotations.Test;
+import io.trino.testing.TestingNodeManager;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
 import static org.testng.Assert.assertEquals;
 
 public class TestDeltaLakeSplitManager
@@ -67,8 +81,10 @@ public class TestDeltaLakeSplitManager
     private static final DeltaLakeTableHandle tableHandle = new DeltaLakeTableHandle(
             "schema",
             "table",
-            "location",
+            true,
+            TABLE_PATH,
             metadataEntry,
+            new ProtocolEntry(1, 2, Optional.empty(), Optional.empty()),
             TupleDomain.all(),
             TupleDomain.all(),
             Optional.empty(),
@@ -76,8 +92,8 @@ public class TestDeltaLakeSplitManager
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
-            0,
-            false);
+            0);
+    private final HiveTransactionHandle transactionHandle = new HiveTransactionHandle(true);
 
     @Test
     public void testInitialSplits()
@@ -159,31 +175,78 @@ public class TestDeltaLakeSplitManager
         TestingConnectorContext context = new TestingConnectorContext();
         TypeManager typeManager = context.getTypeManager();
 
-        MockDeltaLakeMetastore metastore = new MockDeltaLakeMetastore();
-        metastore.setValidDataFiles(addFileEntries);
+        HdfsFileSystemFactory hdfsFileSystemFactory = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS);
+        TransactionLogAccess transactionLogAccess = new TransactionLogAccess(
+                typeManager,
+                new CheckpointSchemaManager(typeManager),
+                deltaLakeConfig,
+                new FileFormatDataSourceStats(),
+                hdfsFileSystemFactory,
+                new ParquetReaderConfig())
+        {
+            @Override
+            public List<AddFileEntry> getActiveFiles(TableSnapshot tableSnapshot, MetadataEntry metadataEntry, ProtocolEntry protocolEntry, ConnectorSession session)
+            {
+                return addFileEntries;
+            }
+        };
+
+        CheckpointWriterManager checkpointWriterManager = new CheckpointWriterManager(
+                typeManager,
+                new CheckpointSchemaManager(typeManager),
+                hdfsFileSystemFactory,
+                new NodeVersion("test_version"),
+                transactionLogAccess,
+                new FileFormatDataSourceStats(),
+                JsonCodec.jsonCodec(LastCheckpoint.class));
+
+        DeltaLakeMetadataFactory metadataFactory = new DeltaLakeMetadataFactory(
+                HiveMetastoreFactory.ofInstance(new UnimplementedHiveMetastore()),
+                hdfsFileSystemFactory,
+                transactionLogAccess,
+                typeManager,
+                DeltaLakeAccessControlMetadataFactory.DEFAULT,
+                new DeltaLakeConfig(),
+                JsonCodec.jsonCodec(DataFileInfo.class),
+                JsonCodec.jsonCodec(DeltaLakeMergeResult.class),
+                new TransactionLogWriterFactory(
+                        new TransactionLogSynchronizerManager(ImmutableMap.of(), new NoIsolationSynchronizer(hdfsFileSystemFactory))),
+                new TestingNodeManager(),
+                checkpointWriterManager,
+                DeltaLakeRedirectionsProvider.NOOP,
+                new CachingExtendedStatisticsAccess(new MetaDirStatisticsAccess(HDFS_FILE_SYSTEM_FACTORY, new JsonCodecFactory().jsonCodec(ExtendedStatistics.class))),
+                true,
+                new NodeVersion("test_version"));
+
+        ConnectorSession session = testingConnectorSessionWithConfig(deltaLakeConfig);
+        DeltaLakeTransactionManager deltaLakeTransactionManager = new DeltaLakeTransactionManager(metadataFactory);
+        deltaLakeTransactionManager.begin(transactionHandle);
+        deltaLakeTransactionManager.get(transactionHandle, session.getIdentity()).getSnapshot(session, tableHandle.getSchemaTableName(), TABLE_PATH, Optional.empty());
         return new DeltaLakeSplitManager(
                 typeManager,
-                (session, transaction) -> metastore,
+                transactionLogAccess,
                 MoreExecutors.newDirectExecutorService(),
-                deltaLakeConfig);
+                deltaLakeConfig,
+                HDFS_FILE_SYSTEM_FACTORY,
+                deltaLakeTransactionManager);
     }
 
     private AddFileEntry addFileEntryOfSize(long fileSize)
     {
-        return new AddFileEntry(FILE_PATH, ImmutableMap.of(), fileSize, 0, false, Optional.empty(), Optional.empty(), ImmutableMap.of());
+        return new AddFileEntry(FILE_PATH, ImmutableMap.of(), fileSize, 0, false, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty());
     }
 
     private DeltaLakeSplit makeSplit(long start, long splitSize, long fileSize, double minimumAssignedSplitWeight)
     {
         SplitWeight splitWeight = SplitWeight.fromProportion(Math.min(Math.max((double) fileSize / splitSize, minimumAssignedSplitWeight), 1.0));
-        return new DeltaLakeSplit(FULL_PATH, start, splitSize, fileSize, Optional.empty(), 0, ImmutableList.of(), splitWeight, TupleDomain.all(), ImmutableMap.of());
+        return new DeltaLakeSplit(FULL_PATH, start, splitSize, fileSize, Optional.empty(), 0, Optional.empty(), splitWeight, TupleDomain.all(), ImmutableMap.of());
     }
 
     private List<DeltaLakeSplit> getSplits(DeltaLakeSplitManager splitManager, DeltaLakeConfig deltaLakeConfig)
             throws ExecutionException, InterruptedException
     {
         ConnectorSplitSource splitSource = splitManager.getSplits(
-                new HiveTransactionHandle(false),
+                transactionHandle,
                 testingConnectorSessionWithConfig(deltaLakeConfig),
                 tableHandle,
                 DynamicFilter.EMPTY,
@@ -205,112 +268,5 @@ public class TestDeltaLakeSplitManager
         return TestingConnectorSession.builder()
                 .setPropertyMetadata(sessionProperties.getSessionProperties())
                 .build();
-    }
-
-    private static class MockDeltaLakeMetastore
-            implements DeltaLakeMetastore
-    {
-        private List<AddFileEntry> validDataFiles;
-
-        public void setValidDataFiles(List<AddFileEntry> validDataFiles)
-        {
-            this.validDataFiles = ImmutableList.copyOf(validDataFiles);
-        }
-
-        @Override
-        public List<String> getAllDatabases()
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public Optional<Database> getDatabase(String databaseName)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public List<String> getAllTables(String databaseName)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public Optional<Table> getTable(String databaseName, String tableName)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public void createDatabase(Database database)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public void dropDatabase(String databaseName, boolean deleteData)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public void createTable(ConnectorSession session, Table table, PrincipalPrivileges principalPrivileges)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public void dropTable(ConnectorSession session, String databaseName, String tableName, boolean deleteData)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public void renameTable(ConnectorSession session, SchemaTableName from, SchemaTableName to)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public MetadataEntry getMetadata(TableSnapshot tableSnapshot, ConnectorSession session)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public ProtocolEntry getProtocol(ConnectorSession session, TableSnapshot tableSnapshot)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public String getTableLocation(SchemaTableName table)
-        {
-            return TABLE_PATH;
-        }
-
-        @Override
-        public TableSnapshot getSnapshot(SchemaTableName table, ConnectorSession session)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public List<AddFileEntry> getValidDataFiles(SchemaTableName table, ConnectorSession session)
-        {
-            return validDataFiles;
-        }
-
-        @Override
-        public TableStatistics getTableStatistics(ConnectorSession session, DeltaLakeTableHandle tableHandle)
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
-
-        @Override
-        public HiveMetastore getHiveMetastore()
-        {
-            throw new UnsupportedOperationException("Unimplemented");
-        }
     }
 }

@@ -19,7 +19,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
+import io.opentelemetry.api.trace.Span;
 import io.trino.exchange.DirectExchangeInput;
 import io.trino.execution.ExecutionFailureInfo;
 import io.trino.execution.RemoteTask;
@@ -43,8 +45,6 @@ import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.RemoteSourceNode;
 import io.trino.util.Failures;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.net.URI;
 import java.util.HashSet;
@@ -298,7 +298,8 @@ public class PipelinedStageExecution
                 outputBuffers,
                 initialSplits,
                 ImmutableSet.of(),
-                Optional.empty());
+                Optional.empty(),
+                false);
 
         if (optionalTask.isEmpty()) {
             return Optional.empty();
@@ -550,6 +551,12 @@ public class PipelinedStageExecution
     public int getAttemptId()
     {
         return attempt;
+    }
+
+    @Override
+    public Span getStageSpan()
+    {
+        return stage.getStageSpan();
     }
 
     @Override

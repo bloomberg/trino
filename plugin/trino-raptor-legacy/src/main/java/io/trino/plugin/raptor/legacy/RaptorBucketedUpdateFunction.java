@@ -14,11 +14,10 @@
 package io.trino.plugin.raptor.legacy;
 
 import io.trino.spi.Page;
-import io.trino.spi.block.Block;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.connector.BucketFunction;
 
 import static io.trino.spi.type.IntegerType.INTEGER;
-import static java.lang.Math.toIntExact;
 
 public class RaptorBucketedUpdateFunction
         implements BucketFunction
@@ -26,7 +25,7 @@ public class RaptorBucketedUpdateFunction
     @Override
     public int getBucket(Page page, int position)
     {
-        Block row = page.getBlock(0).getObject(position, Block.class);
-        return toIntExact(INTEGER.getLong(row, 0)); // bucket field of row ID
+        SqlRow row = page.getBlock(0).getObject(position, SqlRow.class);
+        return INTEGER.getInt(row.getRawFieldBlock(0), row.getRawIndex()); // bucket field of row ID
     }
 }

@@ -14,7 +14,9 @@
 package io.trino.plugin.phoenix5;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.DefaultJdbcMetadata;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcNamedRelationHandle;
@@ -22,7 +24,6 @@ import io.trino.plugin.jdbc.JdbcQueryEventListener;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.RemoteTableName;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -43,12 +44,11 @@ import io.trino.spi.connector.RetryMode;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortingProperty;
+import io.trino.spi.expression.Constant;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.type.RowType;
-
-import javax.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -118,7 +118,7 @@ public class PhoenixMetadata
                         .collect(toImmutableList()))
                 .orElse(ImmutableList.of());
 
-        return new ConnectorTableProperties(TupleDomain.all(), Optional.empty(), Optional.empty(), Optional.empty(), sortingProperties);
+        return new ConnectorTableProperties(TupleDomain.all(), Optional.empty(), Optional.empty(), sortingProperties);
     }
 
     @Override
@@ -126,7 +126,7 @@ public class PhoenixMetadata
     {
         JdbcTableHandle handle = (JdbcTableHandle) table;
         return new ConnectorTableSchema(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 getColumnMetadata(session, handle).stream()
                         .map(ColumnMetadata::getColumnSchema)
                         .collect(toImmutableList()));
@@ -137,7 +137,7 @@ public class PhoenixMetadata
     {
         JdbcTableHandle handle = (JdbcTableHandle) table;
         return new ConnectorTableMetadata(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 getColumnMetadata(session, handle),
                 phoenixClient.getTableProperties(session, handle));
     }
@@ -161,8 +161,12 @@ public class PhoenixMetadata
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
+        if (cascade) {
+            // Phoenix doesn't support CASCADE option https://phoenix.apache.org/language/index.html#drop_schema
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping schemas with CASCADE option");
+        }
         if (DEFAULT_SCHEMA.equalsIgnoreCase(schemaName)) {
             throw new TrinoException(NOT_SUPPORTED, "Can't drop 'default' schema which maps to Phoenix empty schema");
         }
@@ -172,11 +176,18 @@ public class PhoenixMetadata
     private String toRemoteSchemaName(ConnectorSession session, String schemaName)
     {
         try (Connection connection = phoenixClient.getConnection(session)) {
-            return identifierMapping.toRemoteSchemaName(session.getIdentity(), connection, schemaName);
+            return identifierMapping.toRemoteSchemaName(phoenixClient.getRemoteIdentifiers(connection), session.getIdentity(), schemaName);
         }
         catch (SQLException e) {
             throw new TrinoException(PHOENIX_METADATA_ERROR, "Couldn't get casing for the schema name", e);
         }
+    }
+
+    @Override
+    public Optional<ConnectorTableHandle> applyUpdate(ConnectorSession session, ConnectorTableHandle handle, Map<ColumnHandle, Constant> assignments)
+    {
+        // Phoenix support row level update, so we should reject this path, earlier than in JDBC client
+        return Optional.empty();
     }
 
     @Override
@@ -318,7 +329,7 @@ public class PhoenixMetadata
     }
 
     @Override
-    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
     }
 

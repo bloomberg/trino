@@ -14,6 +14,7 @@
 package io.trino.plugin.hive.parquet;
 
 import com.google.common.io.Resources;
+import io.trino.filesystem.Location;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
@@ -27,8 +28,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
-import org.apache.hadoop.fs.Path;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.List;
@@ -37,7 +37,6 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
 
-import static io.trino.hadoop.ConfigurationInstantiator.newEmptyConfiguration;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.trino.plugin.hive.HiveColumnHandle.createBaseColumn;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
@@ -82,15 +81,14 @@ public class TestOnlyNulls
 
     private static ConnectorPageSource createPageSource(File parquetFile, HiveColumnHandle column, TupleDomain<HiveColumnHandle> domain)
     {
-        HivePageSourceFactory pageSourceFactory = StandardFileFormats.TRINO_PARQUET.getHivePageSourceFactory(HDFS_ENVIRONMENT).orElseThrow();
+        HivePageSourceFactory pageSourceFactory = StandardFileFormats.TRINO_PARQUET.getHivePageSourceFactory(HDFS_ENVIRONMENT);
 
         Properties schema = new Properties();
         schema.setProperty(SERIALIZATION_LIB, HiveStorageFormat.PARQUET.getSerde());
 
         return pageSourceFactory.createPageSource(
-                        newEmptyConfiguration(),
                         getHiveSession(new HiveConfig()),
-                        new Path(parquetFile.toURI()),
+                        Location.of(parquetFile.getPath()),
                         0,
                         parquetFile.length(),
                         parquetFile.length(),

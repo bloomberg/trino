@@ -63,10 +63,12 @@ public class TestMemoryConnectorTest
         return createMemoryQueryRunner(
                 // Adjust DF limits to test edge cases
                 ImmutableMap.<String, String>builder()
-                        .put("dynamic-filtering.small-broadcast.max-distinct-values-per-driver", "100")
-                        .put("dynamic-filtering.small-broadcast.range-row-limit-per-driver", "100")
-                        .put("dynamic-filtering.large-broadcast.max-distinct-values-per-driver", "100")
-                        .put("dynamic-filtering.large-broadcast.range-row-limit-per-driver", "100000")
+                        .put("dynamic-filtering.small.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.small.range-row-limit-per-driver", "100")
+                        .put("dynamic-filtering.large.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.large.range-row-limit-per-driver", "100000")
+                        .put("dynamic-filtering.small-partitioned.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.small-partitioned.range-row-limit-per-driver", "200")
                         .put("dynamic-filtering.large-partitioned.max-distinct-values-per-driver", "100")
                         .put("dynamic-filtering.large-partitioned.range-row-limit-per-driver", "100000")
                         // disable semi join to inner join rewrite to test semi join operators explicitly
@@ -79,38 +81,27 @@ public class TestMemoryConnectorTest
                         .build());
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_PREDICATE_PUSHDOWN:
-            case SUPPORTS_LIMIT_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_RENAME_COLUMN:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_VIEW:
-            case SUPPORTS_COMMENT_ON_VIEW_COLUMN:
-                return true;
-
-            case SUPPORTS_CREATE_VIEW:
-                return true;
-
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN,
+                    SUPPORTS_AGGREGATION_PUSHDOWN,
+                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                    SUPPORTS_DELETE,
+                    SUPPORTS_DEREFERENCE_PUSHDOWN,
+                    SUPPORTS_LIMIT_PUSHDOWN,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_PREDICATE_PUSHDOWN,
+                    SUPPORTS_RENAME_COLUMN,
+                    SUPPORTS_RENAME_SCHEMA,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_UPDATE -> false;
+            case SUPPORTS_CREATE_FUNCTION -> true;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override

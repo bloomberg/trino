@@ -14,6 +14,8 @@
 package io.trino.server;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.connector.CatalogFactory;
 import io.trino.eventlistener.EventListenerManager;
@@ -47,9 +49,6 @@ import io.trino.spi.session.SessionPropertyConfigurationManagerFactory;
 import io.trino.spi.type.ParametricType;
 import io.trino.spi.type.Type;
 
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
-
 import java.net.URL;
 import java.util.List;
 import java.util.Optional;
@@ -72,6 +71,8 @@ public class PluginManager
             .add("com.fasterxml.jackson.annotation.")
             .add("io.airlift.slice.")
             .add("org.openjdk.jol.")
+            .add("io.opentelemetry.api.")
+            .add("io.opentelemetry.context.")
             .build();
 
     private static final Logger log = Logger.get(PluginManager.class);

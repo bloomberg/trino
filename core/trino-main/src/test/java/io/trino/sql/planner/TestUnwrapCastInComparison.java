@@ -17,7 +17,7 @@ import io.trino.Session;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.sql.planner.assertions.BasePlanTest;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
@@ -802,7 +802,7 @@ public class TestUnwrapCastInComparison
     {
         assertPlan(format("SELECT * FROM (VALUES CAST(NULL AS %s)) t(a) WHERE %s AND rand() = 42", inputType, inputPredicate),
                 output(
-                        filter("rand() = 42e0",
+                        filter("random() = 42e0",
                                 values("a"))));
     }
 
@@ -816,7 +816,7 @@ public class TestUnwrapCastInComparison
         assertPlan(format("SELECT * FROM (VALUES CAST(NULL AS %s)) t(a) WHERE %s OR rand() = 42", inputType, inputPredicate),
                 session,
                 output(
-                        filter(format("%s OR rand() = 42e0", expectedPredicate),
+                        filter(format("%s OR random() = 42e0", expectedPredicate),
                                 values("a"))));
     }
 

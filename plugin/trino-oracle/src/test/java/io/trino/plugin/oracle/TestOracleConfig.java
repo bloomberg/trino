@@ -15,10 +15,9 @@ package io.trino.plugin.oracle;
 
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import org.testng.annotations.Test;
-
-import javax.validation.constraints.Max;
-import javax.validation.constraints.Min;
 
 import java.math.RoundingMode;
 import java.util.Map;
@@ -36,7 +35,6 @@ public class TestOracleConfig
     public void testDefaults()
     {
         assertRecordedDefaults(recordDefaults(OracleConfig.class)
-                .setDisableAutomaticFetchSize(false)
                 .setSynonymsEnabled(false)
                 .setRemarksReportingEnabled(false)
                 .setDefaultNumberScale(null)
@@ -51,7 +49,6 @@ public class TestOracleConfig
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("oracle.disable-automatic-fetch-size", "true")
                 .put("oracle.synonyms.enabled", "true")
                 .put("oracle.remarks-reporting.enabled", "true")
                 .put("oracle.number.default-scale", "2")
@@ -63,7 +60,6 @@ public class TestOracleConfig
                 .buildOrThrow();
 
         OracleConfig expected = new OracleConfig()
-                .setDisableAutomaticFetchSize(true)
                 .setSynonymsEnabled(true)
                 .setRemarksReportingEnabled(true)
                 .setDefaultNumberScale(2)

@@ -31,7 +31,7 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.testing.TestingSession;
 import io.trino.tests.BogusType;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,6 +39,7 @@ import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
+import static com.google.common.collect.Lists.newArrayList;
 import static io.trino.RowPagesBuilder.rowPagesBuilder;
 import static io.trino.client.ClientStandardTypes.ARRAY;
 import static io.trino.client.ClientStandardTypes.BIGINT;
@@ -57,7 +58,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
-import static org.testng.collections.Lists.newArrayList;
 
 public class TestQueryResultRows
 {

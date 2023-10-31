@@ -21,6 +21,7 @@ import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.execution.ScheduledSplit;
@@ -28,9 +29,6 @@ import io.trino.execution.SplitAssignment;
 import io.trino.metadata.Split;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
-import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.Closeable;
 import java.util.ArrayList;
@@ -162,11 +160,6 @@ public class Driver
     public ListenableFuture<Void> getDestroyedFuture()
     {
         return destroyedFuture;
-    }
-
-    public Optional<PlanNodeId> getSourceId()
-    {
-        return sourceOperator.map(SourceOperator::getSourceId);
     }
 
     @Override

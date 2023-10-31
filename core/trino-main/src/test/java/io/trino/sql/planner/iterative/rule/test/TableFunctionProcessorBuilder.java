@@ -16,8 +16,7 @@ package io.trino.sql.planner.iterative.rule.test;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.metadata.TableFunctionHandle;
-import io.trino.spi.function.SchemaFunctionName;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
@@ -130,6 +129,6 @@ public class TableFunctionProcessorBuilder
                 prePartitioned,
                 preSorted,
                 hashSymbol,
-                new TableFunctionHandle(TEST_CATALOG_HANDLE, new SchemaFunctionName("system", name), new ConnectorTableFunctionHandle() {}, TestingTransactionHandle.create()));
+                new TableFunctionHandle(TEST_CATALOG_HANDLE, new ConnectorTableFunctionHandle() {}, TestingTransactionHandle.create()));
     }
 }

@@ -21,8 +21,10 @@ import io.trino.client.StatementClient;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.spi.QueryId;
 import io.trino.testing.DistributedQueryRunner;
+import okhttp3.Call;
 import okhttp3.OkHttpClient;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.time.ZoneId;
 import java.util.Locale;
@@ -37,7 +39,8 @@ import static org.testng.Assert.assertTrue;
 
 public class TestFinalQueryInfo
 {
-    @Test(timeOut = 240_000)
+    @Test
+    @Timeout(240)
     public void testFinalQueryInfoSetOnAbort()
             throws Exception
     {
@@ -73,7 +76,7 @@ public class TestFinalQueryInfo
                     .build();
 
             // start query
-            StatementClient client = newStatementClient(httpClient, clientSession, sql);
+            StatementClient client = newStatementClient((Call.Factory) httpClient, clientSession, sql);
 
             // wait for query to be fully scheduled
             while (client.isRunning() && !client.currentStatusInfo().getStats().isScheduled()) {

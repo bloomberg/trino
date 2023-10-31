@@ -29,7 +29,7 @@ import io.trino.sql.planner.iterative.rule.RemoveRedundantIdentityProjections;
 import io.trino.sql.planner.iterative.rule.SingleDistinctAggregationToGroupBy;
 import io.trino.sql.tree.FunctionCall;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
@@ -72,7 +72,7 @@ public class TestOptimizeMixedDistinctAggregations
         // Second Aggregation data
         List<String> groupByKeysSecond = ImmutableList.of(groupBy);
         Map<Optional<String>, ExpectedValueProvider<FunctionCall>> aggregationsSecond = ImmutableMap.of(
-                Optional.of("arbitrary"), PlanMatchPattern.functionCall("arbitrary", false, ImmutableList.of(anySymbol())),
+                Optional.of("any_value"), PlanMatchPattern.functionCall("any_value", false, ImmutableList.of(anySymbol())),
                 Optional.of("count"), PlanMatchPattern.functionCall("count", false, ImmutableList.of(anySymbol())));
 
         // First Aggregation data
@@ -101,7 +101,7 @@ public class TestOptimizeMixedDistinctAggregations
     {
         // Second Aggregation data
         Map<String, ExpectedValueProvider<FunctionCall>> aggregationsSecond = ImmutableMap.of(
-                "arbitrary", PlanMatchPattern.functionCall("arbitrary", false, ImmutableList.of(anySymbol())),
+                "any_value", PlanMatchPattern.functionCall("any_value", false, ImmutableList.of(anySymbol())),
                 "count", PlanMatchPattern.functionCall("count", false, ImmutableList.of(anySymbol())));
 
         // First Aggregation data

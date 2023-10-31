@@ -35,9 +35,10 @@ import io.trino.sql.planner.iterative.rule.ReorderJoins.JoinEnumerator;
 import io.trino.sql.planner.iterative.rule.ReorderJoins.MultiJoinNode;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.LinkedHashSet;
 import java.util.Optional;
@@ -47,20 +48,22 @@ import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.iterative.rule.ReorderJoins.JoinEnumerator.generatePartitions;
 import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 
+@TestInstance(PER_CLASS)
 public class TestJoinEnumerator
 {
     private LocalQueryRunner queryRunner;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         queryRunner = LocalQueryRunner.create(testSessionBuilder().build());
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         closeAllRuntimeException(queryRunner);
@@ -91,7 +94,7 @@ public class TestJoinEnumerator
     public void testDoesNotCreateJoinWhenPartitionedOnCrossJoin()
     {
         PlanNodeIdAllocator idAllocator = new PlanNodeIdAllocator();
-        PlanBuilder p = new PlanBuilder(idAllocator, queryRunner.getMetadata(), queryRunner.getDefaultSession());
+        PlanBuilder p = new PlanBuilder(idAllocator, queryRunner.getPlannerContext(), queryRunner.getDefaultSession());
         Symbol a1 = p.symbol("A1");
         Symbol b1 = p.symbol("B1");
         MultiJoinNode multiJoinNode = new MultiJoinNode(

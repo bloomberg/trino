@@ -15,6 +15,8 @@ package io.trino.execution;
 
 import com.google.common.collect.Ordering;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.inject.Inject;
 import io.airlift.concurrent.SetThreadName;
 import io.airlift.concurrent.ThreadPoolExecutorMBean;
 import io.airlift.log.Logger;
@@ -31,13 +33,10 @@ import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.sql.planner.Plan;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
-
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -224,6 +223,12 @@ public class SqlQueryManager
     public QueryState getQueryState(QueryId queryId)
     {
         return queryTracker.getQuery(queryId).getState();
+    }
+
+    @Override
+    public boolean hasQuery(QueryId queryId)
+    {
+        return queryTracker.hasQuery(queryId);
     }
 
     @Override

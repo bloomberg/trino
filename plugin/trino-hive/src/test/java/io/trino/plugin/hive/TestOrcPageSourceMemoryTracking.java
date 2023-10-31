@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
 import io.airlift.stats.Distribution;
 import io.airlift.units.DataSize;
+import io.trino.filesystem.Location;
 import io.trino.hive.orc.NullMemoryManager;
 import io.trino.hive.orc.impl.WriterImpl;
 import io.trino.metadata.FunctionManager;
@@ -70,10 +71,10 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.JobConf;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.File;
 import java.lang.reflect.Constructor;
@@ -125,12 +126,14 @@ import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveO
 import static org.apache.hadoop.mapreduce.lib.output.FileOutputFormat.COMPRESS_CODEC;
 import static org.apache.hadoop.mapreduce.lib.output.FileOutputFormat.COMPRESS_TYPE;
 import static org.joda.time.DateTimeZone.UTC;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
+@TestInstance(PER_CLASS)
 public class TestOrcPageSourceMemoryTracking
 {
     private static final String ORC_RECORD_WRITER = OrcOutputFormat.class.getName() + "$OrcRecordWriter";
@@ -152,13 +155,7 @@ public class TestOrcPageSourceMemoryTracking
     private File tempFile;
     private TestPreparer testPreparer;
 
-    @DataProvider(name = "rowCount")
-    public static Object[][] rowCount()
-    {
-        return new Object[][] {{50_000}, {10_000}, {5_000}};
-    }
-
-    @BeforeClass
+    @BeforeAll
     public void setUp()
             throws Exception
     {
@@ -167,7 +164,7 @@ public class TestOrcPageSourceMemoryTracking
         testPreparer = new TestPreparer(tempFile.getAbsolutePath());
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         tempFile.delete();
@@ -317,14 +314,21 @@ public class TestOrcPageSourceMemoryTracking
         pageSource.close();
     }
 
-    @Test(dataProvider = "rowCount")
-    public void testMaxReadBytes(int rowCount)
+    @Test
+    public void testMaxReadBytes()
+            throws Exception
+    {
+        testMaxReadBytes(50_000);
+        testMaxReadBytes(10_000);
+        testMaxReadBytes(5_000);
+    }
+
+    private void testMaxReadBytes(int rowCount)
             throws Exception
     {
         int maxReadBytes = 1_000;
         HiveSessionProperties hiveSessionProperties = new HiveSessionProperties(
                 new HiveConfig(),
-                new HiveFormatsConfig(),
                 new OrcReaderConfig()
                         .setMaxBlockSize(DataSize.ofBytes(maxReadBytes)),
                 new OrcWriterConfig(),
@@ -367,7 +371,7 @@ public class TestOrcPageSourceMemoryTracking
                 if (positionCount > MAX_BATCH_SIZE) {
                     // either the block is bounded by maxReadBytes or we just load one single large block
                     // an error margin MAX_BATCH_SIZE / step is needed given the block sizes are increasing
-                    assertTrue(page.getSizeInBytes() < maxReadBytes * (MAX_BATCH_SIZE / step) || 1 == page.getPositionCount());
+                    assertTrue(page.getSizeInBytes() < (long) maxReadBytes * (MAX_BATCH_SIZE / step) || 1 == page.getPositionCount());
                 }
             }
 
@@ -560,32 +564,29 @@ public class TestOrcPageSourceMemoryTracking
                     columns,
                     ImmutableList.of(),
                     TableToPartitionMapping.empty(),
-                    fileSplit.getPath(),
+                    fileSplit.getPath().toString(),
                     OptionalInt.empty(),
                     fileSplit.getLength(),
                     Instant.now().toEpochMilli());
 
-            return HivePageSourceProvider.createHivePageSource(
+            ConnectorPageSource connectorPageSource = HivePageSourceProvider.createHivePageSource(
                     ImmutableSet.of(orcPageSourceFactory),
-                    ImmutableSet.of(),
-                    newEmptyConfiguration(),
                     session,
-                    fileSplit.getPath(),
+                    Location.of(fileSplit.getPath().toString()),
                     OptionalInt.empty(),
                     fileSplit.getStart(),
                     fileSplit.getLength(),
                     fileSplit.getLength(),
                     schema,
                     TupleDomain.all(),
-                    columns,
                     TESTING_TYPE_MANAGER,
                     Optional.empty(),
                     Optional.empty(),
-                    false,
                     Optional.empty(),
                     false,
                     NO_ACID_TRANSACTION,
                     columnMappings).orElseThrow();
+            return connectorPageSource;
         }
 
         public SourceOperator newTableScanOperator(DriverContext driverContext)
@@ -593,6 +594,7 @@ public class TestOrcPageSourceMemoryTracking
             ConnectorPageSource pageSource = newPageSource();
             SourceOperatorFactory sourceOperatorFactory = new TableScanOperatorFactory(
                     0,
+                    new PlanNodeId("0"),
                     new PlanNodeId("0"),
                     (session, split, table, columnHandles, dynamicFilter) -> pageSource,
                     TEST_TABLE_HANDLE,

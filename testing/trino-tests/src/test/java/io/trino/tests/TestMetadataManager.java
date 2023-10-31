@@ -15,6 +15,7 @@ package io.trino.tests;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.opentelemetry.api.trace.Span;
 import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorTableHandle;
 import io.trino.dispatcher.DispatchManager;
@@ -30,11 +31,13 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.TestingSessionContext;
 import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tracing.TracingMetadata;
 import io.trino.transaction.TransactionBuilder;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.List;
 import java.util.Optional;
@@ -45,6 +48,7 @@ import static io.trino.execution.QueryState.RUNNING;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 
 /**
@@ -53,13 +57,13 @@ import static org.testng.Assert.assertEquals;
  * while registering catalog -> query Id mapping.
  * This mapping has to be manually cleaned when query finishes execution (Metadata#cleanupQuery method).
  */
-@Test(singleThreaded = true)
+@TestInstance(PER_CLASS)
 public class TestMetadataManager
 {
     private DistributedQueryRunner queryRunner;
     private MetadataManager metadataManager;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
             throws Exception
     {
@@ -87,10 +91,10 @@ public class TestMetadataManager
             }
         });
         queryRunner.createCatalog("upper_case_schema_catalog", "mock");
-        metadataManager = (MetadataManager) queryRunner.getMetadata();
+        metadataManager = (MetadataManager) ((TracingMetadata) queryRunner.getMetadata()).getDelegate();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         queryRunner.close();
@@ -121,7 +125,7 @@ public class TestMetadataManager
     @Test
     public void testMetadataListTablesReturnsQualifiedView()
     {
-        TransactionBuilder.transaction(queryRunner.getTransactionManager(), queryRunner.getAccessControl())
+        TransactionBuilder.transaction(queryRunner.getTransactionManager(), metadataManager, queryRunner.getAccessControl())
                 .execute(
                         TEST_SESSION,
                         transactionSession -> {
@@ -138,6 +142,7 @@ public class TestMetadataManager
         QueryId queryId = dispatchManager.createQueryId();
         dispatchManager.createQuery(
                 queryId,
+                Span.getInvalid(),
                 Slug.createNew(),
                 TestingSessionContext.fromSession(TEST_SESSION),
                 "SELECT * FROM lineitem")
@@ -164,7 +169,7 @@ public class TestMetadataManager
     @Test
     public void testUpperCaseSchemaIsChangedToLowerCase()
     {
-        TransactionBuilder.transaction(queryRunner.getTransactionManager(), queryRunner.getAccessControl())
+        TransactionBuilder.transaction(queryRunner.getTransactionManager(), metadataManager, queryRunner.getAccessControl())
                 .execute(
                         TEST_SESSION,
                         transactionSession -> {
@@ -214,6 +219,7 @@ public class TestMetadataManager
                 ImmutableList.of(new ConnectorViewDefinition.ViewColumn("col", BIGINT.getTypeId(), Optional.empty())),
                 Optional.of("comment"),
                 Optional.of("test_owner"),
-                false);
+                false,
+                ImmutableList.of());
     }
 }

@@ -13,6 +13,8 @@
  */
 package io.trino.sql.analyzer;
 
+import com.google.inject.Inject;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
 import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
@@ -20,8 +22,6 @@ import io.trino.sql.rewrite.StatementRewrite;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.NodeRef;
 import io.trino.sql.tree.Parameter;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -32,12 +32,14 @@ public class AnalyzerFactory
 {
     private final StatementAnalyzerFactory statementAnalyzerFactory;
     private final StatementRewrite statementRewrite;
+    private final Tracer tracer;
 
     @Inject
-    public AnalyzerFactory(StatementAnalyzerFactory statementAnalyzerFactory, StatementRewrite statementRewrite)
+    public AnalyzerFactory(StatementAnalyzerFactory statementAnalyzerFactory, StatementRewrite statementRewrite, Tracer tracer)
     {
         this.statementAnalyzerFactory = requireNonNull(statementAnalyzerFactory, "statementAnalyzerFactory is null");
         this.statementRewrite = requireNonNull(statementRewrite, "statementRewrite is null");
+        this.tracer = requireNonNull(tracer, "tracer is null");
     }
 
     public Analyzer createAnalyzer(
@@ -55,6 +57,7 @@ public class AnalyzerFactory
                 parameterLookup,
                 warningCollector,
                 planOptimizersStatsCollector,
+                tracer,
                 statementRewrite);
     }
 }

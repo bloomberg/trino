@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Resources;
+import com.google.inject.Inject;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import io.airlift.http.server.HttpServerConfig;
@@ -31,7 +32,6 @@ import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.JwtParser;
 import io.trino.plugin.base.security.AllowAllSystemAccessControl;
 import io.trino.security.AccessControl;
-import io.trino.security.AccessControlManager;
 import io.trino.server.HttpRequestSessionContextFactory;
 import io.trino.server.ProtocolConfig;
 import io.trino.server.protocol.PreparedStatementEncoder;
@@ -43,7 +43,12 @@ import io.trino.server.testing.TestingTrinoServer;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.BasicPrincipal;
 import io.trino.spi.security.Identity;
-import io.trino.spi.security.SystemSecurityContext;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.core.HttpHeaders;
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
 import okhttp3.Credentials;
@@ -58,13 +63,6 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import javax.crypto.SecretKey;
-import javax.inject.Inject;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import javax.ws.rs.GET;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.HttpHeaders;
 
 import java.io.File;
 import java.io.IOException;
@@ -91,7 +89,6 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
-import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.hash.Hashing.sha256;
 import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
@@ -108,21 +105,22 @@ import static io.trino.server.security.jwt.JwtUtil.newJwtBuilder;
 import static io.trino.server.security.jwt.JwtUtil.newJwtParserBuilder;
 import static io.trino.server.security.oauth2.OAuth2Service.NONCE;
 import static io.trino.server.ui.FormWebUiAuthenticationFilter.UI_LOCATION;
+import static io.trino.server.ui.OAuthIdTokenCookie.ID_TOKEN_COOKIE;
 import static io.trino.server.ui.OAuthWebUiCookie.OAUTH2_COOKIE;
 import static io.trino.spi.security.AccessDeniedException.denyImpersonateUser;
 import static io.trino.spi.security.AccessDeniedException.denyReadSystemInformationAccess;
+import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
+import static jakarta.servlet.http.HttpServletResponse.SC_OK;
+import static jakarta.servlet.http.HttpServletResponse.SC_SEE_OTHER;
+import static jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
+import static jakarta.ws.rs.core.HttpHeaders.LOCATION;
+import static jakarta.ws.rs.core.HttpHeaders.SET_COOKIE;
+import static jakarta.ws.rs.core.HttpHeaders.WWW_AUTHENTICATE;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Instant.now;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MINUTES;
-import static javax.servlet.http.HttpServletResponse.SC_FORBIDDEN;
-import static javax.servlet.http.HttpServletResponse.SC_OK;
-import static javax.servlet.http.HttpServletResponse.SC_SEE_OTHER;
-import static javax.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
-import static javax.ws.rs.core.HttpHeaders.LOCATION;
-import static javax.ws.rs.core.HttpHeaders.SET_COOKIE;
-import static javax.ws.rs.core.HttpHeaders.WWW_AUTHENTICATE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
@@ -196,8 +194,8 @@ public class TestResourceSecurity
     {
         try (TestingTrinoServer server = TestingTrinoServer.builder()
                 .setProperties(ImmutableMap.of("http-server.authentication.insecure.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN))
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertInsecureAuthentication(httpServerInfo.getHttpUri());
         }
@@ -209,8 +207,8 @@ public class TestResourceSecurity
     {
         try (TestingTrinoServer server = TestingTrinoServer.builder()
                 .setProperties(SECURE_PROPERTIES)
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertInsecureAuthentication(httpServerInfo.getHttpUri());
             assertInsecureAuthentication(httpServerInfo.getHttpsUri());
@@ -226,8 +224,8 @@ public class TestResourceSecurity
                         .putAll(SECURE_PROPERTIES)
                         .put("http-server.authentication.allow-insecure-over-http", "false")
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
             assertInsecureAuthentication(httpServerInfo.getHttpsUri());
@@ -245,9 +243,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.type", "password")
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
             assertPasswordAuthentication(httpServerInfo.getHttpsUri());
@@ -265,9 +263,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.type", "password")
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate, TestResourceSecurity::authenticate2);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
             assertPasswordAuthentication(httpServerInfo.getHttpsUri(), TEST_PASSWORD, TEST_PASSWORD2);
@@ -285,9 +283,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.type", "password")
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate, TestResourceSecurity::authenticate2);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             Request request = new Request.Builder()
                     .url(getAuthorizedUserLocation(httpServerInfo.getHttpsUri()))
@@ -312,9 +310,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .buildOrThrow())
                 .setAdditionalModule(binder -> jaxrsBinder(binder).bind(TestResource.class))
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             // Test sets basic auth user and X-Trino-User, and the authenticator is performing user mapping.
@@ -345,9 +343,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.allow-insecure-over-http", "true")
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertInsecureAuthentication(httpServerInfo.getHttpUri());
             assertPasswordAuthentication(httpServerInfo.getHttpsUri());
@@ -367,9 +365,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .put("management.user", MANAGEMENT_USER)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
 
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertFixedManagementUser(httpServerInfo.getHttpUri(), true);
@@ -390,9 +388,9 @@ public class TestResourceSecurity
                         .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
                         .put("management.user", MANAGEMENT_USER)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
 
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertResponseCode(client, getPublicLocation(httpServerInfo.getHttpUri()), SC_OK);
@@ -417,9 +415,9 @@ public class TestResourceSecurity
                         .put("management.user", MANAGEMENT_USER)
                         .put("management.user.https-enabled", "true")
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION)
                 .build()) {
             server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
 
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
             assertFixedManagementUser(httpServerInfo.getHttpUri(), true);
@@ -438,8 +436,8 @@ public class TestResourceSecurity
                         .put("http-server.https.truststore.path", LOCALHOST_KEYSTORE)
                         .put("http-server.https.truststore.key", "")
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -480,8 +478,8 @@ public class TestResourceSecurity
                         .put("http-server.authentication.jwt.principal-field", principalField.orElse("sub"))
                         .put("http-server.authentication.jwt.required-audience", TRINO_AUDIENCE)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -526,8 +524,8 @@ public class TestResourceSecurity
                         .put("http-server.authentication.type", "jwt")
                         .put("http-server.authentication.jwt.key-file", jwkServer.getBaseUrl().toString())
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -562,8 +560,8 @@ public class TestResourceSecurity
                         .put("http-server.authentication.jwt.key-file", HMAC_KEY)
                         .put("http-server.authentication.jwt.required-audience", TRINO_AUDIENCE)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             SecretKey hmac = hmacShaKeyFor(Base64.getDecoder().decode(Files.readString(Paths.get(HMAC_KEY)).trim()));
@@ -596,8 +594,8 @@ public class TestResourceSecurity
                         .put("http-server.authentication.type", "jwt")
                         .put("http-server.authentication.jwt.key-file", HMAC_KEY)
                         .buildOrThrow())
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                 .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -653,8 +651,8 @@ public class TestResourceSecurity
                                 .put("http-server.authentication.oauth2.refresh-tokens", String.valueOf(refreshTokensEnabled))
                                 .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
+                        .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                         .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -677,8 +675,8 @@ public class TestResourceSecurity
             if (refreshTokensEnabled) {
                 TokenPairSerializer serializer = server.getInstance(Key.get(TokenPairSerializer.class));
                 TokenPair tokenPair = serializer.deserialize(getOauthToken(client, bearer.getTokenServer()));
-                assertEquals(tokenPair.getAccessToken(), tokenServer.getAccessToken());
-                assertEquals(tokenPair.getRefreshToken(), Optional.of(tokenServer.getRefreshToken()));
+                assertEquals(tokenPair.accessToken(), tokenServer.getAccessToken());
+                assertEquals(tokenPair.refreshToken(), Optional.of(tokenServer.getRefreshToken()));
             }
             else {
                 assertEquals(getOauthToken(client, bearer.getTokenServer()), tokenServer.getAccessToken());
@@ -686,12 +684,20 @@ public class TestResourceSecurity
 
             // if Web UI is using oauth so we should get a cookie
             if (webUiEnabled) {
-                HttpCookie cookie = getOnlyElement(cookieManager.getCookieStore().getCookies());
+                HttpCookie cookie = getCookie(cookieManager, OAUTH2_COOKIE);
                 assertEquals(cookie.getValue(), tokenServer.getAccessToken());
                 assertEquals(cookie.getPath(), "/ui/");
                 assertEquals(cookie.getDomain(), baseUri.getHost());
                 assertTrue(cookie.getMaxAge() > 0 && cookie.getMaxAge() < MINUTES.toSeconds(5));
                 assertTrue(cookie.isHttpOnly());
+
+                HttpCookie idTokenCookie = getCookie(cookieManager, ID_TOKEN_COOKIE);
+                assertEquals(idTokenCookie.getValue(), tokenServer.issueIdToken(Optional.of(hashNonce(bearer.getNonceCookie().getValue()))));
+                assertEquals(idTokenCookie.getPath(), "/ui/");
+                assertEquals(idTokenCookie.getDomain(), baseUri.getHost());
+                assertTrue(idTokenCookie.getMaxAge() > 0 && cookie.getMaxAge() < MINUTES.toSeconds(5));
+                assertTrue(idTokenCookie.isHttpOnly());
+
                 cookieManager.getCookieStore().removeAll();
             }
             else {
@@ -787,8 +793,8 @@ public class TestResourceSecurity
                                 .put("deprecated.http-server.authentication.oauth2.groups-field", GROUPS_CLAIM)
                                 .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
+                        .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                         .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             String accessToken = tokenServer.issueAccessToken(groups);
@@ -854,25 +860,27 @@ public class TestResourceSecurity
         };
     }
 
-    @Test
-    public void testJwtAndOAuth2AuthenticatorsSeparation()
+    @Test(dataProvider = "authenticators")
+    public void testJwtAndOAuth2AuthenticatorsSeparation(String authenticators)
             throws Exception
     {
         TestingHttpServer jwkServer = createTestingJwkServer();
         jwkServer.start();
-        try (TokenServer tokenServer = new TokenServer(Optional.empty());
+        try (TokenServer tokenServer = new TokenServer(Optional.of("preferred_username"));
                 TestingTrinoServer server = TestingTrinoServer.builder()
                         .setProperties(
                                 ImmutableMap.<String, String>builder()
                                         .putAll(SECURE_PROPERTIES)
-                                        .put("http-server.authentication.type", "jwt,oauth2")
+                                        .put("http-server.authentication.type", authenticators)
                                         .put("http-server.authentication.jwt.key-file", jwkServer.getBaseUrl().toString())
+                                        .put("http-server.authentication.jwt.principal-field", "sub")
                                         .putAll(getOAuth2Properties(tokenServer))
+                                        .put("http-server.authentication.oauth2.principal-field", "preferred_username")
                                         .put("web-ui.enabled", "true")
                                         .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
+                        .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                         .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -901,6 +909,15 @@ public class TestResourceSecurity
         }
     }
 
+    @DataProvider(name = "authenticators")
+    public static Object[][] authenticators()
+    {
+        return new Object[][] {
+                {"jwt,oauth2"},
+                {"oauth2,jwt"}
+        };
+    }
+
     @Test
     public void testJwtWithRefreshTokensForOAuth2Enabled()
             throws Exception
@@ -921,8 +938,8 @@ public class TestResourceSecurity
                                         .put("web-ui.enabled", "true")
                                         .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
+                        .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
                         .build()) {
-            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
 
             assertAuthenticationDisabled(httpServerInfo.getHttpUri());
@@ -940,6 +957,38 @@ public class TestResourceSecurity
                             .build())
                     .build();
             assertAuthenticationAutomatic(httpServerInfo.getHttpsUri(), clientWithJwt);
+        }
+    }
+
+    @Test
+    public void testResourceSecurityImpersonation()
+            throws Exception
+    {
+        try (TestingTrinoServer server = TestingTrinoServer.builder()
+                .setProperties(ImmutableMap.<String, String>builder()
+                        .putAll(SECURE_PROPERTIES)
+                        .put("password-authenticator.config-files", passwordConfigDummy.toString())
+                        .put("http-server.authentication.type", "password")
+                        .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
+                        .buildOrThrow())
+                .setAdditionalModule(binder -> jaxrsBinder(binder).bind(TestResource.class))
+                .setSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION)
+                .build()) {
+            server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
+            HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
+
+            // Authenticated user TEST_USER_LOGIN impersonates impersonated-user by passing request header X-Trino-Authorization-User
+            Request request = new Request.Builder()
+                    .url(getLocation(httpServerInfo.getHttpsUri(), "/protocol/identity"))
+                    .addHeader("Authorization", Credentials.basic(TEST_USER_LOGIN, TEST_PASSWORD))
+                    .addHeader("X-Trino-Original-User", TEST_USER_LOGIN)
+                    .addHeader("X-Trino-User", "impersonated-user")
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                assertEquals(response.code(), SC_OK);
+                assertEquals(response.header("user"), "impersonated-user");
+                assertEquals(response.header("principal"), TEST_USER_LOGIN);
+            }
         }
     }
 
@@ -1028,7 +1077,7 @@ public class TestResourceSecurity
                     if (!"TEST_CODE".equals(code)) {
                         throw new IllegalArgumentException("Expected TEST_CODE");
                     }
-                    return new Response(accessToken, now().plus(5, ChronoUnit.MINUTES), Optional.of(issueIdToken(nonce.map(this::hashNonce))), Optional.of(REFRESH_TOKEN));
+                    return new Response(accessToken, now().plus(5, ChronoUnit.MINUTES), Optional.of(issueIdToken(nonce.map(TestResourceSecurity::hashNonce))), Optional.of(REFRESH_TOKEN));
                 }
 
                 @Override
@@ -1044,11 +1093,10 @@ public class TestResourceSecurity
                     throw new UnsupportedOperationException("refresh tokens not supported");
                 }
 
-                private String hashNonce(String nonce)
+                @Override
+                public Optional<URI> getLogoutEndpoint(Optional<String> idToken, URI callbackUrl)
                 {
-                    return sha256()
-                            .hashString(nonce, UTF_8)
-                            .toString();
+                    return Optional.empty();
                 }
             };
         }
@@ -1120,7 +1168,7 @@ public class TestResourceSecurity
         }
     }
 
-    @javax.ws.rs.Path("/")
+    @jakarta.ws.rs.Path("/")
     public static class TestResource
     {
         private final HttpRequestSessionContextFactory sessionContextFactory;
@@ -1137,24 +1185,24 @@ public class TestResourceSecurity
 
         @ResourceSecurity(AUTHENTICATED_USER)
         @GET
-        @javax.ws.rs.Path("/protocol/identity")
-        public javax.ws.rs.core.Response protocolIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
+        @jakarta.ws.rs.Path("/protocol/identity")
+        public jakarta.ws.rs.core.Response protocolIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
         {
             return echoIdentity(servletRequest, httpHeaders);
         }
 
         @ResourceSecurity(WEB_UI)
         @GET
-        @javax.ws.rs.Path("/ui/api/identity")
-        public javax.ws.rs.core.Response webUiIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
+        @jakarta.ws.rs.Path("/ui/api/identity")
+        public jakarta.ws.rs.core.Response webUiIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
         {
             return echoIdentity(servletRequest, httpHeaders);
         }
 
-        public javax.ws.rs.core.Response echoIdentity(HttpServletRequest servletRequest, HttpHeaders httpHeaders)
+        public jakarta.ws.rs.core.Response echoIdentity(HttpServletRequest servletRequest, HttpHeaders httpHeaders)
         {
             Identity identity = sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, Optional.empty());
-            return javax.ws.rs.core.Response.ok()
+            return jakarta.ws.rs.core.Response.ok()
                     .header("user", identity.getUser())
                     .header("principal", identity.getPrincipal().map(Principal::getName).orElse(null))
                     .header("groups", toHeader(identity.getGroups()))
@@ -1356,6 +1404,21 @@ public class TestResourceSecurity
         throw new AccessDeniedException("Invalid credentials2");
     }
 
+    private static HttpCookie getCookie(CookieManager cookieManager, String cookieName)
+    {
+        return cookieManager.getCookieStore().getCookies().stream()
+                .filter(cookie -> cookie.getName().equals(cookieName))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    private static String hashNonce(String nonce)
+    {
+        return sha256()
+                .hashString(nonce, UTF_8)
+                .toString();
+    }
+
     private static class TestSystemAccessControl
             extends AllowAllSystemAccessControl
     {
@@ -1370,17 +1433,17 @@ public class TestResourceSecurity
         }
 
         @Override
-        public void checkCanImpersonateUser(SystemSecurityContext context, String userName)
+        public void checkCanImpersonateUser(Identity identity, String userName)
         {
             if (!allowImpersonation) {
-                denyImpersonateUser(context.getIdentity().getUser(), userName);
+                denyImpersonateUser(identity.getUser(), userName);
             }
         }
 
         @Override
-        public void checkCanReadSystemInformation(SystemSecurityContext context)
+        public void checkCanReadSystemInformation(Identity identity)
         {
-            if (!context.getIdentity().getUser().equals(MANAGEMENT_USER)) {
+            if (!identity.getUser().equals(MANAGEMENT_USER)) {
                 denyReadSystemInformationAccess();
             }
         }

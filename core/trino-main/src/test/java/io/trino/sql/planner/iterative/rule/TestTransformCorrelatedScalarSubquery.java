@@ -27,7 +27,7 @@ import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.SimpleCaseExpression;
 import io.trino.sql.tree.SymbolReference;
 import io.trino.sql.tree.WhenClause;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -205,7 +205,7 @@ public class TestTransformCorrelatedScalarSubquery
                 new SymbolReference("is_distinct"),
                 ImmutableList.of(new WhenClause(TRUE_LITERAL, TRUE_LITERAL)),
                 Optional.of(new Cast(
-                        failFunction(tester().getMetadata(), tester().getSession(), SUBQUERY_MULTIPLE_ROWS, "Scalar sub-query has returned multiple rows"),
+                        failFunction(tester().getMetadata(), SUBQUERY_MULTIPLE_ROWS, "Scalar sub-query has returned multiple rows"),
                         toSqlType(BOOLEAN))));
     }
 }

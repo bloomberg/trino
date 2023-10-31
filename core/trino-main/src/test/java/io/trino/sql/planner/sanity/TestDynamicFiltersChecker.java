@@ -33,8 +33,8 @@ import io.trino.sql.planner.plan.JoinNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.testing.TestingTransactionHandle;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -59,12 +59,12 @@ public class TestDynamicFiltersChecker
     private TableScanNode ordersTableScanNode;
     private PlannerContext plannerContext;
 
-    @BeforeClass
+    @BeforeAll
     public void setup()
     {
         plannerContext = getQueryRunner().getPlannerContext();
         metadata = plannerContext.getMetadata();
-        builder = new PlanBuilder(new PlanNodeIdAllocator(), metadata, TEST_SESSION);
+        builder = new PlanBuilder(new PlanNodeIdAllocator(), plannerContext, TEST_SESSION);
         CatalogHandle catalogHandle = getCurrentCatalogHandle();
         TableHandle lineitemTableHandle = new TableHandle(
                 catalogHandle,
@@ -106,10 +106,10 @@ public class TestDynamicFiltersChecker
         PlanNode root = builder.join(
                 INNER,
                 builder.filter(
-                        createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference()),
+                        createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference()),
                         ordersTableScanNode),
                 builder.filter(
-                        createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference()),
+                        createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference()),
                         lineitemTableScanNode),
                 ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                 ImmutableList.of(ordersOrderKeySymbol),
@@ -136,7 +136,7 @@ public class TestDynamicFiltersChecker
                                 combineConjuncts(
                                         metadata,
                                         expression("LINEITEM_OK > 0"),
-                                        createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
+                                        createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                                 lineitemTableScanNode),
                         ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                         ImmutableList.of(ordersOrderKeySymbol),
@@ -162,7 +162,7 @@ public class TestDynamicFiltersChecker
                                 combineConjuncts(
                                         metadata,
                                         expression("LINEITEM_OK > 0"),
-                                        createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
+                                        createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                                 builder.values(lineitemOrderKeySymbol)),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
@@ -192,11 +192,11 @@ public class TestDynamicFiltersChecker
                                         combineDisjuncts(
                                                 metadata,
                                                 expression("LINEITEM_OK IS NULL"),
-                                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
+                                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                                         combineDisjuncts(
                                                 metadata,
                                                 expression("LINEITEM_OK IS NOT NULL"),
-                                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference()))),
+                                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference()))),
                                 lineitemTableScanNode),
                         ImmutableList.of(new JoinNode.EquiJoinClause(ordersOrderKeySymbol, lineitemOrderKeySymbol)),
                         ImmutableList.of(ordersOrderKeySymbol),
@@ -217,7 +217,7 @@ public class TestDynamicFiltersChecker
                 builder.join(
                         INNER,
                         builder.filter(
-                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, expression("LINEITEM_OK + BIGINT'1'")),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, expression("LINEITEM_OK + BIGINT'1'")),
                                 lineitemTableScanNode),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
@@ -239,7 +239,7 @@ public class TestDynamicFiltersChecker
                 builder.join(
                         INNER,
                         builder.filter(
-                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, expression("CAST(CAST(LINEITEM_OK AS INT) AS BIGINT)")),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, expression("CAST(CAST(LINEITEM_OK AS INT) AS BIGINT)")),
                                 lineitemTableScanNode),
                         ordersTableScanNode,
                         ImmutableList.of(new JoinNode.EquiJoinClause(lineitemOrderKeySymbol, ordersOrderKeySymbol)),
@@ -278,13 +278,13 @@ public class TestDynamicFiltersChecker
                         combineConjuncts(
                                 metadata,
                                 expression("ORDERS_OK > 0"),
-                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                         ordersTableScanNode),
                 builder.filter(
                         combineConjuncts(
                                 metadata,
                                 expression("LINEITEM_OK > 0"),
-                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, lineitemOrderKeySymbol.toSymbolReference())),
                         lineitemTableScanNode),
                 ordersOrderKeySymbol,
                 lineitemOrderKeySymbol,
@@ -309,7 +309,7 @@ public class TestDynamicFiltersChecker
                                 combineConjuncts(
                                         metadata,
                                         expression("ORDERS_OK > 0"),
-                                        createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
+                                        createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                                 ordersTableScanNode),
                         lineitemTableScanNode,
                         ordersOrderKeySymbol,
@@ -332,7 +332,7 @@ public class TestDynamicFiltersChecker
                         combineConjuncts(
                                 metadata,
                                 expression("ORDERS_OK > 0"),
-                                createDynamicFilterExpression(TEST_SESSION, metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
+                                createDynamicFilterExpression(metadata, new DynamicFilterId("DF"), BIGINT, ordersOrderKeySymbol.toSymbolReference())),
                         builder.values(ordersOrderKeySymbol)),
                 lineitemTableScanNode,
                 ordersOrderKeySymbol,

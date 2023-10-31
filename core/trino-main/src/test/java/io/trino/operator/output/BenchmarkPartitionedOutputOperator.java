@@ -52,6 +52,7 @@ import io.trino.sql.planner.HashBucketFunction;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.TestingTaskContext;
 import io.trino.type.BlockTypeOperators;
+import org.junit.jupiter.api.Test;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -64,7 +65,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
-import org.testng.annotations.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -298,23 +298,20 @@ public class BenchmarkPartitionedOutputOperator
                         types.stream()
                                 .map(type -> {
                                     boolean[] isNull = null;
-                                    int nullPositionCount = 0;
                                     if (nullRate > 0) {
                                         isNull = new boolean[positionCount];
                                         Set<Integer> nullPositions = chooseNullPositions(positionCount, nullRate);
                                         for (int nullPosition : nullPositions) {
                                             isNull[nullPosition] = true;
                                         }
-                                        nullPositionCount = nullPositions.size();
                                     }
 
-                                    int notNullPositionsCount = positionCount - nullPositionCount;
-                                    return RowBlock.fromFieldBlocks(
+                                    return RowBlock.fromNotNullSuppressedFieldBlocks(
                                             positionCount,
                                             Optional.ofNullable(isNull),
                                             new Block[] {
-                                                    RunLengthEncodedBlock.create(createLongsBlock(-65128734213L), notNullPositionsCount),
-                                                    createRandomLongsBlock(notNullPositionsCount, nullRate)});
+                                                    RunLengthEncodedBlock.create(createLongsBlock(-65128734213L), positionCount),
+                                                    createRandomLongsBlock(positionCount, nullRate)});
                                 })
                                 .collect(toImmutableList()));
             });
@@ -467,7 +464,8 @@ public class BenchmarkPartitionedOutputOperator
                     POSITIONS_APPENDER_FACTORY,
                     Optional.empty(),
                     newSimpleAggregatedMemoryContext(),
-                    0);
+                    0,
+                    Optional.empty());
             return (PartitionedOutputOperator) operatorFactory
                     .createOutputOperator(0, new PlanNodeId("plan-node-0"), types, Function.identity(), serdeFactory)
                     .createOperator(createDriverContext());

@@ -18,11 +18,12 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slices;
 import io.trino.plugin.accumulo.serializers.AccumuloRowSerializer;
 import io.trino.spi.block.Block;
+import io.trino.spi.block.SqlMap;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignatureParameter;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -45,14 +46,17 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.Float.floatToIntBits;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
 public class TestField
 {
-    @Test(expectedExceptions = NullPointerException.class, expectedExceptionsMessageRegExp = "type is null")
+    @Test
     public void testTypeIsNull()
     {
-        new Field(null, null);
+        assertThatThrownBy(() -> new Field(null, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("type is null");
     }
 
     @Test
@@ -64,9 +68,6 @@ public class TestField
         assertEquals(f1.getArray(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -82,9 +83,6 @@ public class TestField
         assertEquals(f1.getBoolean().booleanValue(), false);
         assertEquals(f1.getObject(), false);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -96,9 +94,6 @@ public class TestField
         assertEquals(f1.getDate(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -110,9 +105,6 @@ public class TestField
         assertEquals(f1.getDouble(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -124,9 +116,6 @@ public class TestField
         assertEquals(f1.getFloat(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -138,9 +127,6 @@ public class TestField
         assertEquals(f1.getInt(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -152,9 +138,6 @@ public class TestField
         assertEquals(f1.getLong(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -163,7 +146,7 @@ public class TestField
         Type type = TESTING_TYPE_MANAGER.getParameterizedType(StandardTypes.MAP, ImmutableList.of(
                 TypeSignatureParameter.typeParameter(VARCHAR.getTypeSignature()),
                 TypeSignatureParameter.typeParameter(BIGINT.getTypeSignature())));
-        Block expected = AccumuloRowSerializer.getBlockFromMap(type, ImmutableMap.of("a", 1L, "b", 2L, "c", 3L));
+        SqlMap expected = AccumuloRowSerializer.getSqlMapFromMap(type, ImmutableMap.of("a", 1L, "b", 2L, "c", 3L));
         Field f1 = new Field(expected, type);
         assertEquals(f1.getMap(), expected);
         assertEquals(f1.getObject(), expected);
@@ -179,9 +162,6 @@ public class TestField
         assertEquals(f1.getShort(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -193,9 +173,6 @@ public class TestField
         assertEquals(f1.getTime(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -207,9 +184,6 @@ public class TestField
         assertEquals(f1.getTimestamp(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -221,9 +195,6 @@ public class TestField
         assertEquals(f1.getByte(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -235,9 +206,6 @@ public class TestField
         assertEquals(f1.getVarbinary(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 
     @Test
@@ -249,8 +217,5 @@ public class TestField
         assertEquals(f1.getVarchar(), expected);
         assertEquals(f1.getObject(), expected);
         assertEquals(f1.getType(), type);
-
-        Field f2 = new Field(f1);
-        assertEquals(f2, f1);
     }
 }

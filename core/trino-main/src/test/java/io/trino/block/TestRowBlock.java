@@ -19,19 +19,19 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.ByteArrayBlock;
 import io.trino.spi.block.RowBlockBuilder;
-import io.trino.spi.block.SingleRowBlock;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.type.Type;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.spi.block.RowBlock.fromFieldBlocks;
+import static io.trino.spi.block.RowBlock.fromNotNullSuppressedFieldBlocks;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.lang.String.format;
@@ -58,12 +58,10 @@ public class TestRowBlock
     {
         List<Type> fieldTypes = ImmutableList.of(VARCHAR, BIGINT);
         List<Object>[] expectedValues = alternatingNullValues(generateTestRows(fieldTypes, 100));
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(fieldTypes, expectedValues);
-        Block block = blockBuilder.build();
+        Block block = createBlockBuilderWithValues(fieldTypes, expectedValues).build();
         assertEquals(block.getPositionCount(), expectedValues.length);
         for (int i = 0; i < block.getPositionCount(); i++) {
             int expectedSize = getExpectedEstimatedDataSize(expectedValues[i]);
-            assertEquals(blockBuilder.getEstimatedDataSizeForStats(i), expectedSize);
             assertEquals(block.getEstimatedDataSizeForStats(i), expectedSize);
         }
     }
@@ -71,19 +69,14 @@ public class TestRowBlock
     @Test
     public void testFromFieldBlocksNoNullsDetection()
     {
-        Block emptyBlock = new ByteArrayBlock(0, Optional.empty(), new byte[0]);
-        Block fieldBlock = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(5).getBytes());
-
-        boolean[] rowIsNull = new boolean[fieldBlock.getPositionCount()];
-        Arrays.fill(rowIsNull, false);
-
-        // Blocks may discard the null mask during creation if no values are null
-        assertFalse(fromFieldBlocks(5, Optional.of(rowIsNull), new Block[]{fieldBlock}).mayHaveNull());
-        // Last position is null must retain the nulls mask
+        // Blocks does not discard the null mask during creation if no values are null
+        boolean[] rowIsNull = new boolean[5];
+        assertTrue(fromNotNullSuppressedFieldBlocks(5, Optional.of(rowIsNull), new Block[]{new ByteArrayBlock(5, Optional.empty(), createExpectedValue(5).getBytes())}).mayHaveNull());
         rowIsNull[rowIsNull.length - 1] = true;
-        assertTrue(fromFieldBlocks(5, Optional.of(rowIsNull), new Block[]{fieldBlock}).mayHaveNull());
+        assertTrue(fromNotNullSuppressedFieldBlocks(5, Optional.of(rowIsNull), new Block[]{new ByteArrayBlock(5, Optional.of(rowIsNull), createExpectedValue(5).getBytes())}).mayHaveNull());
+
         // Empty blocks have no nulls and can also discard their null mask
-        assertFalse(fromFieldBlocks(0, Optional.of(new boolean[0]), new Block[]{emptyBlock}).mayHaveNull());
+        assertFalse(fromNotNullSuppressedFieldBlocks(0, Optional.of(new boolean[0]), new Block[]{new ByteArrayBlock(0, Optional.empty(), new byte[0])}).mayHaveNull());
 
         // Normal blocks should have null masks preserved
         List<Type> fieldTypes = ImmutableList.of(VARCHAR, BIGINT);
@@ -106,59 +99,51 @@ public class TestRowBlock
     public void testCompactBlock()
     {
         Block emptyBlock = new ByteArrayBlock(0, Optional.empty(), new byte[0]);
-        Block compactFieldBlock1 = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(5).getBytes());
-        Block compactFieldBlock2 = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(5).getBytes());
-        Block incompactFieldBlock1 = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(6).getBytes());
-        Block incompactFieldBlock2 = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(6).getBytes());
         boolean[] rowIsNull = {false, true, false, false, false, false};
 
-        assertCompact(fromFieldBlocks(0, Optional.empty(), new Block[] {emptyBlock, emptyBlock}));
-        assertCompact(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {compactFieldBlock1, compactFieldBlock2}));
-        // TODO: add test case for a sliced RowBlock
-
-        // underlying field blocks are not compact
-        testIncompactBlock(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {incompactFieldBlock1, incompactFieldBlock2}));
-        testIncompactBlock(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {incompactFieldBlock1, incompactFieldBlock2}));
+        // NOTE: nested row blocks are required to have the exact same size so they are always compact
+        assertCompact(fromFieldBlocks(0, new Block[] {emptyBlock, emptyBlock}));
+        assertCompact(fromNotNullSuppressedFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[]{
+                new ByteArrayBlock(6, Optional.of(rowIsNull), createExpectedValue(6).getBytes()),
+                new ByteArrayBlock(6, Optional.of(rowIsNull), createExpectedValue(6).getBytes())}));
     }
 
     private void testWith(List<Type> fieldTypes, List<Object>[] expectedValues)
     {
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(fieldTypes, expectedValues);
-
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
+        Block block = createBlockBuilderWithValues(fieldTypes, expectedValues).build();
+        assertBlock(block, expectedValues);
 
         IntArrayList positionList = generatePositionList(expectedValues.length, expectedValues.length / 2);
-        assertBlockFilteredPositions(expectedValues, blockBuilder, positionList.toIntArray());
-        assertBlockFilteredPositions(expectedValues, blockBuilder.build(), positionList.toIntArray());
+        assertBlockFilteredPositions(expectedValues, block, positionList.toIntArray());
     }
 
     private BlockBuilder createBlockBuilderWithValues(List<Type> fieldTypes, List<Object>[] rows)
     {
-        BlockBuilder rowBlockBuilder = new RowBlockBuilder(fieldTypes, null, 1);
+        RowBlockBuilder rowBlockBuilder = new RowBlockBuilder(fieldTypes, null, 1);
         for (List<Object> row : rows) {
             if (row == null) {
                 rowBlockBuilder.appendNull();
             }
             else {
-                BlockBuilder singleRowBlockWriter = rowBlockBuilder.beginBlockEntry();
-                for (Object fieldValue : row) {
-                    if (fieldValue == null) {
-                        singleRowBlockWriter.appendNull();
-                    }
-                    else {
-                        if (fieldValue instanceof Long) {
-                            BIGINT.writeLong(singleRowBlockWriter, ((Long) fieldValue).longValue());
-                        }
-                        else if (fieldValue instanceof String) {
-                            VARCHAR.writeSlice(singleRowBlockWriter, utf8Slice((String) fieldValue));
+                rowBlockBuilder.buildEntry(fieldBuilders -> {
+                    for (int i = 0; i < row.size(); i++) {
+                        Object fieldValue = row.get(i);
+                        if (fieldValue == null) {
+                            fieldBuilders.get(i).appendNull();
                         }
                         else {
-                            throw new IllegalArgumentException();
+                            if (fieldValue instanceof Long) {
+                                BIGINT.writeLong(fieldBuilders.get(i), ((Long) fieldValue).longValue());
+                            }
+                            else if (fieldValue instanceof String) {
+                                VARCHAR.writeSlice(fieldBuilders.get(i), utf8Slice((String) fieldValue));
+                            }
+                            else {
+                                throw new IllegalArgumentException();
+                            }
                         }
                     }
-                }
-                rowBlockBuilder.closeEntry();
+                });
             }
         }
 
@@ -181,20 +166,22 @@ public class TestRowBlock
         requireNonNull(row, "row is null");
 
         assertFalse(rowBlock.isNull(position));
-        SingleRowBlock singleRowBlock = (SingleRowBlock) rowBlock.getObject(position, Block.class);
-        assertEquals(singleRowBlock.getPositionCount(), row.size());
+        SqlRow sqlRow = rowBlock.getObject(position, SqlRow.class);
+        assertEquals(sqlRow.getFieldCount(), row.size());
 
+        int rawIndex = sqlRow.getRawIndex();
         for (int i = 0; i < row.size(); i++) {
             Object fieldValue = row.get(i);
+            Block rawFieldBlock = sqlRow.getRawFieldBlock(i);
             if (fieldValue == null) {
-                assertTrue(singleRowBlock.isNull(i));
+                assertTrue(rawFieldBlock.isNull(rawIndex));
             }
             else {
                 if (fieldValue instanceof Long) {
-                    assertEquals(BIGINT.getLong(singleRowBlock, i), ((Long) fieldValue).longValue());
+                    assertEquals(BIGINT.getLong(rawFieldBlock, rawIndex), ((Long) fieldValue).longValue());
                 }
                 else if (fieldValue instanceof String) {
-                    assertEquals(VARCHAR.getSlice(singleRowBlock, i), utf8Slice((String) fieldValue));
+                    assertEquals(VARCHAR.getSlice(rawFieldBlock, rawIndex), utf8Slice((String) fieldValue));
                 }
                 else {
                     throw new IllegalArgumentException();

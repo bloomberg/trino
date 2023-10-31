@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
@@ -25,8 +26,6 @@ import io.trino.spi.security.Privilege;
 import io.trino.sql.tree.Deny;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.GrantOnType;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -94,11 +93,11 @@ public class DenyTask
     {
         QualifiedObjectName tableName = createQualifiedObjectName(session, statement, statement.getName());
         RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, tableName);
-        if (redirection.getTableHandle().isEmpty()) {
+        if (redirection.tableHandle().isEmpty()) {
             throw semanticException(TABLE_NOT_FOUND, statement, "Table '%s' does not exist", tableName);
         }
-        if (redirection.getRedirectedTableName().isPresent()) {
-            throw semanticException(NOT_SUPPORTED, statement, "Table %s is redirected to %s and DENY is not supported with table redirections", tableName, redirection.getRedirectedTableName().get());
+        if (redirection.redirectedTableName().isPresent()) {
+            throw semanticException(NOT_SUPPORTED, statement, "Table %s is redirected to %s and DENY is not supported with table redirections", tableName, redirection.redirectedTableName().get());
         }
 
         Set<Privilege> privileges = parseStatementPrivileges(statement, statement.getPrivileges());

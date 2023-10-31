@@ -18,14 +18,14 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonCodecFactory;
 import io.airlift.json.ObjectMapperProvider;
+import io.trino.filesystem.Location;
 import io.trino.plugin.base.TypeDeserializer;
 import io.trino.plugin.hive.HiveColumnHandle.ColumnType;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
-import org.apache.hadoop.fs.Path;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Optional;
@@ -54,14 +54,12 @@ public class TestHiveSplit
         ImmutableList<HivePartitionKey> partitionKeys = ImmutableList.of(new HivePartitionKey("a", "apple"), new HivePartitionKey("b", "42"));
         ImmutableList<HostAddress> addresses = ImmutableList.of(HostAddress.fromParts("127.0.0.1", 44), HostAddress.fromParts("127.0.0.1", 45));
 
-        AcidInfo.Builder acidInfoBuilder = AcidInfo.builder(new Path("file:///data/fullacid"));
-        acidInfoBuilder.addDeleteDelta(new Path("file:///data/fullacid/delete_delta_0000004_0000004_0000"));
-        acidInfoBuilder.addDeleteDelta(new Path("file:///data/fullacid/delete_delta_0000007_0000007_0000"));
+        AcidInfo.Builder acidInfoBuilder = AcidInfo.builder(Location.of("file:///data/fullacid"));
+        acidInfoBuilder.addDeleteDelta(Location.of("file:///data/fullacid/delete_delta_0000004_0000004_0000"));
+        acidInfoBuilder.addDeleteDelta(Location.of("file:///data/fullacid/delete_delta_0000007_0000007_0000"));
         AcidInfo acidInfo = acidInfoBuilder.build().get();
 
         HiveSplit expected = new HiveSplit(
-                "db",
-                "table",
                 "partitionId",
                 "path",
                 42,
@@ -73,7 +71,6 @@ public class TestHiveSplit
                 addresses,
                 OptionalInt.empty(),
                 OptionalInt.empty(),
-                0,
                 true,
                 TableToPartitionMapping.mapColumnsByIndex(ImmutableMap.of(1, new HiveTypeName("string"))),
                 Optional.of(new HiveSplit.BucketConversion(
@@ -82,16 +79,12 @@ public class TestHiveSplit
                         16,
                         ImmutableList.of(createBaseColumn("col", 5, HIVE_LONG, BIGINT, ColumnType.REGULAR, Optional.of("comment"))))),
                 Optional.empty(),
-                false,
                 Optional.of(acidInfo),
-                555534,
                 SplitWeight.fromProportion(2.0)); // some non-standard value
 
         String json = codec.toJson(expected);
         HiveSplit actual = codec.fromJson(json);
 
-        assertEquals(actual.getDatabase(), expected.getDatabase());
-        assertEquals(actual.getTable(), expected.getTable());
         assertEquals(actual.getPartitionName(), expected.getPartitionName());
         assertEquals(actual.getPath(), expected.getPath());
         assertEquals(actual.getStart(), expected.getStart());
@@ -99,14 +92,11 @@ public class TestHiveSplit
         assertEquals(actual.getEstimatedFileSize(), expected.getEstimatedFileSize());
         assertEquals(actual.getSchema(), expected.getSchema());
         assertEquals(actual.getPartitionKeys(), expected.getPartitionKeys());
-        assertEquals(actual.getAddresses(), expected.getAddresses());
         assertEquals(actual.getTableToPartitionMapping().getPartitionColumnCoercions(), expected.getTableToPartitionMapping().getPartitionColumnCoercions());
         assertEquals(actual.getTableToPartitionMapping().getTableToPartitionColumns(), expected.getTableToPartitionMapping().getTableToPartitionColumns());
         assertEquals(actual.getBucketConversion(), expected.getBucketConversion());
         assertEquals(actual.isForceLocalScheduling(), expected.isForceLocalScheduling());
-        assertEquals(actual.isS3SelectPushdownEnabled(), expected.isS3SelectPushdownEnabled());
         assertEquals(actual.getAcidInfo().get(), expected.getAcidInfo().get());
-        assertEquals(actual.getSplitNumber(), expected.getSplitNumber());
         assertEquals(actual.getSplitWeight(), expected.getSplitWeight());
     }
 }

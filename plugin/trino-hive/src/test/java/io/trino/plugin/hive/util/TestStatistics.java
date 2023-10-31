@@ -26,9 +26,8 @@ import io.trino.plugin.hive.metastore.IntegerStatistics;
 import io.trino.spi.block.Block;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.statistics.TableStatisticType;
-import io.trino.spi.type.BigintType;
 import io.trino.spi.type.Type;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -36,7 +35,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalLong;
-import java.util.function.Function;
 
 import static io.trino.plugin.hive.HiveBasicStatistics.createEmptyStatistics;
 import static io.trino.plugin.hive.HiveBasicStatistics.createZeroStatistics;
@@ -53,9 +51,11 @@ import static io.trino.plugin.hive.util.Statistics.createHiveColumnStatistics;
 import static io.trino.plugin.hive.util.Statistics.merge;
 import static io.trino.plugin.hive.util.Statistics.reduce;
 import static io.trino.spi.predicate.Utils.nativeValueToBlock;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
+import static io.trino.spi.type.TypeUtils.writeNativeValue;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.lang.Float.floatToIntBits;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -317,16 +317,13 @@ public class TestStatistics
     @Test
     public void testFromComputedStatistics()
     {
-        Function<Integer, Block> singleIntegerValueBlock = value ->
-                BigintType.BIGINT.createBlockBuilder(null, 1).writeLong(value).build();
-
         ComputedStatistics statistics = ComputedStatistics.builder(ImmutableList.of(), ImmutableList.of())
-                .addTableStatistic(TableStatisticType.ROW_COUNT, singleIntegerValueBlock.apply(5))
-                .addColumnStatistic(MIN_VALUE.createColumnStatisticMetadata("a_column"), singleIntegerValueBlock.apply(1))
-                .addColumnStatistic(MAX_VALUE.createColumnStatisticMetadata("a_column"), singleIntegerValueBlock.apply(5))
-                .addColumnStatistic(NUMBER_OF_DISTINCT_VALUES.createColumnStatisticMetadata("a_column"), singleIntegerValueBlock.apply(5))
-                .addColumnStatistic(NUMBER_OF_NON_NULL_VALUES.createColumnStatisticMetadata("a_column"), singleIntegerValueBlock.apply(5))
-                .addColumnStatistic(NUMBER_OF_NON_NULL_VALUES.createColumnStatisticMetadata("b_column"), singleIntegerValueBlock.apply(4))
+                .addTableStatistic(TableStatisticType.ROW_COUNT, writeNativeValue(BIGINT, 5L))
+                .addColumnStatistic(MIN_VALUE.createColumnStatisticMetadata("a_column"), writeNativeValue(INTEGER, 1L))
+                .addColumnStatistic(MAX_VALUE.createColumnStatisticMetadata("a_column"), writeNativeValue(INTEGER, 5L))
+                .addColumnStatistic(NUMBER_OF_DISTINCT_VALUES.createColumnStatisticMetadata("a_column"), writeNativeValue(BIGINT, 5L))
+                .addColumnStatistic(NUMBER_OF_NON_NULL_VALUES.createColumnStatisticMetadata("a_column"), writeNativeValue(BIGINT, 5L))
+                .addColumnStatistic(NUMBER_OF_NON_NULL_VALUES.createColumnStatisticMetadata("b_column"), writeNativeValue(BIGINT, 4L))
                 .build();
 
         Map<String, Type> columnTypes = ImmutableMap.of("a_column", INTEGER, "b_column", VARCHAR);

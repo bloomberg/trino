@@ -16,9 +16,8 @@ package io.trino.plugin.hive.metastore.cache;
 import io.airlift.configuration.Config;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +33,7 @@ public class CachingHiveMetastoreConfig
     private Optional<Duration> metastoreRefreshInterval = Optional.empty();
     private long metastoreCacheMaximumSize = 10000;
     private int maxMetastoreRefreshThreads = 10;
+    private boolean cacheMissing = true;
     private boolean partitionCacheEnabled = true;
 
     @NotNull
@@ -98,6 +98,18 @@ public class CachingHiveMetastoreConfig
     public CachingHiveMetastoreConfig setMaxMetastoreRefreshThreads(int maxMetastoreRefreshThreads)
     {
         this.maxMetastoreRefreshThreads = maxMetastoreRefreshThreads;
+        return this;
+    }
+
+    public boolean isCacheMissing()
+    {
+        return cacheMissing;
+    }
+
+    @Config("hive.metastore-cache.cache-missing")
+    public CachingHiveMetastoreConfig setCacheMissing(boolean cacheMissing)
+    {
+        this.cacheMissing = cacheMissing;
         return this;
     }
 

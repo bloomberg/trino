@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.jdbc;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -28,7 +29,6 @@ import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
-import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorOutputTableHandle;
@@ -46,6 +46,7 @@ import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.ProjectionApplicationResult;
 import io.trino.spi.connector.RetryMode;
+import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.SortItem;
@@ -57,9 +58,9 @@ import io.trino.spi.connector.TopNApplicationResult;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.expression.Constant;
 import io.trino.spi.expression.Variable;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.statistics.ComputedStatistics;
@@ -73,6 +74,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -81,6 +83,7 @@ import java.util.function.Consumer;
 import static com.google.common.base.Functions.identity;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Splitter.fixedLength;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.base.Verify.verifyNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -96,6 +99,7 @@ import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isTopNPushdownE
 import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.isNonTransactionalInsert;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.connector.RetryMode.NO_RETRIES;
+import static io.trino.spi.connector.RowChangeParadigm.CHANGE_ONLY_UPDATED_COLUMNS;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.lang.Math.max;
 import static java.util.Objects.requireNonNull;
@@ -103,6 +107,8 @@ import static java.util.Objects.requireNonNull;
 public class DefaultJdbcMetadata
         implements JdbcMetadata
 {
+    public static final int DEFAULT_COLUMN_ALIAS_LENGTH = 30;
+
     private static final String SYNTHETIC_COLUMN_NAME_PREFIX = "_pfgnrtd_";
     private static final String DELETE_ROW_ID = "_trino_artificial_column_handle_for_delete_row_id_";
     private static final String MERGE_ROW_ID = "$merge_row_id";
@@ -241,7 +247,8 @@ public class DefaultJdbcMetadata
                 handle.getColumns(),
                 handle.getOtherReferencedTables(),
                 handle.getNextSyntheticColumnId(),
-                handle.getAuthorization());
+                handle.getAuthorization(),
+                handle.getUpdateAssignments());
 
         return Optional.of(
                 remainingExpression.isPresent()
@@ -263,7 +270,8 @@ public class DefaultJdbcMetadata
                 Optional.of(columns),
                 handle.getAllReferencedTables(),
                 handle.getNextSyntheticColumnId(),
-                handle.getAuthorization());
+                handle.getAuthorization(),
+                handle.getUpdateAssignments());
     }
 
     @Override
@@ -309,7 +317,8 @@ public class DefaultJdbcMetadata
                         Optional.of(newColumns),
                         handle.getOtherReferencedTables(),
                         handle.getNextSyntheticColumnId(),
-                        handle.getAuthorization()),
+                        handle.getAuthorization(),
+                        handle.getUpdateAssignments()),
                 projections,
                 assignments.entrySet().stream()
                         .map(assignment -> new Assignment(
@@ -419,7 +428,8 @@ public class DefaultJdbcMetadata
                 Optional.of(newColumnsList),
                 handle.getAllReferencedTables(),
                 nextSyntheticColumnId,
-                handle.getAuthorization());
+                handle.getAuthorization(),
+                handle.getUpdateAssignments());
 
         return Optional.of(new AggregationApplicationResult<>(handle, projections.build(), resultAssignments.build(), ImmutableMap.of(), precalculateStatisticsForPushdown));
     }
@@ -453,18 +463,14 @@ public class DefaultJdbcMetadata
 
         ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newLeftColumnsBuilder = ImmutableMap.builder();
         for (JdbcColumnHandle column : jdbcClient.getColumns(session, leftHandle)) {
-            newLeftColumnsBuilder.put(column, JdbcColumnHandle.builderFrom(column)
-                    .setColumnName(column.getColumnName() + "_" + nextSyntheticColumnId)
-                    .build());
+            newLeftColumnsBuilder.put(column, createSyntheticColumn(column, nextSyntheticColumnId));
             nextSyntheticColumnId++;
         }
         Map<JdbcColumnHandle, JdbcColumnHandle> newLeftColumns = newLeftColumnsBuilder.buildOrThrow();
 
         ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newRightColumnsBuilder = ImmutableMap.builder();
         for (JdbcColumnHandle column : jdbcClient.getColumns(session, rightHandle)) {
-            newRightColumnsBuilder.put(column, JdbcColumnHandle.builderFrom(column)
-                    .setColumnName(column.getColumnName() + "_" + nextSyntheticColumnId)
-                    .build());
+            newRightColumnsBuilder.put(column, createSyntheticColumn(column, nextSyntheticColumnId));
             nextSyntheticColumnId++;
         }
         Map<JdbcColumnHandle, JdbcColumnHandle> newRightColumns = newRightColumnsBuilder.buildOrThrow();
@@ -514,10 +520,29 @@ public class DefaultJdbcMetadata
                                                 .addAll(rightReferencedTables)
                                                 .build())),
                         nextSyntheticColumnId,
-                        leftHandle.getAuthorization()),
+                        leftHandle.getAuthorization(),
+                        leftHandle.getUpdateAssignments()),
                 ImmutableMap.copyOf(newLeftColumns),
                 ImmutableMap.copyOf(newRightColumns),
                 precalculateStatisticsForPushdown));
+    }
+
+    @VisibleForTesting
+    static JdbcColumnHandle createSyntheticColumn(JdbcColumnHandle column, int nextSyntheticColumnId)
+    {
+        verify(nextSyntheticColumnId >= 0, "nextSyntheticColumnId rolled over and is not monotonically increasing any more");
+
+        int sequentialNumberLength = String.valueOf(nextSyntheticColumnId).length();
+        int originalColumnNameLength = DEFAULT_COLUMN_ALIAS_LENGTH - sequentialNumberLength - "_".length();
+
+        String columnNameTruncated = fixedLength(originalColumnNameLength)
+                .split(column.getColumnName())
+                .iterator()
+                .next();
+        String columnName = columnNameTruncated + "_" + nextSyntheticColumnId;
+        return JdbcColumnHandle.builderFrom(column)
+                .setColumnName(columnName)
+                .build();
     }
 
     private static Optional<JdbcColumnHandle> getVariableColumnHandle(Map<String, ColumnHandle> assignments, ConnectorExpression expression)
@@ -576,7 +601,8 @@ public class DefaultJdbcMetadata
                 handle.getColumns(),
                 handle.getOtherReferencedTables(),
                 handle.getNextSyntheticColumnId(),
-                handle.getAuthorization());
+                handle.getAuthorization(),
+                handle.getUpdateAssignments());
 
         return Optional.of(new LimitApplicationResult<>(handle, jdbcClient.isLimitGuaranteed(session), precalculateStatisticsForPushdown));
     }
@@ -630,7 +656,8 @@ public class DefaultJdbcMetadata
                 handle.getColumns(),
                 handle.getOtherReferencedTables(),
                 handle.getNextSyntheticColumnId(),
-                handle.getAuthorization());
+                handle.getAuthorization(),
+                handle.getUpdateAssignments());
 
         return Optional.of(new TopNApplicationResult<>(sortedTableHandle, jdbcClient.isTopNGuaranteed(session), precalculateStatisticsForPushdown));
     }
@@ -649,13 +676,7 @@ public class DefaultJdbcMetadata
 
     private TableFunctionApplicationResult<ConnectorTableHandle> getTableFunctionApplicationResult(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        ConnectorTableSchema tableSchema = getTableSchema(session, tableHandle);
-        Map<String, ColumnHandle> columnHandlesByName = getColumnHandles(session, tableHandle);
-        List<ColumnHandle> columnHandles = tableSchema.getColumns().stream()
-                .map(ColumnSchema::getName)
-                .map(columnHandlesByName::get)
-                .collect(toImmutableList());
-
+        List<ColumnHandle> columnHandles = ImmutableList.copyOf(getColumnHandles(session, tableHandle).values());
         return new TableFunctionApplicationResult<>(tableHandle, columnHandles);
     }
 
@@ -671,20 +692,25 @@ public class DefaultJdbcMetadata
     }
 
     @Override
+    public SchemaTableName getTableName(ConnectorSession session, ConnectorTableHandle table)
+    {
+        if (table instanceof JdbcProcedureHandle) {
+            // TODO (https://github.com/trinodb/trino/issues/6694) SchemaTableName should not be required for synthetic JdbcProcedureHandle
+            return new SchemaTableName("_generated", "_generated_procedure");
+        }
+        JdbcTableHandle handle = (JdbcTableHandle) table;
+        return handle.isNamedRelation()
+                ? handle.getRequiredNamedRelation().getSchemaTableName()
+                // TODO (https://github.com/trinodb/trino/issues/6694) SchemaTableName should not be required for synthetic ConnectorTableHandle
+                : new SchemaTableName("_generated", "_generated_query");
+    }
+
+    @Override
     public ConnectorTableSchema getTableSchema(ConnectorSession session, ConnectorTableHandle table)
     {
-        if (table instanceof JdbcProcedureHandle procedureHandle) {
-            return new ConnectorTableSchema(
-                    getSchemaTableNameForProcedureHandle(),
-                    procedureHandle.getColumns().orElseThrow().stream()
-                            .map(JdbcColumnHandle::getColumnSchema)
-                            .collect(toImmutableList()));
-        }
-
         JdbcTableHandle handle = (JdbcTableHandle) table;
-
         return new ConnectorTableSchema(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 jdbcClient.getColumns(session, handle).stream()
                         .map(JdbcColumnHandle::getColumnSchema)
                         .collect(toImmutableList()));
@@ -693,37 +719,14 @@ public class DefaultJdbcMetadata
     @Override
     public ConnectorTableMetadata getTableMetadata(ConnectorSession session, ConnectorTableHandle table)
     {
-        if (table instanceof JdbcProcedureHandle procedureHandle) {
-            return new ConnectorTableMetadata(
-                    getSchemaTableNameForProcedureHandle(),
-                    procedureHandle.getColumns().orElseThrow().stream()
-                            .map(JdbcColumnHandle::getColumnMetadata)
-                            .collect(toImmutableList()));
-        }
-
         JdbcTableHandle handle = (JdbcTableHandle) table;
-
         return new ConnectorTableMetadata(
-                getSchemaTableName(handle),
+                handle.getRequiredNamedRelation().getSchemaTableName(),
                 jdbcClient.getColumns(session, handle).stream()
                         .map(JdbcColumnHandle::getColumnMetadata)
                         .collect(toImmutableList()),
                 jdbcClient.getTableProperties(session, handle),
                 getTableComment(handle));
-    }
-
-    public static SchemaTableName getSchemaTableName(JdbcTableHandle handle)
-    {
-        return handle.isNamedRelation()
-                ? handle.getRequiredNamedRelation().getSchemaTableName()
-                // TODO (https://github.com/trinodb/trino/issues/6694) SchemaTableName should not be required for synthetic ConnectorTableHandle
-                : new SchemaTableName("_generated", "_generated_query");
-    }
-
-    private static SchemaTableName getSchemaTableNameForProcedureHandle()
-    {
-        // TODO (https://github.com/trinodb/trino/issues/6694) SchemaTableName should not be required for synthetic JdbcProcedureHandle
-        return new SchemaTableName("_generated", "_generated_procedure");
     }
 
     public static Optional<String> getTableComment(JdbcTableHandle handle)
@@ -793,6 +796,12 @@ public class DefaultJdbcMetadata
                 throw new TrinoException(NOT_SUPPORTED, "Query and task retries are incompatible with non-transactional inserts");
             }
         }
+    }
+
+    @Override
+    public Optional<Type> getSupportedType(ConnectorSession session, Map<String, Object> tableProperties, Type type)
+    {
+        return jdbcClient.getSupportedType(session, type);
     }
 
     @Override
@@ -918,6 +927,24 @@ public class DefaultJdbcMetadata
     }
 
     @Override
+    public Optional<ConnectorTableHandle> applyUpdate(ConnectorSession session, ConnectorTableHandle handle, Map<ColumnHandle, Constant> assignments)
+    {
+        return Optional.of(((JdbcTableHandle) handle).withAssignments(assignments));
+    }
+
+    @Override
+    public RowChangeParadigm getRowChangeParadigm(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return CHANGE_ONLY_UPDATED_COLUMNS;
+    }
+
+    @Override
+    public OptionalLong executeUpdate(ConnectorSession session, ConnectorTableHandle handle)
+    {
+        return jdbcClient.update(session, (JdbcTableHandle) handle);
+    }
+
+    @Override
     public void truncateTable(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         jdbcClient.truncateTable(session, (JdbcTableHandle) tableHandle);
@@ -1008,15 +1035,21 @@ public class DefaultJdbcMetadata
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
-        jdbcClient.dropSchema(session, schemaName);
+        jdbcClient.dropSchema(session, schemaName, cascade);
     }
 
     @Override
     public void renameSchema(ConnectorSession session, String schemaName, String newSchemaName)
     {
         jdbcClient.renameSchema(session, schemaName, newSchemaName);
+    }
+
+    @Override
+    public OptionalInt getMaxWriterTasks(ConnectorSession session)
+    {
+        return jdbcClient.getMaxWriteParallelism(session);
     }
 
     private static boolean isTableHandleForProcedure(ConnectorTableHandle tableHandle)

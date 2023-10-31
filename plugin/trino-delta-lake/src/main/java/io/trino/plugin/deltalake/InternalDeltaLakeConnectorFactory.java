@@ -22,10 +22,13 @@ import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.event.client.EventModule;
 import io.airlift.json.JsonModule;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.hdfs.HdfsFileSystemModule;
+import io.trino.filesystem.manager.FileSystemModule;
 import io.trino.hdfs.HdfsModule;
 import io.trino.hdfs.authentication.HdfsAuthenticationModule;
+import io.trino.hdfs.gcs.HiveGcsModule;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.CatalogNameModule;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorAccessControl;
@@ -39,9 +42,6 @@ import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.plugin.deltalake.metastore.DeltaLakeMetastoreModule;
 import io.trino.plugin.hive.NodeVersion;
-import io.trino.plugin.hive.azure.HiveAzureModule;
-import io.trino.plugin.hive.gcs.HiveGcsModule;
-import io.trino.plugin.hive.s3.HiveS3Module;
 import io.trino.spi.NodeManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.classloader.ThreadContextClassLoader;
@@ -54,6 +54,8 @@ import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.eventlistener.EventListener;
+import io.trino.spi.function.FunctionProvider;
+import io.trino.spi.function.table.ConnectorTableFunction;
 import io.trino.spi.procedure.Procedure;
 import io.trino.spi.type.TypeManager;
 import org.weakref.jmx.guice.MBeanModule;
@@ -86,27 +88,25 @@ public final class InternalDeltaLakeConnectorFactory
                     new JsonModule(),
                     new MBeanServerModule(),
                     new HdfsModule(),
-                    new HiveS3Module(),
-                    new DeltaLakeS3Module(),
-                    new HiveAzureModule(),
-                    new DeltaLakeAzureModule(),
                     new HiveGcsModule(),
-                    new DeltaLakeGcsModule(),
                     new HdfsAuthenticationModule(),
                     new CatalogNameModule(catalogName),
                     metastoreModule.orElse(new DeltaLakeMetastoreModule()),
                     new DeltaLakeModule(),
                     new DeltaLakeSecurityModule(),
+                    new DeltaLakeSynchronizerModule(),
+                    fileSystemFactory
+                            .map(factory -> (Module) binder -> binder.bind(TrinoFileSystemFactory.class).toInstance(factory))
+                            .orElseGet(FileSystemModule::new),
                     binder -> {
+                        binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
+                        binder.bind(Tracer.class).toInstance(context.getTracer());
                         binder.bind(NodeVersion.class).toInstance(new NodeVersion(context.getNodeManager().getCurrentNode().getVersion()));
                         binder.bind(NodeManager.class).toInstance(context.getNodeManager());
                         binder.bind(TypeManager.class).toInstance(context.getTypeManager());
                         binder.bind(PageIndexerFactory.class).toInstance(context.getPageIndexerFactory());
                         binder.bind(CatalogName.class).toInstance(new CatalogName(catalogName));
                         newSetBinder(binder, EventListener.class);
-                        fileSystemFactory.ifPresentOrElse(
-                                factory -> binder.bind(TrinoFileSystemFactory.class).toInstance(factory),
-                                () -> binder.install(new HdfsFileSystemModule()));
                     },
                     module);
 
@@ -138,7 +138,11 @@ public final class InternalDeltaLakeConnectorFactory
             Set<Procedure> procedures = injector.getInstance(Key.get(new TypeLiteral<Set<Procedure>>() {}));
             Set<TableProcedureMetadata> tableProcedures = injector.getInstance(Key.get(new TypeLiteral<Set<TableProcedureMetadata>>() {}));
 
+            Set<ConnectorTableFunction> connectorTableFunctions = injector.getInstance(Key.get(new TypeLiteral<Set<ConnectorTableFunction>>() {}));
+            FunctionProvider functionProvider = injector.getInstance(FunctionProvider.class);
+
             return new DeltaLakeConnector(
+                    injector,
                     lifeCycleManager,
                     new ClassLoaderSafeConnectorSplitManager(splitManager, classLoader),
                     new ClassLoaderSafeConnectorPageSourceProvider(connectorPageSource, classLoader),
@@ -153,7 +157,9 @@ public final class InternalDeltaLakeConnectorFactory
                     deltaLakeAnalyzeProperties.getAnalyzeProperties(),
                     deltaAccessControl,
                     eventListeners,
-                    transactionManager);
+                    transactionManager,
+                    connectorTableFunctions,
+                    functionProvider);
         }
     }
 }

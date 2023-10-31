@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.Session;
-import io.trino.collect.cache.CacheUtils;
+import io.trino.cache.CacheUtils;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Decimals;
@@ -42,7 +42,6 @@ import io.trino.sql.tree.IntervalLiteral;
 import io.trino.sql.tree.Literal;
 import io.trino.sql.tree.LongLiteral;
 import io.trino.sql.tree.NullLiteral;
-import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.TimeLiteral;
 import io.trino.sql.tree.TimestampLiteral;
@@ -50,7 +49,7 @@ import io.trino.sql.tree.TimestampLiteral;
 import java.util.function.Function;
 
 import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.spi.StandardErrorCode.INVALID_LITERAL;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
@@ -114,7 +113,7 @@ public final class LiteralInterpreter
         @Override
         protected Long visitLongLiteral(LongLiteral node, Void context)
         {
-            return node.getValue();
+            return node.getParsedValue();
         }
 
         @Override
@@ -154,10 +153,10 @@ public final class LiteralInterpreter
                 boolean isJson = JSON.equals(type);
                 ResolvedFunction resolvedFunction;
                 if (isJson) {
-                    resolvedFunction = plannerContext.getMetadata().resolveFunction(session, QualifiedName.of("json_parse"), fromTypes(VARCHAR));
+                    resolvedFunction = plannerContext.getMetadata().resolveBuiltinFunction("json_parse", fromTypes(VARCHAR));
                 }
                 else {
-                    resolvedFunction = plannerContext.getMetadata().getCoercion(session, VARCHAR, type);
+                    resolvedFunction = plannerContext.getMetadata().getCoercion(VARCHAR, type);
                 }
                 return evaluatedNode -> {
                     try {

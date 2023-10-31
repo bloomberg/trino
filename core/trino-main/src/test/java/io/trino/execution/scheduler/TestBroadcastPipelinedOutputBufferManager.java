@@ -15,7 +15,7 @@ package io.trino.execution.scheduler;
 
 import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.execution.buffer.PipelinedOutputBuffers.OutputBufferId;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BROADCAST_PARTITION_ID;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.BROADCAST;
@@ -54,7 +54,7 @@ public class TestBroadcastPipelinedOutputBufferManager
 
         // try to set no more buffers again, which should not result in an error
         // and output buffers should not change
-        hashOutputBufferManager.addOutputBuffer(new OutputBufferId(6));
+        hashOutputBufferManager.noMoreBuffers();
         assertEquals(hashOutputBufferManager.getOutputBuffers(), expectedOutputBuffers);
     }
 }

@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slices;
+import io.trino.filesystem.Location;
 import io.trino.operator.GroupByHashPageIndexerFactory;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
@@ -42,9 +43,7 @@ import io.trino.tpch.LineItemColumn;
 import io.trino.tpch.LineItemGenerator;
 import io.trino.tpch.TpchColumnType;
 import io.trino.tpch.TpchColumnTypes;
-import io.trino.type.BlockTypeOperators;
-import org.apache.hadoop.fs.Path;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -70,7 +69,6 @@ import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.plugin.hive.HiveTestUtils.PAGE_SORTER;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHivePageSourceFactories;
-import static io.trino.plugin.hive.HiveTestUtils.getDefaultHiveRecordCursorProviders;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSessionProperties;
 import static io.trino.plugin.hive.HiveType.HIVE_DATE;
@@ -80,7 +78,7 @@ import static io.trino.plugin.hive.HiveType.HIVE_LONG;
 import static io.trino.plugin.hive.HiveType.HIVE_STRING;
 import static io.trino.plugin.hive.LocationHandle.WriteMode.DIRECT_TO_TARGET_NEW_DIRECTORY;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
-import static io.trino.plugin.hive.metastore.file.FileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -131,6 +129,10 @@ public class TestHivePageSink
                     if (codec == NONE) {
                         continue;
                     }
+                    if ((format == HiveStorageFormat.PARQUET) && (codec == LZ4)) {
+                        // TODO (https://github.com/trinodb/trino/issues/9142) LZ4 is not supported with native Parquet writer
+                        continue;
+                    }
                     config.setHiveCompressionCodec(codec);
 
                     if (!isSupportedCodec(format, codec)) {
@@ -166,7 +168,7 @@ public class TestHivePageSink
     {
         HiveTransactionHandle transaction = new HiveTransactionHandle(false);
         HiveWriterStats stats = new HiveWriterStats();
-        ConnectorPageSink pageSink = createPageSink(transaction, config, sortingFileWriterConfig, metastore, new Path("file:///" + outputPath), stats);
+        ConnectorPageSink pageSink = createPageSink(transaction, config, sortingFileWriterConfig, metastore, Location.of("file:///" + outputPath), stats);
         List<LineItemColumn> columns = getTestColumns();
         List<Type> columnTypes = columns.stream()
                 .map(LineItemColumn::getType)
@@ -249,8 +251,6 @@ public class TestHivePageSink
         splitProperties.setProperty("columns", Joiner.on(',').join(getColumnHandles().stream().map(HiveColumnHandle::getName).collect(toImmutableList())));
         splitProperties.setProperty("columns.types", Joiner.on(',').join(getColumnHandles().stream().map(HiveColumnHandle::getHiveType).map(hiveType -> hiveType.getHiveTypeName().toString()).collect(toImmutableList())));
         HiveSplit split = new HiveSplit(
-                SCHEMA_NAME,
-                TABLE_NAME,
                 "",
                 "file:///" + outputFile.getAbsolutePath(),
                 0,
@@ -262,27 +262,21 @@ public class TestHivePageSink
                 ImmutableList.of(),
                 OptionalInt.empty(),
                 OptionalInt.empty(),
-                0,
                 false,
                 TableToPartitionMapping.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                false,
                 Optional.empty(),
-                0,
                 SplitWeight.standard());
         ConnectorTableHandle table = new HiveTableHandle(SCHEMA_NAME, TABLE_NAME, ImmutableMap.of(), ImmutableList.of(), ImmutableList.of(), Optional.empty());
         HivePageSourceProvider provider = new HivePageSourceProvider(
                 TESTING_TYPE_MANAGER,
-                HDFS_ENVIRONMENT,
                 config,
-                getDefaultHivePageSourceFactories(HDFS_ENVIRONMENT, config),
-                getDefaultHiveRecordCursorProviders(config, HDFS_ENVIRONMENT),
-                new GenericHiveRecordCursorProvider(HDFS_ENVIRONMENT, config));
+                getDefaultHivePageSourceFactories(HDFS_ENVIRONMENT, config));
         return provider.createPageSource(transaction, getHiveSession(config), split, table, ImmutableList.copyOf(getColumnHandles()), DynamicFilter.EMPTY);
     }
 
-    private static ConnectorPageSink createPageSink(HiveTransactionHandle transaction, HiveConfig config, SortingFileWriterConfig sortingFileWriterConfig, HiveMetastore metastore, Path outputPath, HiveWriterStats stats)
+    private static ConnectorPageSink createPageSink(HiveTransactionHandle transaction, HiveConfig config, SortingFileWriterConfig sortingFileWriterConfig, HiveMetastore metastore, Location outputPath, HiveWriterStats stats)
     {
         LocationHandle locationHandle = new LocationHandle(outputPath, outputPath, DIRECT_TO_TARGET_NEW_DIRECTORY);
         HiveOutputTableHandle handle = new HiveOutputTableHandle(
@@ -301,19 +295,16 @@ public class TestHivePageSink
                 false,
                 false);
         JsonCodec<PartitionUpdate> partitionUpdateCodec = JsonCodec.jsonCodec(PartitionUpdate.class);
-        TypeOperators typeOperators = new TypeOperators();
-        BlockTypeOperators blockTypeOperators = new BlockTypeOperators(typeOperators);
         HivePageSinkProvider provider = new HivePageSinkProvider(
                 getDefaultHiveFileWriterFactories(config, HDFS_ENVIRONMENT),
                 HDFS_FILE_SYSTEM_FACTORY,
-                HDFS_ENVIRONMENT,
                 PAGE_SORTER,
                 HiveMetastoreFactory.ofInstance(metastore),
-                new GroupByHashPageIndexerFactory(new JoinCompiler(typeOperators), blockTypeOperators),
+                new GroupByHashPageIndexerFactory(new JoinCompiler(new TypeOperators())),
                 TESTING_TYPE_MANAGER,
                 config,
                 sortingFileWriterConfig,
-                new HiveLocationService(HDFS_ENVIRONMENT),
+                new HiveLocationService(HDFS_ENVIRONMENT, config),
                 partitionUpdateCodec,
                 new TestingNodeManager("fake-environment"),
                 new HiveEventClient(),

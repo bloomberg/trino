@@ -16,9 +16,9 @@ package io.trino.plugin.hive.line;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.formats.line.Column;
 import io.trino.hive.formats.line.LineSerializer;
 import io.trino.hive.formats.line.LineSerializerFactory;
@@ -26,6 +26,7 @@ import io.trino.hive.formats.line.LineWriter;
 import io.trino.hive.formats.line.LineWriterFactory;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.plugin.hive.FileWriter;
+import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveFileWriterFactory;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
@@ -36,9 +37,6 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -46,7 +44,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.Properties;
-import java.util.function.Predicate;
 import java.util.stream.IntStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -66,7 +63,6 @@ public abstract class LineFileWriterFactory
 {
     private final TrinoFileSystemFactory fileSystemFactory;
     private final TypeManager typeManager;
-    private final Predicate<ConnectorSession> activation;
     private final LineSerializerFactory lineSerializerFactory;
     private final LineWriterFactory lineWriterFactory;
     private final boolean headerSupported;
@@ -76,12 +72,10 @@ public abstract class LineFileWriterFactory
             TypeManager typeManager,
             LineSerializerFactory lineSerializerFactory,
             LineWriterFactory lineWriterFactory,
-            Predicate<ConnectorSession> activation,
             boolean headerSupported)
     {
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
-        this.activation = requireNonNull(activation, "activation is null");
         this.lineSerializerFactory = requireNonNull(lineSerializerFactory, "lineSerializerFactory is null");
         this.lineWriterFactory = requireNonNull(lineWriterFactory, "lineWriterFactory is null");
         this.headerSupported = headerSupported;
@@ -89,11 +83,11 @@ public abstract class LineFileWriterFactory
 
     @Override
     public Optional<FileWriter> createFileWriter(
-            Path path,
+            Location location,
             List<String> inputColumnNames,
             StorageFormat storageFormat,
+            HiveCompressionCodec compressionCodec,
             Properties schema,
-            JobConf configuration,
             ConnectorSession session,
             OptionalInt bucketNumber,
             AcidTransaction transaction,
@@ -101,13 +95,9 @@ public abstract class LineFileWriterFactory
             WriterKind writerKind)
     {
         if (!lineWriterFactory.getHiveOutputFormatClassName().equals(storageFormat.getOutputFormat()) ||
-                !lineSerializerFactory.getHiveSerDeClassNames().contains(storageFormat.getSerde()) ||
-                !activation.test(session)) {
+                !lineSerializerFactory.getHiveSerDeClassNames().contains(storageFormat.getSerde())) {
             return Optional.empty();
         }
-
-        Optional<CompressionKind> compressionKind = Optional.ofNullable(configuration.get(FileOutputFormat.COMPRESS_CODEC))
-                .map(CompressionKind::fromHadoopClassName);
 
         // existing tables and partitions may have columns in a different order than the writer is providing, so build
         // an index to rearrange columns in the proper order
@@ -129,9 +119,9 @@ public abstract class LineFileWriterFactory
         try {
             TrinoFileSystem fileSystem = fileSystemFactory.create(session.getIdentity());
             AggregatedMemoryContext outputStreamMemoryContext = newSimpleAggregatedMemoryContext();
-            OutputStream outputStream = fileSystem.newOutputFile(path.toString()).create(outputStreamMemoryContext);
+            OutputStream outputStream = fileSystem.newOutputFile(location).create(outputStreamMemoryContext);
 
-            LineWriter lineWriter = lineWriterFactory.createLineWriter(session, outputStream, compressionKind);
+            LineWriter lineWriter = lineWriterFactory.createLineWriter(session, outputStream, compressionCodec.getHiveCompressionKind());
 
             Optional<Slice> header = getFileHeader(schema, columns);
             if (header.isPresent()) {
@@ -140,7 +130,7 @@ public abstract class LineFileWriterFactory
             return Optional.of(new LineFileWriter(
                     lineWriter,
                     lineSerializer,
-                    () -> fileSystem.deleteFile(path.toString()),
+                    () -> fileSystem.deleteFile(location),
                     fileInputColumnIndexes));
         }
         catch (TrinoException e) {

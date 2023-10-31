@@ -17,9 +17,11 @@ import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.Binder;
+import com.google.inject.Inject;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
+import com.google.inject.Singleton;
 import com.google.inject.multibindings.MapBinder;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.confluent.kafka.schemaregistry.ParsedSchema;
@@ -38,6 +40,8 @@ import io.trino.decoder.avro.AvroReaderSupplier;
 import io.trino.decoder.avro.AvroRowDecoderFactory;
 import io.trino.decoder.dummy.DummyRowDecoder;
 import io.trino.decoder.dummy.DummyRowDecoderFactory;
+import io.trino.decoder.protobuf.DescriptorProvider;
+import io.trino.decoder.protobuf.DummyDescriptorProvider;
 import io.trino.decoder.protobuf.DynamicMessageProvider;
 import io.trino.decoder.protobuf.ProtobufRowDecoder;
 import io.trino.decoder.protobuf.ProtobufRowDecoderFactory;
@@ -47,12 +51,12 @@ import io.trino.plugin.kafka.encoder.RowEncoderFactory;
 import io.trino.plugin.kafka.encoder.avro.AvroRowEncoder;
 import io.trino.plugin.kafka.encoder.protobuf.ProtobufRowEncoder;
 import io.trino.plugin.kafka.encoder.protobuf.ProtobufSchemaParser;
-import io.trino.plugin.kafka.schema.ContentSchemaReader;
+import io.trino.plugin.kafka.schema.ContentSchemaProvider;
+import io.trino.plugin.kafka.schema.ProtobufAnySupportConfig;
 import io.trino.plugin.kafka.schema.TableDescriptionSupplier;
 import io.trino.spi.HostAddress;
 import io.trino.spi.TrinoException;
-
-import javax.inject.Singleton;
+import io.trino.spi.type.TypeManager;
 
 import java.util.List;
 import java.util.Map;
@@ -67,6 +71,7 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.inject.Scopes.SINGLETON;
 import static com.google.inject.multibindings.MapBinder.newMapBinder;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
+import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.trino.plugin.kafka.encoder.EncoderModule.encoderFactory;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -75,13 +80,22 @@ import static java.util.Objects.requireNonNull;
 public class ConfluentModule
         extends AbstractConfigurationAwareModule
 {
+    private final TypeManager typeManager;
+
+    public ConfluentModule(TypeManager typeManager)
+    {
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
+    }
+
     @Override
     protected void setup(Binder binder)
     {
+        binder.bind(TypeManager.class).toInstance(typeManager);
+
         configBinder(binder).bindConfig(ConfluentSchemaRegistryConfig.class);
         install(new ConfluentDecoderModule());
         install(new ConfluentEncoderModule());
-        binder.bind(ContentSchemaReader.class).to(AvroConfluentContentSchemaReader.class).in(Scopes.SINGLETON);
+        binder.bind(ContentSchemaProvider.class).to(AvroConfluentContentSchemaProvider.class).in(Scopes.SINGLETON);
         newSetBinder(binder, SchemaRegistryClientPropertiesProvider.class);
         newSetBinder(binder, SchemaProvider.class).addBinding().to(AvroSchemaProvider.class).in(Scopes.SINGLETON);
         // Each SchemaRegistry object should have a new instance of SchemaProvider
@@ -90,7 +104,7 @@ public class ConfluentModule
         newSetBinder(binder, SessionPropertiesProvider.class).addBinding().to(ConfluentSessionProperties.class).in(Scopes.SINGLETON);
         binder.bind(TableDescriptionSupplier.class).toProvider(ConfluentSchemaRegistryTableDescriptionSupplier.Factory.class).in(Scopes.SINGLETON);
         newMapBinder(binder, String.class, SchemaParser.class).addBinding("AVRO").to(AvroSchemaParser.class).in(Scopes.SINGLETON);
-        newMapBinder(binder, String.class, SchemaParser.class).addBinding("PROTOBUF").to(ProtobufSchemaParser.class).in(Scopes.SINGLETON);
+        newMapBinder(binder, String.class, SchemaParser.class).addBinding("PROTOBUF").to(LazyLoadedProtobufSchemaParser.class).in(Scopes.SINGLETON);
     }
 
     @Provides
@@ -122,7 +136,7 @@ public class ConfluentModule
                 classLoader);
     }
 
-    private static class ConfluentDecoderModule
+    private class ConfluentDecoderModule
             implements Module
     {
         @Override
@@ -134,6 +148,12 @@ public class ConfluentModule
             newMapBinder(binder, String.class, RowDecoderFactory.class).addBinding(ProtobufRowDecoder.NAME).to(ProtobufRowDecoderFactory.class).in(Scopes.SINGLETON);
             newMapBinder(binder, String.class, RowDecoderFactory.class).addBinding(DummyRowDecoder.NAME).to(DummyRowDecoderFactory.class).in(SINGLETON);
             binder.bind(DispatchingRowDecoderFactory.class).in(SINGLETON);
+
+            configBinder(binder).bindConfig(ProtobufAnySupportConfig.class);
+            install(conditionalModule(ProtobufAnySupportConfig.class,
+                    ProtobufAnySupportConfig::isProtobufAnySupportEnabled,
+                    new ConfluentDesciptorProviderModule(),
+                    new DummyDescriptorProviderModule()));
         }
     }
 
@@ -144,10 +164,10 @@ public class ConfluentModule
         public void configure(Binder binder)
         {
             MapBinder<String, RowEncoderFactory> encoderFactoriesByName = encoderFactory(binder);
-            encoderFactoriesByName.addBinding(AvroRowEncoder.NAME).toInstance((session, dataSchema, columnHandles) -> {
+            encoderFactoriesByName.addBinding(AvroRowEncoder.NAME).toInstance((session, rowEncoderSpec) -> {
                 throw new TrinoException(NOT_SUPPORTED, "Insert not supported");
             });
-            encoderFactoriesByName.addBinding(ProtobufRowEncoder.NAME).toInstance((session, dataSchema, columnHandles) -> {
+            encoderFactoriesByName.addBinding(ProtobufRowEncoder.NAME).toInstance((session, rowEncoderSpec) -> {
                 throw new TrinoException(NOT_SUPPORTED, "Insert is not supported for schema registry based tables");
             });
             binder.bind(DispatchingRowEncoderFactory.class).in(SINGLETON);
@@ -158,7 +178,7 @@ public class ConfluentModule
             implements SchemaProvider
     {
         // Make JVM to load lazily ProtobufSchemaProvider, so Kafka connector can be used
-        // with protobuf dependency for non protobuf based topics
+        // without protobuf dependency for non protobuf based topics
         private final Supplier<SchemaProvider> delegate = Suppliers.memoize(this::create);
         private final AtomicReference<Map<String, ?>> configuration = new AtomicReference<>();
 
@@ -166,6 +186,18 @@ public class ConfluentModule
         public String schemaType()
         {
             return "PROTOBUF";
+        }
+
+        @Override
+        public Optional<ParsedSchema> parseSchema(Schema schema, boolean isNew)
+        {
+            return SchemaProvider.super.parseSchema(schema, isNew);
+        }
+
+        @Override
+        public Optional<ParsedSchema> parseSchema(Schema schema, boolean isNew, boolean normalize)
+        {
+            return SchemaProvider.super.parseSchema(schema, isNew, normalize);
         }
 
         @Override
@@ -182,9 +214,21 @@ public class ConfluentModule
         }
 
         @Override
-        public ParsedSchema parseSchemaOrElseThrow(Schema schema, boolean isNew)
+        public Optional<ParsedSchema> parseSchema(String schemaString, List<SchemaReference> references, boolean isNew, boolean normalize)
         {
-            return delegate.get().parseSchemaOrElseThrow(schema, isNew);
+            return SchemaProvider.super.parseSchema(schemaString, references, isNew, normalize);
+        }
+
+        @Override
+        public Optional<ParsedSchema> parseSchema(String schemaString, List<SchemaReference> references)
+        {
+            return SchemaProvider.super.parseSchema(schemaString, references);
+        }
+
+        @Override
+        public ParsedSchema parseSchemaOrElseThrow(Schema schema, boolean isNew, boolean normalize)
+        {
+            return delegate.get().parseSchemaOrElseThrow(schema, isNew, normalize);
         }
 
         private SchemaProvider create()
@@ -194,6 +238,46 @@ public class ConfluentModule
             checkState(configuration != null, "ProtobufSchemaProvider is not already configured");
             schemaProvider.configure(configuration);
             return schemaProvider;
+        }
+    }
+
+    public static class LazyLoadedProtobufSchemaParser
+            extends ForwardingSchemaParser
+    {
+        // Make JVM to load lazily ProtobufSchemaParser, so Kafka connector can be used
+        // without protobuf dependency for non protobuf based topics
+        private final Supplier<SchemaParser> delegate;
+
+        @Inject
+        public LazyLoadedProtobufSchemaParser(TypeManager typeManager, ProtobufAnySupportConfig config)
+        {
+            this.delegate = Suppliers.memoize(() -> new ProtobufSchemaParser(requireNonNull(typeManager, "typeManager is null"), config));
+        }
+
+        @Override
+        protected SchemaParser delegate()
+        {
+            return delegate.get();
+        }
+    }
+
+    private static class ConfluentDesciptorProviderModule
+            implements Module
+    {
+        @Override
+        public void configure(Binder binder)
+        {
+            binder.bind(DescriptorProvider.class).to(ConfluentDescriptorProvider.class).in(SINGLETON);
+        }
+    }
+
+    private static class DummyDescriptorProviderModule
+            implements Module
+    {
+        @Override
+        public void configure(Binder binder)
+        {
+            binder.bind(DescriptorProvider.class).to(DummyDescriptorProvider.class).in(SINGLETON);
         }
     }
 }

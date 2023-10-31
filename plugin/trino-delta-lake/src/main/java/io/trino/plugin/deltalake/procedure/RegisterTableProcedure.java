@@ -14,11 +14,18 @@
 package io.trino.plugin.deltalake.procedure;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
 import io.trino.plugin.deltalake.DeltaLakeMetadataFactory;
 import io.trino.plugin.deltalake.metastore.DeltaLakeMetastore;
+import io.trino.plugin.deltalake.statistics.CachingExtendedStatisticsAccess;
+import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
+import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
+import io.trino.plugin.hive.TableAlreadyExistsException;
 import io.trino.plugin.hive.metastore.PrincipalPrivileges;
 import io.trino.plugin.hive.metastore.Table;
 import io.trino.spi.TrinoException;
@@ -28,16 +35,18 @@ import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.procedure.Procedure;
 
-import javax.inject.Inject;
-import javax.inject.Provider;
-
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
+import java.util.Optional;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_FILESYSTEM_ERROR;
+import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_INVALID_TABLE;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.buildTable;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.getQueryId;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.isCreatedBy;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.getTransactionLogDir;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.buildInitialPrivilegeSet;
 import static io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR;
@@ -69,13 +78,22 @@ public class RegisterTableProcedure
     }
 
     private final DeltaLakeMetadataFactory metadataFactory;
+    private final TransactionLogAccess transactionLogAccess;
+    private final CachingExtendedStatisticsAccess statisticsAccess;
     private final TrinoFileSystemFactory fileSystemFactory;
     private final boolean registerTableProcedureEnabled;
 
     @Inject
-    public RegisterTableProcedure(DeltaLakeMetadataFactory metadataFactory, TrinoFileSystemFactory fileSystemFactory, DeltaLakeConfig deltaLakeConfig)
+    public RegisterTableProcedure(
+            DeltaLakeMetadataFactory metadataFactory,
+            TransactionLogAccess transactionLogAccess,
+            CachingExtendedStatisticsAccess statisticsAccess,
+            TrinoFileSystemFactory fileSystemFactory,
+            DeltaLakeConfig deltaLakeConfig)
     {
         this.metadataFactory = requireNonNull(metadataFactory, "metadataFactory is null");
+        this.transactionLogAccess = requireNonNull(transactionLogAccess, "transactionLogAccess is null");
+        this.statisticsAccess = requireNonNull(statisticsAccess, "statisticsAccess is null");
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.registerTableProcedureEnabled = deltaLakeConfig.isRegisterTableProcedureEnabled();
     }
@@ -130,7 +148,7 @@ public class RegisterTableProcedure
 
         TrinoFileSystem fileSystem = fileSystemFactory.create(session);
         try {
-            String transactionLogDir = getTransactionLogDir(tableLocation);
+            Location transactionLogDir = Location.of(getTransactionLogDir(tableLocation));
             if (!fileSystem.listFiles(transactionLogDir).hasNext()) {
                 throw new TrinoException(GENERIC_USER_ERROR, format("No transaction log found in location %s", transactionLogDir));
             }
@@ -142,9 +160,40 @@ public class RegisterTableProcedure
         Table table = buildTable(session, schemaTableName, tableLocation, true);
 
         PrincipalPrivileges principalPrivileges = buildInitialPrivilegeSet(table.getOwner().orElseThrow());
-        metastore.createTable(
-                session,
-                table,
-                principalPrivileges);
+        statisticsAccess.invalidateCache(schemaTableName, Optional.of(tableLocation));
+        transactionLogAccess.invalidateCache(schemaTableName, Optional.of(tableLocation));
+        // Verify we're registering a location with a valid table
+        try {
+            TableSnapshot tableSnapshot = transactionLogAccess.loadSnapshot(session, table.getSchemaTableName(), tableLocation);
+            transactionLogAccess.getMetadataEntry(tableSnapshot, session); // verify metadata exists
+        }
+        catch (TrinoException e) {
+            throw e;
+        }
+        catch (IOException | RuntimeException e) {
+            throw new TrinoException(DELTA_LAKE_INVALID_TABLE, "Failed to access table location: " + tableLocation, e);
+        }
+
+        // Ensure the table has queryId set. This is relied on for exception handling
+        String queryId = session.getQueryId();
+        verify(
+                getQueryId(table).orElseThrow(() -> new IllegalArgumentException("Query id is not present")).equals(queryId),
+                "Table '%s' does not have correct query id set",
+                table);
+        try {
+            metastore.createTable(
+                    session,
+                    table,
+                    principalPrivileges);
+        }
+        catch (TableAlreadyExistsException e) {
+            // Ignore TableAlreadyExistsException when table looks like created by us.
+            // This may happen when an actually successful metastore create call is retried
+            // e.g. because of a timeout on our side.
+            Optional<Table> existingTable = metastore.getRawMetastoreTable(schemaName, tableName);
+            if (existingTable.isEmpty() || !isCreatedBy(existingTable.get(), queryId)) {
+                throw e;
+            }
+        }
     }
 }

@@ -16,6 +16,7 @@ package io.trino.plugin.iceberg.catalog;
 import com.google.common.collect.ImmutableMap;
 import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.hive.HiveMetadata;
@@ -31,6 +32,7 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorViewDefinition;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.MapType;
@@ -42,6 +44,7 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import org.apache.iceberg.AppendFiles;
+import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SortOrder;
@@ -69,6 +72,7 @@ import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.trino.plugin.hive.ViewReaderUtil.ICEBERG_MATERIALIZED_VIEW_COMMENT;
 import static io.trino.plugin.hive.ViewReaderUtil.PRESTO_VIEW_FLAG;
 import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.mappedCopy;
+import static io.trino.plugin.hive.util.HiveUtil.escapeTableName;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_FILESYSTEM_ERROR;
 import static io.trino.plugin.iceberg.IcebergMaterializedViewAdditionalProperties.STORAGE_SCHEMA;
 import static io.trino.plugin.iceberg.IcebergMaterializedViewAdditionalProperties.getStorageSchema;
@@ -94,6 +98,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
 import static org.apache.iceberg.TableMetadata.newTableMetadata;
 import static org.apache.iceberg.TableProperties.DEFAULT_FILE_FORMAT_DEFAULT;
+import static org.apache.iceberg.Transactions.createOrReplaceTableTransaction;
 import static org.apache.iceberg.Transactions.createTableTransaction;
 
 public abstract class AbstractTrinoCatalog
@@ -200,19 +205,59 @@ public abstract class AbstractTrinoCatalog
         return createTableTransaction(schemaTableName.toString(), ops, metadata);
     }
 
+    protected Transaction newCreateOrReplaceTableTransaction(
+            ConnectorSession session,
+            SchemaTableName schemaTableName,
+            Schema schema,
+            PartitionSpec partitionSpec,
+            SortOrder sortOrder,
+            String location,
+            Map<String, String> properties,
+            Optional<String> owner)
+    {
+        BaseTable table;
+        Optional<TableMetadata> metadata = Optional.empty();
+        try {
+            table = (BaseTable) loadTable(session, new SchemaTableName(schemaTableName.getSchemaName(), schemaTableName.getTableName()));
+            metadata = Optional.of(table.operations().current());
+        }
+        catch (TableNotFoundException ignored) {
+            // ignored
+        }
+        IcebergTableOperations operations = tableOperationsProvider.createTableOperations(
+                this,
+                session,
+                schemaTableName.getSchemaName(),
+                schemaTableName.getTableName(),
+                owner,
+                Optional.of(location));
+        TableMetadata newMetaData;
+        if (metadata.isPresent()) {
+            operations.initializeFromMetadata(metadata.get());
+            newMetaData = operations.current()
+                    // don't inherit table properties from earlier snapshots
+                    .replaceProperties(properties)
+                    .buildReplacement(schema, partitionSpec, sortOrder, location, properties);
+        }
+        else {
+            newMetaData = newTableMetadata(schema, partitionSpec, sortOrder, location, properties);
+        }
+        return createOrReplaceTableTransaction(schemaTableName.toString(), operations, newMetaData);
+    }
+
     protected String createNewTableName(String baseTableName)
     {
-        String tableName = baseTableName;
+        String tableNameLocationComponent = escapeTableName(baseTableName);
         if (useUniqueTableLocation) {
-            tableName += "-" + randomUUID().toString().replace("-", "");
+            tableNameLocationComponent += "-" + randomUUID().toString().replace("-", "");
         }
-        return tableName;
+        return tableNameLocationComponent;
     }
 
     protected void deleteTableDirectory(TrinoFileSystem fileSystem, SchemaTableName schemaTableName, String tableLocation)
     {
         try {
-            fileSystem.deleteDirectory(tableLocation);
+            fileSystem.deleteDirectory(Location.of(tableLocation));
         }
         catch (IOException e) {
             throw new TrinoException(ICEBERG_FILESYSTEM_ERROR, format("Failed to delete directory %s of the table %s", tableLocation, schemaTableName), e);
@@ -271,7 +316,7 @@ public abstract class AbstractTrinoCatalog
                 });
 
         ConnectorTableMetadata tableMetadata = new ConnectorTableMetadata(storageTable, columns, storageTableProperties, Optional.empty());
-        Transaction transaction = IcebergUtil.newCreateTableTransaction(this, tableMetadata, session);
+        Transaction transaction = IcebergUtil.newCreateTableTransaction(this, tableMetadata, session, false);
         AppendFiles appendFiles = transaction.newAppend();
         commit(appendFiles, session);
         transaction.commitTransaction();
@@ -343,16 +388,22 @@ public abstract class AbstractTrinoCatalog
                 Optional.of(new CatalogSchemaTableName(catalogName.toString(), storageTableName)),
                 definition.getCatalog(),
                 definition.getSchema(),
-                definition.getColumns().stream()
-                        .map(column -> new ConnectorMaterializedViewDefinition.Column(column.getName(), column.getType()))
-                        .collect(toImmutableList()),
+                toSpiMaterializedViewColumns(definition.getColumns()),
                 definition.getGracePeriod(),
                 definition.getComment(),
                 owner,
+                definition.getPath(),
                 ImmutableMap.<String, Object>builder()
                         .putAll(getIcebergTableProperties(icebergTable))
                         .put(STORAGE_SCHEMA, storageTableName.getSchemaName())
                         .buildOrThrow());
+    }
+
+    protected List<ConnectorMaterializedViewDefinition.Column> toSpiMaterializedViewColumns(List<IcebergMaterializedViewDefinition.Column> columns)
+    {
+        return columns.stream()
+                .map(column -> new ConnectorMaterializedViewDefinition.Column(column.getName(), column.getType(), column.getComment()))
+                .collect(toImmutableList());
     }
 
     protected Map<String, String> createMaterializedViewProperties(ConnectorSession session, SchemaTableName storageTableName)

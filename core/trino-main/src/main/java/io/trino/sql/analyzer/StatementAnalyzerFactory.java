@@ -14,11 +14,11 @@
 package io.trino.sql.analyzer;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.connector.CatalogServiceProvider;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.AnalyzePropertyManager;
-import io.trino.metadata.SessionPropertyManager;
 import io.trino.metadata.TableFunctionRegistry;
 import io.trino.metadata.TableProceduresPropertyManager;
 import io.trino.metadata.TableProceduresRegistry;
@@ -29,8 +29,6 @@ import io.trino.sql.PlannerContext;
 import io.trino.sql.parser.SqlParser;
 import io.trino.transaction.NoOpTransactionManager;
 import io.trino.transaction.TransactionManager;
-
-import javax.inject.Inject;
 
 import static java.util.Objects.requireNonNull;
 
@@ -44,7 +42,6 @@ public class StatementAnalyzerFactory
     private final GroupProvider groupProvider;
     private final TableProceduresRegistry tableProceduresRegistry;
     private final TableFunctionRegistry tableFunctionRegistry;
-    private final SessionPropertyManager sessionPropertyManager;
     private final TablePropertyManager tablePropertyManager;
     private final AnalyzePropertyManager analyzePropertyManager;
     private final TableProceduresPropertyManager tableProceduresPropertyManager;
@@ -59,7 +56,6 @@ public class StatementAnalyzerFactory
             GroupProvider groupProvider,
             TableProceduresRegistry tableProceduresRegistry,
             TableFunctionRegistry tableFunctionRegistry,
-            SessionPropertyManager sessionPropertyManager,
             TablePropertyManager tablePropertyManager,
             AnalyzePropertyManager analyzePropertyManager,
             TableProceduresPropertyManager tableProceduresPropertyManager)
@@ -72,7 +68,6 @@ public class StatementAnalyzerFactory
         this.groupProvider = requireNonNull(groupProvider, "groupProvider is null");
         this.tableProceduresRegistry = requireNonNull(tableProceduresRegistry, "tableProceduresRegistry is null");
         this.tableFunctionRegistry = requireNonNull(tableFunctionRegistry, "tableFunctionRegistry is null");
-        this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
         this.tablePropertyManager = requireNonNull(tablePropertyManager, "tablePropertyManager is null");
         this.analyzePropertyManager = requireNonNull(analyzePropertyManager, "analyzePropertyManager is null");
         this.tableProceduresPropertyManager = requireNonNull(tableProceduresPropertyManager, "tableProceduresPropertyManager is null");
@@ -89,7 +84,6 @@ public class StatementAnalyzerFactory
                 groupProvider,
                 tableProceduresRegistry,
                 tableFunctionRegistry,
-                sessionPropertyManager,
                 tablePropertyManager,
                 analyzePropertyManager,
                 tableProceduresPropertyManager);
@@ -113,7 +107,6 @@ public class StatementAnalyzerFactory
                 session,
                 tableProceduresRegistry,
                 tableFunctionRegistry,
-                sessionPropertyManager,
                 tablePropertyManager,
                 analyzePropertyManager,
                 tableProceduresPropertyManager,
@@ -136,7 +129,6 @@ public class StatementAnalyzerFactory
                 user -> ImmutableSet.of(),
                 new TableProceduresRegistry(CatalogServiceProvider.fail("procedures are not supported in testing analyzer")),
                 new TableFunctionRegistry(CatalogServiceProvider.fail("table functions are not supported in testing analyzer")),
-                new SessionPropertyManager(),
                 tablePropertyManager,
                 analyzePropertyManager,
                 new TableProceduresPropertyManager(CatalogServiceProvider.fail("procedures are not supported in testing analyzer")));

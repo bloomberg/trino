@@ -19,6 +19,7 @@ import com.google.common.collect.Iterables;
 import io.airlift.stats.CpuTimer;
 import io.airlift.stats.TestingGcMonitor;
 import io.airlift.units.DataSize;
+import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.execution.StageId;
 import io.trino.execution.TaskId;
@@ -60,7 +61,6 @@ import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.relational.RowExpression;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.QualifiedName;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.transaction.TransactionId;
 
@@ -80,9 +80,8 @@ import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.SystemSessionProperties.getFilterAndProjectMinOutputPageRowCount;
 import static io.trino.SystemSessionProperties.getFilterAndProjectMinOutputPageSize;
-import static io.trino.execution.executor.PrioritizedSplitRunner.SPLIT_RUN_QUANTA;
+import static io.trino.execution.executor.timesharing.PrioritizedSplitRunner.SPLIT_RUN_QUANTA;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
-import static io.trino.spi.connector.DynamicFilter.EMPTY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
@@ -100,6 +99,7 @@ public abstract class AbstractOperatorBenchmark
         extends AbstractBenchmark
 {
     protected final LocalQueryRunner localQueryRunner;
+    protected final Session nonTransactionSession;
     protected final Session session;
 
     protected AbstractOperatorBenchmark(
@@ -119,6 +119,7 @@ public abstract class AbstractOperatorBenchmark
             int measuredIterations)
     {
         super(benchmarkName, warmupIterations, measuredIterations);
+        this.nonTransactionSession = requireNonNull(session, "session is null");
         this.localQueryRunner = requireNonNull(localQueryRunner, "localQueryRunner is null");
 
         TransactionId transactionId = localQueryRunner.getTransactionManager().beginTransaction(false);
@@ -155,7 +156,7 @@ public abstract class AbstractOperatorBenchmark
 
     protected final BenchmarkAggregationFunction createAggregationFunction(String name, Type... argumentTypes)
     {
-        ResolvedFunction resolvedFunction = localQueryRunner.getMetadata().resolveFunction(session, QualifiedName.of(name), fromTypes(argumentTypes));
+        ResolvedFunction resolvedFunction = localQueryRunner.getMetadata().resolveBuiltinFunction(name, fromTypes(argumentTypes));
         AggregationImplementation aggregationImplementation = localQueryRunner.getFunctionManager().getAggregationImplementation(resolvedFunction);
         return new BenchmarkAggregationFunction(resolvedFunction, aggregationImplementation);
     }
@@ -209,7 +210,7 @@ public abstract class AbstractOperatorBenchmark
 
     private Split getLocalQuerySplit(Session session, TableHandle handle)
     {
-        SplitSource splitSource = localQueryRunner.getSplitManager().getSplits(session, handle, EMPTY, alwaysTrue());
+        SplitSource splitSource = localQueryRunner.getSplitManager().getSplits(session, Span.getInvalid(), handle, DynamicFilter.EMPTY, alwaysTrue());
         List<Split> splits = new ArrayList<>();
         while (!splitSource.isFinished()) {
             splits.addAll(getNextBatch(splitSource));
@@ -236,7 +237,6 @@ public abstract class AbstractOperatorBenchmark
 
         Map<Symbol, Type> symbolTypes = symbolAllocator.getTypes().allTypes();
         Optional<Expression> hashExpression = HashGenerationOptimizer.getHashExpression(
-                session,
                 localQueryRunner.getMetadata(),
                 symbolAllocator,
                 ImmutableList.copyOf(symbolTypes.keySet()));

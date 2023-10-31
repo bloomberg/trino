@@ -26,11 +26,10 @@ import io.trino.spi.type.Int128;
 import io.trino.spi.type.LongTimestampWithTimeZone;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import jakarta.annotation.Nullable;
 import org.apache.iceberg.PartitionField;
 import org.joda.time.DateTimeField;
 import org.joda.time.chrono.ISOChronology;
-
-import javax.annotation.Nullable;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -372,7 +371,7 @@ public final class PartitionTransforms
 
     private static int hashInteger(Block block, int position)
     {
-        return bucketHash(INTEGER.getLong(block, position));
+        return bucketHash(INTEGER.getInt(block, position));
     }
 
     private static int hashBigint(Block block, int position)
@@ -400,7 +399,7 @@ public final class PartitionTransforms
 
     private static int hashDate(Block block, int position)
     {
-        return bucketHash(DATE.getLong(block, position));
+        return bucketHash(DATE.getInt(block, position));
     }
 
     private static int hashTime(Block block, int position)
@@ -490,7 +489,7 @@ public final class PartitionTransforms
 
     private static long truncateInteger(Block block, int position, int width)
     {
-        long value = INTEGER.getLong(block, position);
+        long value = INTEGER.getInt(block, position);
         return value - ((value % width) + width) % width;
     }
 

@@ -18,7 +18,6 @@ import io.trino.operator.scalar.json.JsonInputConversionError;
 import io.trino.operator.scalar.json.JsonOutputConversionError;
 import io.trino.sql.parser.ParsingException;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -37,19 +36,12 @@ public class TestJsonQueryFunction
     private static final String INPUT = "[\"a\", \"b\", \"c\"]";
     private static final String OBJECT_INPUT = "{\"key\" : 1}";
     private static final String INCORRECT_INPUT = "[...";
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    private final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -422,5 +414,19 @@ public class TestJsonQueryFunction
         assertThat(assertions.query(
                 "SELECT json_query('" + INPUT + "', 'lax $var' PASSING null FORMAT JSON AS \"var\" EMPTY ARRAY ON EMPTY)"))
                 .matches("VALUES cast('[]' AS  varchar)");
+    }
+
+    @Test
+    public void testDescendantMemberAccessor()
+    {
+        assertThat(assertions.query("""
+                SELECT json_query(
+                                '{"a" : {"b" : 1}, "c" :  [true, {"c" : {"c" : null}}]}',
+                                'lax $..c'
+                                WITH ARRAY WRAPPER)
+                """))
+                .matches("""
+                        VALUES cast('[[true,{"c":{"c":null}}],{"c":null},null]'AS varchar)
+                        """);
     }
 }

@@ -18,12 +18,14 @@ import io.trino.Session;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.BaseHiveConnectorTest;
+import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
-import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_PARTITION_COUNT;
+import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT;
+import static io.trino.SystemSessionProperties.FAULT_TOLERANT_EXECUTION_MIN_PARTITION_COUNT;
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
 import static io.trino.testing.FaultTolerantExecutionConnectorTestHelper.getExtraProperties;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -40,18 +42,24 @@ public class TestHiveFaultTolerantExecutionConnectorTest
         this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
         minioStorage.start();
 
-        return BaseHiveConnectorTest.createHiveQueryRunner(
-                getExtraProperties(),
-                runner -> {
+        return BaseHiveConnectorTest.createHiveQueryRunner(HiveQueryRunner.builder()
+                .setExtraProperties(getExtraProperties())
+                .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
-                });
+                }));
     }
 
     @Override
-    public void testScaleWriters()
+    public void testMultipleWriters()
     {
-        testWithAllStorageFormats(this::testSingleWriter);
+        // Not applicable for fault-tolerant mode.
+    }
+
+    @Override
+    public void testMultipleWritersWithSkewedData()
+    {
+        // Not applicable for fault-tolerant mode.
     }
 
     // We need to override this method because in the case of pipeline execution,
@@ -60,7 +68,8 @@ public class TestHiveFaultTolerantExecutionConnectorTest
     @Override
     public void testTaskWritersDoesNotScaleWithLargeMinWriterSize()
     {
-        testTaskScaleWriters(getSession(), DataSize.of(2, GIGABYTE), 4, false).isEqualTo(1);
+        testTaskScaleWriters(getSession(), DataSize.of(2, GIGABYTE), 4, false, DataSize.of(64, GIGABYTE))
+                .isEqualTo(1);
     }
 
     @Override
@@ -91,7 +100,8 @@ public class TestHiveFaultTolerantExecutionConnectorTest
     public void testMaxOutputPartitionCountCheck()
     {
         Session session = Session.builder(getSession())
-                .setSystemProperty(FAULT_TOLERANT_EXECUTION_PARTITION_COUNT, "51")
+                .setSystemProperty(FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT, "51")
+                .setSystemProperty(FAULT_TOLERANT_EXECUTION_MIN_PARTITION_COUNT, "51")
                 .build();
         assertQueryFails(session, "SELECT nationkey, count(*) FROM nation GROUP BY nationkey", "Max number of output partitions exceeded for exchange.*");
     }

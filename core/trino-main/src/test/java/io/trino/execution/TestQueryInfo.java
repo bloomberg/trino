@@ -17,20 +17,31 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
+import io.airlift.tracing.SpanSerialization.SpanDeserializer;
+import io.airlift.tracing.SpanSerialization.SpanSerializer;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Span;
 import io.trino.client.NodeVersion;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoWarning;
 import io.trino.spi.WarningCode;
+import io.trino.spi.connector.CatalogHandle.CatalogVersion;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.spi.security.SelectedRole;
+import io.trino.spi.type.TypeSignature;
 import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.transaction.TransactionId;
-import org.testng.annotations.Test;
+import io.trino.type.TypeSignatureDeserializer;
+import io.trino.type.TypeSignatureKeyDeserializer;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
+import java.util.Map;
 import java.util.Optional;
 
 import static io.trino.SessionTestUtils.TEST_SESSION;
@@ -42,7 +53,17 @@ public class TestQueryInfo
     @Test
     public void testQueryInfoRoundTrip()
     {
-        JsonCodec<QueryInfo> codec = JsonCodec.jsonCodec(QueryInfo.class);
+        JsonCodec<QueryInfo> codec = new JsonCodecFactory(
+                new ObjectMapperProvider()
+                        .withJsonSerializers(Map.of(
+                                Span.class, new SpanSerializer(OpenTelemetry.noop())))
+                        .withJsonDeserializers(Map.of(
+                                Span.class, new SpanDeserializer(OpenTelemetry.noop()),
+                                TypeSignature.class, new TypeSignatureDeserializer()))
+                        .withKeyDeserializers(Map.of(
+                                TypeSignature.class, new TypeSignatureKeyDeserializer())))
+                .jsonCodec(QueryInfo.class);
+
         QueryInfo expected = createQueryInfo();
         QueryInfo actual = codec.fromJson(codec.toJsonBytes(expected));
 
@@ -50,6 +71,8 @@ public class TestQueryInfo
         // Note: SessionRepresentation.equals?
         assertEquals(actual.getState(), expected.getState());
         assertEquals(actual.isScheduled(), expected.isScheduled());
+        assertEquals(actual.getProgressPercentage(), expected.getProgressPercentage());
+        assertEquals(actual.getRunningPercentage(), expected.getRunningPercentage());
 
         assertEquals(actual.getSelf(), expected.getSelf());
         assertEquals(actual.getFieldNames(), expected.getFieldNames());
@@ -104,6 +127,8 @@ public class TestQueryInfo
                 Optional.of("set_catalog"),
                 Optional.of("set_schema"),
                 Optional.of("set_path"),
+                Optional.of("set_authorization_user"),
+                false,
                 ImmutableMap.of("set_property", "set_value"),
                 ImmutableSet.of("reset_property"),
                 ImmutableMap.of("set_roles", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("role"))),
@@ -116,7 +141,7 @@ public class TestQueryInfo
                 null,
                 null,
                 ImmutableList.of(new TrinoWarning(new WarningCode(1, "name"), "message")),
-                ImmutableSet.of(new Input("catalog", "schema", "talble", Optional.empty(), ImmutableList.of(new Column("name", "type")), new PlanFragmentId("id"), new PlanNodeId("1"))),
+                ImmutableSet.of(new Input("catalog", new CatalogVersion("default"), "schema", "talble", Optional.empty(), ImmutableList.of(new Column("name", "type")), new PlanFragmentId("id"), new PlanNodeId("1"))),
                 Optional.empty(),
                 ImmutableList.of(),
                 ImmutableList.of(),

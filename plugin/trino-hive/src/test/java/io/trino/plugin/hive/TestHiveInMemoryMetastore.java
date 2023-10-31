@@ -14,16 +14,20 @@
 package io.trino.plugin.hive;
 
 import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.InMemoryThriftMetastore;
 import io.trino.plugin.hive.metastore.thrift.ThriftMetastoreConfig;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.net.URI;
+
+import static java.nio.file.Files.createDirectories;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 // staging directory is shared mutable state
-@Test(singleThreaded = true)
 public class TestHiveInMemoryMetastore
         extends AbstractTestHiveLocal
 {
@@ -36,6 +40,14 @@ public class TestHiveInMemoryMetastore
         return new BridgingHiveMetastore(hiveMetastore);
     }
 
+    @Override
+    protected void createTestTable(Table table)
+            throws Exception
+    {
+        createDirectories(new File(URI.create(table.getStorage().getLocation())).toPath());
+        super.createTestTable(table);
+    }
+
     @Test
     public void forceTestNgToRespectSingleThreaded()
     {
@@ -44,27 +56,58 @@ public class TestHiveInMemoryMetastore
         // https://github.com/cbeust/testng/issues/2361#issuecomment-688393166 a workaround it to add a dummy test to the leaf test class.
     }
 
+    @Test
     @Override
     public void testMetadataDelete()
     {
         // InMemoryHiveMetastore ignores "removeData" flag in dropPartition
     }
 
+    @Test
     @Override
     public void testTransactionDeleteInsert()
     {
         // InMemoryHiveMetastore does not check whether partition exist in createPartition and dropPartition
     }
 
+    @Test
     @Override
     public void testHideDeltaLakeTables()
     {
-        throw new SkipException("not supported");
+        abort("not supported");
     }
 
+    @Test
     @Override
     public void testDisallowQueryingOfIcebergTables()
     {
-        throw new SkipException("not supported");
+        abort("not supported");
+    }
+
+    @Test
+    @Override
+    public void testDataColumnProperties()
+    {
+        // Column properties are currently not supported in ThriftHiveMetastore
+        assertThatThrownBy(super::testDataColumnProperties)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Persisting column properties is not supported: Column{name=id, type=bigint}");
+    }
+
+    @Test
+    @Override
+    public void testPartitionColumnProperties()
+    {
+        // Column properties are currently not supported in ThriftHiveMetastore
+        assertThatThrownBy(super::testPartitionColumnProperties)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Persisting column properties is not supported: Column{name=part_key, type=varchar(256)}");
+    }
+
+    @Test
+    @Override
+    public void testPartitionSchemaMismatch()
+    {
+        abort("not supported");
     }
 }

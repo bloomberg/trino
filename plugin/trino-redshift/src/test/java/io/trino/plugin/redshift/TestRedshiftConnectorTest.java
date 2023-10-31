@@ -34,6 +34,8 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
+import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.TEST_SCHEMA;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.createRedshiftQueryRunner;
 import static io.trino.plugin.redshift.RedshiftQueryRunner.executeInRedshift;
@@ -62,40 +64,60 @@ public class TestRedshiftConnectorTest
     }
 
     @Override
-    @SuppressWarnings("DuplicateBranchesInSwitch") // options here are grouped per-feature
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-                return false;
+        return switch (connectorBehavior) {
+            case SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_JOIN_PUSHDOWN,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY -> true;
+            case SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                    SUPPORTS_ARRAY,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_DROP_SCHEMA_CASCADE,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
+    }
 
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            case SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE:
-            case SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT:
-                return true;
-
-            case SUPPORTS_JOIN_PUSHDOWN:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_VARCHAR_EQUALITY:
-                return true;
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
+    @Test
+    public void testSuperColumnType()
+    {
+        Session convertToVarchar = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), UNSUPPORTED_TYPE_HANDLING, CONVERT_TO_VARCHAR.name())
+                .build();
+        try (TestTable table = new TestTable(
+                onRemoteDatabase(),
+                format("%s.test_table_with_super_columns", TEST_SCHEMA),
+                "(c1 integer, c2 super)",
+                ImmutableList.of(
+                        "1, null",
+                        "2, 'super value string'",
+                        "3, " + """
+                                JSON_PARSE('{"r_nations":[
+                                      {"n_comment":"s. ironic, unusual asymptotes wake blithely r",
+                                         "n_nationkey":16,
+                                         "n_name":"MOZAMBIQUE"
+                                      }
+                                   ]
+                                }')
+                                """,
+                        "4, 4"))) {
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1), (2), (3), (4)");
+            assertQuery(convertToVarchar, "SELECT * FROM " + table.getName(), """
+                    VALUES
+                    (1, null),
+                    (2, '\"super value string\"'),
+                    (3, '{"r_nations":[{"n_comment":"s. ironic, unusual asymptotes wake blithely r","n_nationkey":16,"n_name":"MOZAMBIQUE"}]}'),
+                    (4, '4')
+                    """);
         }
     }
 
@@ -192,6 +214,15 @@ public class TestRedshiftConnectorTest
                 {"TIME", "time(6)"},
                 {"TIMESTAMP", "timestamp(6)"},
                 {"TIMESTAMPTZ", "timestamp(6) with time zone"}};
+    }
+
+    @Test
+    public void testRedshiftAddNotNullColumn()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, TEST_SCHEMA + ".test_add_column_", "(col int)")) {
+            assertThatThrownBy(() -> onRemoteDatabase().execute("ALTER TABLE " + table.getName() + " ADD COLUMN new_col int NOT NULL"))
+                    .hasMessageContaining("ERROR: ALTER TABLE ADD COLUMN defined as NOT NULL must have a non-null default expression");
+        }
     }
 
     @Override
@@ -536,9 +567,9 @@ public class TestRedshiftConnectorTest
                     .isInstanceOf(AssertionError.class)
                     .hasMessageContaining("""
                             elements not found:
-                              <(555555555555555555561728450.9938271605)>
+                              (555555555555555555561728450.9938271605)
                             and elements not expected:
-                              <(555555555555555555561728450.9938271604)>
+                              (555555555555555555561728450.9938271604)
                             """);
         }
     }
@@ -631,13 +662,6 @@ public class TestRedshiftConnectorTest
     {
         assertThatThrownBy(super::testDeleteWithLike)
                 .hasStackTraceContaining("TrinoException: This connector does not support modifying table rows");
-    }
-
-    @Test
-    @Override
-    public void testAddNotNullColumnToNonEmptyTable()
-    {
-        throw new SkipException("Redshift ALTER TABLE ADD COLUMN defined as NOT NULL must have a non-null default expression");
     }
 
     private static class TestView

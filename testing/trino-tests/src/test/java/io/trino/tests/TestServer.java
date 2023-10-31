@@ -34,9 +34,9 @@ import io.trino.spi.QueryId;
 import io.trino.spi.type.TimeZoneNotSupportedException;
 import io.trino.testing.TestingTrinoClient;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.util.Collections;
@@ -68,16 +68,17 @@ import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.MAX_HASH_PARTITION_COUNT;
 import static io.trino.SystemSessionProperties.QUERY_MAX_MEMORY;
 import static io.trino.client.ClientCapabilities.PATH;
+import static io.trino.client.ClientCapabilities.SESSION_AUTHORIZATION;
 import static io.trino.client.ProtocolHeaders.TRINO_HEADERS;
 import static io.trino.spi.StandardErrorCode.INCOMPATIBLE_CLIENT;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
+import static jakarta.ws.rs.core.Response.Status.OK;
+import static jakarta.ws.rs.core.Response.Status.SEE_OTHER;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
-import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
-import static javax.ws.rs.core.Response.Status.OK;
-import static javax.ws.rs.core.Response.Status.SEE_OTHER;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
@@ -91,7 +92,7 @@ public class TestServer
     private TestingTrinoServer server;
     private HttpClient client;
 
-    @BeforeClass
+    @BeforeAll
     public void setup()
     {
         server = TestingTrinoServer.builder()
@@ -104,7 +105,7 @@ public class TestServer
         client = new JettyHttpClient();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
             throws Exception
     {
@@ -288,6 +289,34 @@ public class TestServer
 
         try (TestingTrinoClient testingClient = new TestingTrinoClient(server, testSessionBuilder().setClientCapabilities(Set.of(PATH.name())).build())) {
             testingClient.execute("SET PATH foo");
+        }
+    }
+
+    @Test
+    public void testSetSessionSupportByClient()
+    {
+        try (TestingTrinoClient testingClient = new TestingTrinoClient(server, testSessionBuilder().setClientCapabilities(Set.of()).build())) {
+            assertThatThrownBy(() -> testingClient.execute("SET SESSION AUTHORIZATION userA"))
+                    .hasMessage("SET SESSION AUTHORIZATION not supported by client");
+        }
+
+        try (TestingTrinoClient testingClient = new TestingTrinoClient(server, testSessionBuilder().setClientCapabilities(Set.of(
+                SESSION_AUTHORIZATION.name())).build())) {
+            testingClient.execute("SET SESSION AUTHORIZATION userA");
+        }
+    }
+
+    @Test
+    public void testResetSessionSupportByClient()
+    {
+        try (TestingTrinoClient testingClient = new TestingTrinoClient(server, testSessionBuilder().setClientCapabilities(Set.of()).build())) {
+            assertThatThrownBy(() -> testingClient.execute("RESET SESSION AUTHORIZATION"))
+                    .hasMessage("RESET SESSION AUTHORIZATION not supported by client");
+        }
+
+        try (TestingTrinoClient testingClient = new TestingTrinoClient(server, testSessionBuilder().setClientCapabilities(Set.of(
+                SESSION_AUTHORIZATION.name())).build())) {
+            testingClient.execute("RESET SESSION AUTHORIZATION");
         }
     }
 

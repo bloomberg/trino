@@ -15,22 +15,25 @@ package io.trino.plugin.iceberg.catalog;
 
 import dev.failsafe.Failsafe;
 import dev.failsafe.RetryPolicy;
+import io.trino.annotation.NotThreadSafe;
+import io.trino.filesystem.Location;
 import io.trino.plugin.hive.metastore.Column;
 import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.iceberg.util.HiveSchemaUtil;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.SchemaTableName;
+import jakarta.annotation.Nullable;
 import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.exceptions.CommitFailedException;
+import org.apache.iceberg.exceptions.ValidationException;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.LocationProvider;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.types.Types.NestedField;
 
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.NotThreadSafe;
-
+import java.io.FileNotFoundException;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -43,6 +46,8 @@ import static io.trino.plugin.hive.HiveType.toHiveType;
 import static io.trino.plugin.hive.util.HiveClassNames.FILE_INPUT_FORMAT_CLASS;
 import static io.trino.plugin.hive.util.HiveClassNames.FILE_OUTPUT_FORMAT_CLASS;
 import static io.trino.plugin.hive.util.HiveClassNames.LAZY_SIMPLE_SERDE_CLASS;
+import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_INVALID_METADATA;
+import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_MISSING_METADATA;
 import static io.trino.plugin.iceberg.IcebergUtil.METADATA_FOLDER_NAME;
 import static io.trino.plugin.iceberg.IcebergUtil.fixBrokenMetadataLocation;
 import static io.trino.plugin.iceberg.IcebergUtil.getLocationProvider;
@@ -104,7 +109,7 @@ public abstract class AbstractIcebergTableOperations
         currentMetadata = tableMetadata;
         currentMetadataLocation = tableMetadata.metadataFileLocation();
         shouldRefresh = false;
-        version = parseVersion(currentMetadataLocation);
+        version = OptionalInt.of(parseVersion(Location.of(currentMetadataLocation).fileName()));
     }
 
     @Override
@@ -226,13 +231,31 @@ public abstract class AbstractIcebergTableOperations
             return;
         }
 
-        TableMetadata newMetadata = Failsafe.with(RetryPolicy.builder()
-                        .withMaxRetries(20)
-                        .withBackoff(100, 5000, MILLIS, 4.0)
-                        .withMaxDuration(Duration.ofMinutes(10))
-                        .abortOn(org.apache.iceberg.exceptions.NotFoundException.class)
-                        .build()) // qualified name, as this is NOT the io.trino.spi.connector.NotFoundException
-                .get(() -> TableMetadataParser.read(fileIo, io().newInputFile(newLocation)));
+        // a table that is replaced doesn't need its metadata reloaded
+        if (newLocation == null) {
+            shouldRefresh = false;
+            return;
+        }
+
+        TableMetadata newMetadata;
+        try {
+            newMetadata = Failsafe.with(RetryPolicy.builder()
+                            .withMaxRetries(20)
+                            .withBackoff(100, 5000, MILLIS, 4.0)
+                            .withMaxDuration(Duration.ofMinutes(10))
+                            .abortOn(failure -> failure instanceof ValidationException || isNotFoundException(failure))
+                            .build())
+                    .get(() -> TableMetadataParser.read(fileIo, io().newInputFile(newLocation)));
+        }
+        catch (Throwable failure) {
+            if (isNotFoundException(failure)) {
+                throw new TrinoException(ICEBERG_MISSING_METADATA, "Metadata not found in metadata location for table " + getSchemaTableName(), failure);
+            }
+            if (failure instanceof ValidationException) {
+                throw new TrinoException(ICEBERG_INVALID_METADATA, "Invalid metadata file for table " + getSchemaTableName(), failure);
+            }
+            throw failure;
+        }
 
         String newUUID = newMetadata.uuid();
         if (currentMetadata != null) {
@@ -242,8 +265,16 @@ public abstract class AbstractIcebergTableOperations
 
         currentMetadata = newMetadata;
         currentMetadataLocation = newLocation;
-        version = parseVersion(newLocation);
+        version = OptionalInt.of(parseVersion(Location.of(newLocation).fileName()));
         shouldRefresh = false;
+    }
+
+    private static boolean isNotFoundException(Throwable failure)
+    {
+        // qualified name, as this is NOT the io.trino.spi.connector.NotFoundException
+        return failure instanceof org.apache.iceberg.exceptions.NotFoundException ||
+                // This is used in context where the code cannot throw a checked exception, so FileNotFoundException would need to be wrapped
+                failure.getCause() instanceof FileNotFoundException;
     }
 
     protected static String newTableMetadataFilePath(TableMetadata meta, int newVersion)
@@ -261,7 +292,7 @@ public abstract class AbstractIcebergTableOperations
         return format("%s/%s/%s", stripTrailingSlash(metadata.location()), METADATA_FOLDER_NAME, filename);
     }
 
-    protected static List<Column> toHiveColumns(List<NestedField> columns)
+    public static List<Column> toHiveColumns(List<NestedField> columns)
     {
         return columns.stream()
                 .map(column -> new Column(

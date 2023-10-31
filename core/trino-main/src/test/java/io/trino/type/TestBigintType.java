@@ -13,9 +13,10 @@
  */
 package io.trino.type;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type.Range;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -31,7 +32,7 @@ public class TestBigintType
         super(BIGINT, Long.class, createTestBlock());
     }
 
-    public static Block createTestBlock()
+    public static ValueBlock createTestBlock()
     {
         BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, 15);
         BIGINT.writeLong(blockBuilder, 1111);
@@ -45,7 +46,7 @@ public class TestBigintType
         BIGINT.writeLong(blockBuilder, 3333);
         BIGINT.writeLong(blockBuilder, 3333);
         BIGINT.writeLong(blockBuilder, 4444);
-        return blockBuilder.build();
+        return blockBuilder.buildValueBlock();
     }
 
     @Override
@@ -54,7 +55,7 @@ public class TestBigintType
         return ((Long) value) + 1;
     }
 
-    @Override
+    @Test
     public void testRange()
     {
         Range range = type.getRange().orElseThrow();
@@ -62,7 +63,7 @@ public class TestBigintType
         assertEquals(range.getMax(), Long.MAX_VALUE);
     }
 
-    @Override
+    @Test
     public void testPreviousValue()
     {
         long minValue = Long.MIN_VALUE;
@@ -82,7 +83,7 @@ public class TestBigintType
                 .isEqualTo(Optional.of(maxValue - 1));
     }
 
-    @Override
+    @Test
     public void testNextValue()
     {
         long minValue = Long.MIN_VALUE;

@@ -15,25 +15,25 @@ package io.trino.operator.table;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
+import com.google.inject.Provider;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorTableFunction;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.ptf.AbstractConnectorTableFunction;
-import io.trino.spi.ptf.Argument;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.ConnectorTableFunctionHandle;
-import io.trino.spi.ptf.Descriptor;
-import io.trino.spi.ptf.DescriptorArgument;
-import io.trino.spi.ptf.DescriptorArgumentSpecification;
-import io.trino.spi.ptf.TableArgument;
-import io.trino.spi.ptf.TableArgumentSpecification;
-import io.trino.spi.ptf.TableFunctionAnalysis;
-import io.trino.spi.ptf.TableFunctionDataProcessor;
-import io.trino.spi.ptf.TableFunctionProcessorProvider;
+import io.trino.spi.function.table.AbstractConnectorTableFunction;
+import io.trino.spi.function.table.Argument;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunctionHandle;
+import io.trino.spi.function.table.Descriptor;
+import io.trino.spi.function.table.DescriptorArgument;
+import io.trino.spi.function.table.DescriptorArgumentSpecification;
+import io.trino.spi.function.table.TableArgument;
+import io.trino.spi.function.table.TableArgumentSpecification;
+import io.trino.spi.function.table.TableFunctionAnalysis;
+import io.trino.spi.function.table.TableFunctionDataProcessor;
+import io.trino.spi.function.table.TableFunctionProcessorProvider;
 import io.trino.spi.type.RowType;
-
-import javax.inject.Provider;
 
 import java.util.List;
 import java.util.Map;
@@ -44,10 +44,10 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.metadata.GlobalFunctionCatalog.BUILTIN_SCHEMA;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static io.trino.spi.ptf.DescriptorArgument.NULL_DESCRIPTOR;
-import static io.trino.spi.ptf.ReturnTypeSpecification.GenericTable.GENERIC_TABLE;
-import static io.trino.spi.ptf.TableFunctionProcessorState.Finished.FINISHED;
-import static io.trino.spi.ptf.TableFunctionProcessorState.Processed.usedInputAndProduced;
+import static io.trino.spi.function.table.DescriptorArgument.NULL_DESCRIPTOR;
+import static io.trino.spi.function.table.ReturnTypeSpecification.GenericTable.GENERIC_TABLE;
+import static io.trino.spi.function.table.TableFunctionProcessorState.Finished.FINISHED;
+import static io.trino.spi.function.table.TableFunctionProcessorState.Processed.usedInputAndProduced;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.stream.Collectors.joining;
@@ -86,7 +86,11 @@ public class ExcludeColumns
         }
 
         @Override
-        public TableFunctionAnalysis analyze(ConnectorSession session, ConnectorTransactionHandle transaction, Map<String, Argument> arguments)
+        public TableFunctionAnalysis analyze(
+                ConnectorSession session,
+                ConnectorTransactionHandle transaction,
+                Map<String, Argument> arguments,
+                ConnectorAccessControl accessControl)
         {
             DescriptorArgument excludedColumns = (DescriptorArgument) arguments.get(DESCRIPTOR_ARGUMENT_NAME);
             if (excludedColumns.equals(NULL_DESCRIPTOR)) {
@@ -140,7 +144,7 @@ public class ExcludeColumns
             return TableFunctionAnalysis.builder()
                     .requiredColumns(TABLE_ARGUMENT_NAME, requiredColumns.build())
                     .returnedType(new Descriptor(returnedType))
-                    // there's no information to remember. All logic is effectively delegated to the engine via `requiredColumns`. We do not pass a ConnectorTableHandle. EMPTY_HANDLE will be used.
+                    .handle(new ExcludeColumnsFunctionHandle())
                     .build();
         }
     }
@@ -160,5 +164,11 @@ public class ExcludeColumns
                 };
             }
         };
+    }
+
+    public record ExcludeColumnsFunctionHandle()
+            implements ConnectorTableFunctionHandle
+    {
+        // there's no information to remember. All logic is effectively delegated to the engine via `requiredColumns`.
     }
 }

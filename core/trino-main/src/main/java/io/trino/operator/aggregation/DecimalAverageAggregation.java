@@ -15,8 +15,8 @@ package io.trino.operator.aggregation;
 
 import com.google.common.annotations.VisibleForTesting;
 import io.trino.operator.aggregation.state.LongDecimalWithOverflowAndLongState;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.Int128ArrayBlock;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
 import io.trino.spi.function.BlockIndex;
@@ -80,7 +80,7 @@ public final class DecimalAverageAggregation
     @LiteralParameters({"p", "s"})
     public static void inputLongDecimal(
             @AggregationState LongDecimalWithOverflowAndLongState state,
-            @BlockPosition @SqlType(value = "decimal(p, s)", nativeContainerType = Int128.class) Block block,
+            @BlockPosition @SqlType(value = "decimal(p, s)", nativeContainerType = Int128.class) Int128ArrayBlock block,
             @BlockIndex int position)
     {
         state.addLong(1); // row counter
@@ -105,8 +105,6 @@ public final class DecimalAverageAggregation
     @CombineFunction
     public static void combine(@AggregationState LongDecimalWithOverflowAndLongState state, @AggregationState LongDecimalWithOverflowAndLongState otherState)
     {
-        state.addLong(otherState.getLong()); // row counter
-
         long[] decimal = state.getDecimalArray();
         int offset = state.getDecimalArrayOffset();
 
@@ -128,10 +126,12 @@ public final class DecimalAverageAggregation
             decimal[offset + 1] = otherDecimal[otherOffset + 1];
             state.setOverflow(otherState.getOverflow());
         }
+
+        state.addLong(otherState.getLong()); // row counter
     }
 
     @OutputFunction("decimal(p,s)")
-    public static void outputShortDecimal(
+    public static void outputDecimal(
             @TypeParameter("decimal(p,s)") Type type,
             @AggregationState LongDecimalWithOverflowAndLongState state,
             BlockBuilder out)

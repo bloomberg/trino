@@ -25,8 +25,9 @@ import io.trino.plugin.iceberg.TestingIcebergPlugin;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,18 +37,21 @@ import java.util.concurrent.atomic.AtomicReference;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
-@Test(singleThreaded = true) // testException is a shared mutable state
+@TestInstance(PER_CLASS)
 public class TestIcebergFileMetastoreCreateTableFailure
         extends AbstractTestQueryFramework
 {
     private static final String ICEBERG_CATALOG = "iceberg";
     private static final String SCHEMA_NAME = "test_schema";
+
+    private static final String METADATA_GLOB = "glob:**.metadata.json";
 
     private Path dataDirectory;
     private HiveMetastore metastore;
@@ -61,7 +65,7 @@ public class TestIcebergFileMetastoreCreateTableFailure
         // Using FileHiveMetastore as approximation of HMS
         this.metastore = new FileHiveMetastore(
                 new NodeVersion("testversion"),
-                HDFS_ENVIRONMENT,
+                HDFS_FILE_SYSTEM_FACTORY,
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 new FileHiveMetastoreConfig()
                         .setCatalogDirectory(dataDirectory.toString()))
@@ -86,7 +90,7 @@ public class TestIcebergFileMetastoreCreateTableFailure
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
             throws Exception
     {
@@ -123,10 +127,11 @@ public class TestIcebergFileMetastoreCreateTableFailure
 
         Path metadataDirectory = Path.of(tableLocation, "metadata");
         if (shouldMetadataFileExist) {
-            assertThat(metadataDirectory).as("Metadata file should exist").isDirectoryContaining("glob:**.metadata.json");
+            assertThat(metadataDirectory).as("Metadata file should exist").isDirectoryContaining(METADATA_GLOB);
         }
         else {
-            assertThat(metadataDirectory).as("Metadata file should not exist").isEmptyDirectory();
+            // file cleanup is more conservative since https://github.com/apache/iceberg/pull/8599
+            assertThat(metadataDirectory).as("Metadata file should not exist").isDirectoryNotContaining(METADATA_GLOB);
         }
     }
 }

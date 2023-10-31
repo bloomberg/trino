@@ -24,10 +24,12 @@ import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.LanguageFunction;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,9 +64,22 @@ public interface HiveMetastore
 
     List<String> getAllTables(String databaseName);
 
+    /**
+     * @return List of tables, views and materialized views names from all schemas or Optional.empty if operation is not supported
+     */
+    Optional<List<SchemaTableName>> getAllTables();
+
     List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue);
 
+    /**
+     * Lists views and materialized views from given database.
+     */
     List<String> getAllViews(String databaseName);
+
+    /**
+     * @return List of views including materialized views names from all schemas or Optional.empty if operation is not supported
+     */
+    Optional<List<SchemaTableName>> getAllViews();
 
     void createDatabase(Database database);
 
@@ -225,4 +240,16 @@ public interface HiveMetastore
     {
         throw new UnsupportedOperationException();
     }
+
+    boolean functionExists(String databaseName, String functionName, String signatureToken);
+
+    Collection<LanguageFunction> getFunctions(String databaseName);
+
+    Collection<LanguageFunction> getFunctions(String databaseName, String functionName);
+
+    void createFunction(String databaseName, String functionName, LanguageFunction function);
+
+    void replaceFunction(String databaseName, String functionName, LanguageFunction function);
+
+    void dropFunction(String databaseName, String functionName, String signatureToken);
 }

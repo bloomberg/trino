@@ -27,7 +27,7 @@ public final class FaultTolerantExecutionConnectorTestHelper
                 .put("retry-policy", "TASK")
                 .put("retry-initial-delay", "50ms")
                 .put("retry-max-delay", "100ms")
-                .put("fault-tolerant-execution-partition-count", "5")
+                .put("fault-tolerant-execution-max-partition-count", "5")
                 .put("fault-tolerant-execution-arbitrary-distribution-compute-task-target-size-min", "5MB")
                 .put("fault-tolerant-execution-arbitrary-distribution-compute-task-target-size-max", "10MB")
                 .put("fault-tolerant-execution-arbitrary-distribution-write-task-target-size-min", "10MB")
@@ -35,6 +35,8 @@ public final class FaultTolerantExecutionConnectorTestHelper
                 .put("fault-tolerant-execution-hash-distribution-compute-task-target-size", "5MB")
                 .put("fault-tolerant-execution-hash-distribution-write-task-target-size", "10MB")
                 .put("fault-tolerant-execution-standard-split-size", "2.5MB")
+                .put("fault-tolerant-execution-hash-distribution-compute-task-to-node-min-ratio", "0.0")
+                .put("fault-tolerant-execution-hash-distribution-write-task-to-node-min-ratio", "0.0")
                 // to trigger spilling
                 .put("exchange.deduplication-buffer-size", "1kB")
                 .put("fault-tolerant-execution-task-memory", "1GB")
@@ -45,6 +47,16 @@ public final class FaultTolerantExecutionConnectorTestHelper
                 .put("max-tasks-waiting-for-execution-per-query", "2")
                 .put("max-tasks-waiting-for-node-per-stage", "2")
                 .put("query.schedule-split-batch-size", "2")
+                .buildOrThrow();
+    }
+
+    public static Map<String, String> enforceRuntimeAdaptivePartitioningProperties()
+    {
+        return ImmutableMap.<String, String>builder()
+                .put("fault-tolerant-execution-runtime-adaptive-partitioning-enabled", "true")
+                .put("fault-tolerant-execution-runtime-adaptive-partitioning-partition-count", "40")
+                // to ensure runtime adaptive partitioning is triggered
+                .put("fault-tolerant-execution-runtime-adaptive-partitioning-max-task-size", "1B")
                 .buildOrThrow();
     }
 }

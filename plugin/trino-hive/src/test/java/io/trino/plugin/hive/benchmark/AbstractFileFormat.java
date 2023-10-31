@@ -16,14 +16,12 @@ package io.trino.plugin.hive.benchmark;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.trino.filesystem.Location;
 import io.trino.hdfs.HdfsEnvironment;
-import io.trino.plugin.hive.GenericHiveRecordCursorProvider;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.HivePageSourceProvider;
-import io.trino.plugin.hive.HiveRecordCursorProvider;
-import io.trino.plugin.hive.HiveRecordCursorProvider.ReaderRecordCursorWithProjections;
 import io.trino.plugin.hive.HiveSplit;
 import io.trino.plugin.hive.HiveStorageFormat;
 import io.trino.plugin.hive.HiveTableHandle;
@@ -36,11 +34,9 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.DynamicFilter;
-import io.trino.spi.connector.RecordPageSource;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.TestingConnectorTransactionHandle;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.JobConf;
 
 import java.io.File;
@@ -83,18 +79,6 @@ public abstract class AbstractFileFormat
     }
 
     @Override
-    public Optional<HivePageSourceFactory> getHivePageSourceFactory(HdfsEnvironment environment)
-    {
-        return Optional.empty();
-    }
-
-    @Override
-    public Optional<HiveRecordCursorProvider> getHiveRecordCursorProvider(HdfsEnvironment environment)
-    {
-        return Optional.empty();
-    }
-
-    @Override
     public ConnectorPageSource createFileFormatReader(
             ConnectorSession session,
             HdfsEnvironment hdfsEnvironment,
@@ -102,16 +86,7 @@ public abstract class AbstractFileFormat
             List<String> columnNames,
             List<Type> columnTypes)
     {
-        Optional<HivePageSourceFactory> pageSourceFactory = getHivePageSourceFactory(hdfsEnvironment);
-        Optional<HiveRecordCursorProvider> recordCursorProvider = getHiveRecordCursorProvider(hdfsEnvironment);
-
-        checkArgument(pageSourceFactory.isPresent() ^ recordCursorProvider.isPresent());
-
-        if (pageSourceFactory.isPresent()) {
-            return createPageSource(pageSourceFactory.get(), session, targetFile, columnNames, columnTypes, getFormat());
-        }
-
-        return createPageSource(recordCursorProvider.get(), session, targetFile, columnNames, columnTypes, getFormat());
+        return createPageSource(getHivePageSourceFactory(hdfsEnvironment), session, targetFile, columnNames, columnTypes, getFormat());
     }
 
     @Override
@@ -125,17 +100,12 @@ public abstract class AbstractFileFormat
     {
         HivePageSourceProvider factory = new HivePageSourceProvider(
                 TESTING_TYPE_MANAGER,
-                hdfsEnvironment,
                 new HiveConfig(),
-                getHivePageSourceFactory(hdfsEnvironment).map(ImmutableSet::of).orElse(ImmutableSet.of()),
-                getHiveRecordCursorProvider(hdfsEnvironment).map(ImmutableSet::of).orElse(ImmutableSet.of()),
-                new GenericHiveRecordCursorProvider(hdfsEnvironment, new HiveConfig()));
+                ImmutableSet.of(getHivePageSourceFactory(hdfsEnvironment)));
 
         Properties schema = createSchema(getFormat(), schemaColumnNames, schemaColumnTypes);
 
         HiveSplit split = new HiveSplit(
-                "schema_name",
-                "table_name",
                 "",
                 targetFile.getPath(),
                 0,
@@ -147,14 +117,11 @@ public abstract class AbstractFileFormat
                 ImmutableList.of(),
                 OptionalInt.empty(),
                 OptionalInt.empty(),
-                0,
                 false,
                 TableToPartitionMapping.empty(),
                 Optional.empty(),
                 Optional.empty(),
-                false,
                 Optional.empty(),
-                0,
                 SplitWeight.standard());
 
         return factory.createPageSource(
@@ -172,36 +139,6 @@ public abstract class AbstractFileFormat
     }
 
     static ConnectorPageSource createPageSource(
-            HiveRecordCursorProvider cursorProvider,
-            ConnectorSession session,
-            File targetFile,
-            List<String> columnNames,
-            List<Type> columnTypes,
-            HiveStorageFormat format)
-    {
-        checkArgument(columnNames.size() == columnTypes.size(), "columnNames and columnTypes should have the same size");
-
-        List<HiveColumnHandle> readColumns = getBaseColumns(columnNames, columnTypes);
-
-        Optional<ReaderRecordCursorWithProjections> recordCursorWithProjections = cursorProvider.createRecordCursor(
-                conf,
-                session,
-                new Path(targetFile.getAbsolutePath()),
-                0,
-                targetFile.length(),
-                targetFile.length(),
-                createSchema(format, columnNames, columnTypes),
-                readColumns,
-                TupleDomain.all(),
-                TESTING_TYPE_MANAGER,
-                false);
-
-        checkState(recordCursorWithProjections.isPresent(), "readerPageSourceWithProjections is not present");
-        checkState(recordCursorWithProjections.get().getProjectedReaderColumns().isEmpty(), "projection should not be required");
-        return new RecordPageSource(columnTypes, recordCursorWithProjections.get().getRecordCursor());
-    }
-
-    static ConnectorPageSource createPageSource(
             HivePageSourceFactory pageSourceFactory,
             ConnectorSession session,
             File targetFile,
@@ -216,9 +153,8 @@ public abstract class AbstractFileFormat
         Properties schema = createSchema(format, columnNames, columnTypes);
         Optional<ReaderPageSource> readerPageSourceWithProjections = pageSourceFactory
                 .createPageSource(
-                        conf,
                         session,
-                        new Path(targetFile.getAbsolutePath()),
+                        Location.of(targetFile.getAbsolutePath()),
                         0,
                         targetFile.length(),
                         targetFile.length(),

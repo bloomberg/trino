@@ -26,10 +26,11 @@ import io.trino.spi.eventlistener.StageGcStatistics;
 import io.trino.spi.metrics.Metrics;
 import io.trino.sql.planner.plan.PlanNodeId;
 import org.joda.time.DateTime;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.server.DynamicFilterService.DynamicFiltersStats;
@@ -187,6 +188,7 @@ public class TestQueryStats
             new Duration(33, NANOSECONDS),
 
             new Duration(100, NANOSECONDS),
+            new Duration(150, NANOSECONDS),
             new Duration(200, NANOSECONDS),
 
             9,
@@ -213,6 +215,8 @@ public class TestQueryStats
             DataSize.ofBytes(27),
 
             true,
+            OptionalDouble.of(8.88),
+            OptionalDouble.of(0),
             new Duration(28, NANOSECONDS),
             new Duration(29, NANOSECONDS),
             new Duration(30, NANOSECONDS),
@@ -297,6 +301,7 @@ public class TestQueryStats
         assertEquals(actual.getAnalysisTime(), new Duration(33, NANOSECONDS));
 
         assertEquals(actual.getPlanningTime(), new Duration(100, NANOSECONDS));
+        assertEquals(actual.getPlanningCpuTime(), new Duration(150, NANOSECONDS));
         assertEquals(actual.getFinishingTime(), new Duration(200, NANOSECONDS));
 
         assertEquals(actual.getTotalTasks(), 9);

@@ -74,7 +74,16 @@ def setup(app):
 
 needs_sphinx = '3.0'
 
-extensions = ['myst_parser', 'backquote', 'download', 'issue', 'sphinx_copybutton']
+extensions = [
+    'myst_parser',
+    'backquote',
+    'download',
+    'issue',
+    'sphinx_copybutton',
+    'redirects',
+]
+
+redirects_file = 'redirects.txt'
 
 templates_path = ['templates']
 
@@ -104,6 +113,11 @@ global_replacements = {
     "|trino_version|" : version
 }
 
+myst_enable_extensions = [
+    "colon_fence",
+    "deflist",
+    "substitution"
+]
 
 # -- Options for HTML output ---------------------------------------------------
 
@@ -125,7 +139,7 @@ html_sidebars = {
 }
 
 html_theme_options = {
-    'base_url': '/',
+    'base_url': 'https://trino.io/docs/current/',
     'globaltoc_depth': -1,
     'theme_color': '2196f3',
     'color_primary': '',  # set in CSS

@@ -13,6 +13,7 @@
  */
 package io.trino.tests;
 
+import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.client.ClientCapabilities;
 import io.trino.dispatcher.DispatchManager;
@@ -26,9 +27,11 @@ import io.trino.spi.TrinoException;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.TestingSessionContext;
 import io.trino.tests.tpch.TpchQueryRunnerBuilder;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.Timeout;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.SessionTestUtils.TEST_SESSION;
@@ -42,30 +45,32 @@ import static io.trino.spi.StandardErrorCode.EXCEEDED_SCAN_LIMIT;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.Arrays.stream;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.fail;
 
-@Test(singleThreaded = true)
+@TestInstance(PER_CLASS)
 public class TestQueryManager
 {
     private DistributedQueryRunner queryRunner;
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
             throws Exception
     {
         queryRunner = TpchQueryRunnerBuilder.builder().build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         queryRunner.close();
         queryRunner = null;
     }
 
-    @Test(timeOut = 60_000L)
+    @Test
+    @Timeout(60)
     public void testFailQuery()
             throws Exception
     {
@@ -73,6 +78,7 @@ public class TestQueryManager
         QueryId queryId = dispatchManager.createQueryId();
         dispatchManager.createQuery(
                 queryId,
+                Span.getInvalid(),
                 Slug.createNew(),
                 TestingSessionContext.fromSession(TEST_SESSION),
                 "SELECT * FROM lineitem")
@@ -100,7 +106,8 @@ public class TestQueryManager
         assertEquals(queryInfo.getFailureInfo().getMessage(), "mock exception");
     }
 
-    @Test(timeOut = 60_000L)
+    @Test
+    @Timeout(60)
     public void testQueryCpuLimit()
             throws Exception
     {
@@ -114,7 +121,8 @@ public class TestQueryManager
         }
     }
 
-    @Test(timeOut = 60_000L)
+    @Test
+    @Timeout(60)
     public void testQueryScanExceeded()
             throws Exception
     {
@@ -128,7 +136,8 @@ public class TestQueryManager
         }
     }
 
-    @Test(timeOut = 60_000L)
+    @Test
+    @Timeout(60)
     public void testQueryScanExceededSession()
             throws Exception
     {

@@ -22,8 +22,9 @@ import io.trino.spi.type.SqlDate;
 import io.trino.spi.type.SqlDecimal;
 import io.trino.spi.type.SqlVarbinary;
 import org.joda.time.DateTimeZone;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -48,8 +49,10 @@ import static io.trino.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.toList;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class AbstractTestRcFileReader
 {
     private static final DecimalType DECIMAL_TYPE_PRECISION_2 = DecimalType.createDecimalType(2, 1);
@@ -66,10 +69,10 @@ public abstract class AbstractTestRcFileReader
         this.tester = tester;
     }
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
-        assertEquals(DateTimeZone.getDefault(), RcFileTester.HIVE_STORAGE_TIME_ZONE);
+        assertThat(DateTimeZone.getDefault()).isEqualTo(RcFileTester.HIVE_STORAGE_TIME_ZONE);
     }
 
     @Test
@@ -173,7 +176,7 @@ public abstract class AbstractTestRcFileReader
                 TIMESTAMP_MILLIS,
                 intsBetween(123_406_789, 123_456_789).stream()
                         .filter(i -> i % 19 == 0)
-                        .map(timestamp -> sqlTimestampOf(timestamp))
+                        .map(timestamp -> sqlTimestampOf(3, timestamp))
                         .collect(toList()));
     }
 

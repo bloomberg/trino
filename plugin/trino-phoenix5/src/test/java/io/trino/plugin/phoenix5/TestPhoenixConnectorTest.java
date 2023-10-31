@@ -64,7 +64,6 @@ import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
 public class TestPhoenixConnectorTest
@@ -80,51 +79,32 @@ public class TestPhoenixConnectorTest
         return createPhoenixQueryRunner(testingPhoenixServer, ImmutableMap.of(), REQUIRED_TPCH_TABLES);
     }
 
-    @SuppressWarnings("DuplicateBranchesInSwitch")
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_LIMIT_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN:
-                return true;
-
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-            case SUPPORTS_SET_COLUMN_TYPE:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-                return false;
-
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-                return false;
-
-            case SUPPORTS_TRUNCATE:
-                return false;
-
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_UPDATE:
-            case SUPPORTS_MERGE:
-                return true;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_MERGE,
+                    SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
+                    SUPPORTS_ROW_LEVEL_UPDATE,
+                    SUPPORTS_UPDATE -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_AGGREGATION_PUSHDOWN,
+                    SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_COMMENT_ON_TABLE,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                    SUPPORTS_DROP_SCHEMA_CASCADE,
+                    SUPPORTS_LIMIT_PUSHDOWN,
+                    SUPPORTS_NATIVE_QUERY,
+                    SUPPORTS_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_RENAME_SCHEMA,
+                    SUPPORTS_RENAME_TABLE,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_TRUNCATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     // TODO: wait https://github.com/trinodb/trino/pull/14939 done and then remove this test
@@ -345,6 +325,7 @@ public class TestPhoenixConnectorTest
                         "   comment varchar(79)\n" +
                         ")\n" +
                         "WITH (\n" +
+                        "   bloomfilter = 'ROW',\n" +
                         "   data_block_encoding = 'FAST_DIFF',\n" +
                         "   rowkeys = 'ROWKEY',\n" +
                         "   salt_buckets = 10\n" +
@@ -407,9 +388,14 @@ public class TestPhoenixConnectorTest
     @Override
     public void testCharTrailingSpace()
     {
-        assertThatThrownBy(super::testCharTrailingSpace)
-                .hasMessageContaining("The table does not have a primary key. tableName=TPCH.CHAR_TRAILING_SPACE");
-        throw new SkipException("Implement test for Phoenix");
+        String schema = getSession().getSchema().orElseThrow();
+        try (TestTable table = new PhoenixTestTable(onRemoteDatabase(), schema + ".char_trailing_space", "(x char(10) primary key)", List.of("'test'"))) {
+            String tableName = table.getName();
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test'", "VALUES 'test      '");
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test  '", "VALUES 'test      '");
+            assertQuery("SELECT * FROM " + tableName + " WHERE x = char 'test        '", "VALUES 'test      '");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + tableName + " WHERE x = char ' test'");
+        }
     }
 
     // Overridden because Phoenix requires a ROWID column
@@ -615,6 +601,7 @@ public class TestPhoenixConnectorTest
                         "   d varchar(10)\n" +
                         ")\n" +
                         "WITH (\n" +
+                        "   bloomfilter = 'ROW',\n" +
                         "   data_block_encoding = 'FAST_DIFF',\n" +
                         "   rowkeys = 'A,B,C',\n" +
                         "   salt_buckets = 10\n" +
@@ -774,102 +761,6 @@ public class TestPhoenixConnectorTest
     }
 
     @Override
-    public void testNativeQuerySimple()
-    {
-        // not implemented
-        assertQueryFails("SELECT * FROM TABLE(system.query(query => 'SELECT 1'))", "line 1:21: Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQueryParameters()
-    {
-        // not implemented
-        Session session = Session.builder(getSession())
-                .addPreparedStatement("my_query_simple", "SELECT * FROM TABLE(system.query(query => ?))")
-                .addPreparedStatement("my_query", "SELECT * FROM TABLE(system.query(query => format('SELECT %s FROM %s', ?, ?)))")
-                .build();
-        assertQueryFails(session, "EXECUTE my_query_simple USING 'SELECT 1 a'", "line 1:21: Table function system.query not registered");
-        assertQueryFails(session, "EXECUTE my_query USING 'a', '(SELECT 2 a) t'", "line 1:21: Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQuerySelectFromNation()
-    {
-        // not implemented
-        assertQueryFails(
-                format("SELECT * FROM TABLE(system.query(query => 'SELECT name FROM %s.nation WHERE nationkey = 0'))", getSession().getSchema().orElseThrow()),
-                "line 1:21: Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQuerySelectFromTestTable()
-    {
-        // not implemented
-        try (TestTable testTable = simpleTable()) {
-            assertQueryFails(
-                    format("SELECT * FROM TABLE(system.query(query => 'SELECT * FROM %s'))", testTable.getName()),
-                    "line 1:21: Table function system.query not registered");
-        }
-    }
-
-    @Override
-    public void testNativeQueryColumnAlias()
-    {
-        // not implemented
-        assertQueryFails(
-                "SELECT * FROM TABLE(system.query(query => 'SELECT name AS region_name FROM tpch.region WHERE regionkey = 0'))",
-                ".* Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQueryColumnAliasNotFound()
-    {
-        // not implemented
-        assertQueryFails(
-                "SELECT name FROM TABLE(system.query(query => 'SELECT name AS region_name FROM tpch.region'))",
-                ".* Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQueryCreateStatement()
-    {
-        // not implemented
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE numbers(n INTEGER)'))"))
-                .hasMessage("line 1:21: Table function system.query not registered");
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
-    }
-
-    @Override
-    public void testNativeQueryInsertStatementTableDoesNotExist()
-    {
-        // not implemented
-        assertFalse(getQueryRunner().tableExists(getSession(), "non_existent_table"));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'INSERT INTO non_existent_table VALUES (1)'))"))
-                .hasMessage("line 1:21: Table function system.query not registered");
-    }
-
-    @Override
-    public void testNativeQueryInsertStatementTableExists()
-    {
-        // not implemented
-        try (TestTable testTable = simpleTable()) {
-            assertThatThrownBy(() -> query(format("SELECT * FROM TABLE(system.query(query => 'INSERT INTO %s VALUES (3)'))", testTable.getName())))
-                    .hasMessage("line 1:21: Table function system.query not registered");
-            assertThat(query("SELECT * FROM " + testTable.getName()))
-                    .matches("VALUES BIGINT '1', BIGINT '2'");
-        }
-    }
-
-    @Override
-    public void testNativeQueryIncorrectSyntax()
-    {
-        // not implemented
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'some wrong syntax'))"))
-                .hasMessage("line 1:21: Table function system.query not registered");
-    }
-
-    @Override
     protected TestTable simpleTable()
     {
         // override because Phoenix requires primary key specification
@@ -879,7 +770,7 @@ public class TestPhoenixConnectorTest
     @Override
     protected TestTable createTableWithDoubleAndRealColumns(String name, List<String> rows)
     {
-        return new TestTable(onRemoteDatabase(), name, "(t_double double primary key, u_double double, v_real float, w_real float)", rows);
+        return new PhoenixTestTable(onRemoteDatabase(), name, "(t_double double primary key, u_double double, v_real float, w_real float)", rows);
     }
 
     @Override

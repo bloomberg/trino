@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.tree.ComparisonExpression;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
@@ -120,7 +120,7 @@ public class TestTransformUncorrelatedSubqueryToJoin
                 .matches(
                         project(
                                 ImmutableMap.of(
-                                        "a", expression("if(b > a, a, null)"),
+                                        "a", expression("if(b > a, a, cast(null AS BIGINT))"),
                                         "b", expression("b")),
                                 join(Type.INNER, builder -> builder
                                         .left(values("a"))

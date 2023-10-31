@@ -13,12 +13,13 @@
  */
 package io.trino.plugin.deltalake;
 
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.Table;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedRow;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
@@ -62,12 +63,12 @@ public abstract class BaseDeltaLakeTableWithCustomLocation
         Table table = metastore.getTable(SCHEMA, tableName).orElseThrow();
         assertThat(table.getTableType()).isEqualTo(MANAGED_TABLE.name());
 
-        String tableLocation = table.getStorage().getLocation();
+        Location tableLocation = Location.of(table.getStorage().getLocation());
         TrinoFileSystem fileSystem = HDFS_FILE_SYSTEM_FACTORY.create(getSession().toConnectorSession());
         assertTrue(fileSystem.listFiles(tableLocation).hasNext(), "The directory corresponding to the table storage location should exist");
         List<MaterializedRow> materializedRows = computeActual("SELECT \"$path\" FROM " + tableName).getMaterializedRows();
         assertEquals(materializedRows.size(), 1);
-        String filePath = (String) materializedRows.get(0).getField(0);
+        Location filePath = Location.of((String) materializedRows.get(0).getField(0));
         assertTrue(fileSystem.listFiles(filePath).hasNext(), "The data file should exist");
         assertQuerySucceeds(format("DROP TABLE %s", tableName));
         assertFalse(metastore.getTable(SCHEMA, tableName).isPresent(), "Table should be dropped");

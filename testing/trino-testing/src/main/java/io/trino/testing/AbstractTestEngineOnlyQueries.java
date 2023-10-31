@@ -23,6 +23,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.common.collect.Ordering;
+import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
 import io.trino.spi.session.PropertyMetadata;
@@ -32,10 +33,9 @@ import io.trino.tpch.TpchTable;
 import io.trino.type.SqlIntervalDayTime;
 import io.trino.type.SqlIntervalYearMonth;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -60,27 +60,24 @@ import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
 import static io.trino.SystemSessionProperties.LATE_MATERIALIZATION;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.spi.type.DecimalType.createDecimalType;
-import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
 import static io.trino.sql.tree.ExplainType.Type.DISTRIBUTED;
 import static io.trino.sql.tree.ExplainType.Type.IO;
 import static io.trino.sql.tree.ExplainType.Type.LOGICAL;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.tests.QueryTemplate.parameter;
 import static io.trino.tests.QueryTemplate.queryTemplate;
-import static io.trino.type.UnknownType.UNKNOWN;
 import static java.lang.String.format;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
@@ -855,17 +852,11 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT CAST(1 AS decimal(3,2)) <> ANY(SELECT CAST(1 AS decimal(3,1)))");
     }
 
-    @Test(dataProvider = "quantified_comparisons_corner_cases")
-    public void testQuantifiedComparisonCornerCases(String query)
-    {
-        assertQuery(query);
-    }
-
-    @DataProvider(name = "quantified_comparisons_corner_cases")
-    public Object[][] qualifiedComparisonsCornerCases()
+    @Test
+    public void testQuantifiedComparisonCornerCases()
     {
         //the %subquery% is wrapped in a SELECT so that H2 does not blow up on the VALUES subquery
-        return queryTemplate("SELECT %value% %operator% %quantifier% (SELECT * FROM (%subquery%))")
+        queryTemplate("SELECT %value% %operator% %quantifier% (SELECT * FROM (%subquery%))")
                 .replaceAll(
                         parameter("subquery").of(
                                 "SELECT 1 WHERE false",
@@ -874,7 +865,7 @@ public abstract class AbstractTestEngineOnlyQueries
                         parameter("quantifier").of("ALL", "ANY"),
                         parameter("value").of("1", "NULL"),
                         parameter("operator").of("=", "!=", "<", ">", "<=", ">="))
-                .collect(toDataProvider());
+                .forEach(this::assertQuery);
     }
 
     @Test
@@ -920,28 +911,6 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         assertQuery("SELECT TRY(CAST('a' AS BIGINT))",
                 "SELECT NULL");
-    }
-
-    @Test
-    public void testDefaultDecimalLiteralSwitch()
-    {
-        Session decimalLiteral = Session.builder(getSession())
-                .setSystemProperty(SystemSessionProperties.PARSE_DECIMAL_LITERALS_AS_DOUBLE, "false")
-                .build();
-        MaterializedResult decimalColumnResult = computeActual(decimalLiteral, "SELECT 1.0");
-
-        assertEquals(decimalColumnResult.getRowCount(), 1);
-        assertEquals(decimalColumnResult.getTypes().get(0), createDecimalType(2, 1));
-        assertEquals(decimalColumnResult.getMaterializedRows().get(0).getField(0), new BigDecimal("1.0"));
-
-        Session doubleLiteral = Session.builder(getSession())
-                .setSystemProperty(SystemSessionProperties.PARSE_DECIMAL_LITERALS_AS_DOUBLE, "true")
-                .build();
-        MaterializedResult doubleColumnResult = computeActual(doubleLiteral, "SELECT 1.0");
-
-        assertEquals(doubleColumnResult.getRowCount(), 1);
-        assertEquals(doubleColumnResult.getTypes().get(0), DOUBLE);
-        assertEquals(doubleColumnResult.getMaterializedRows().get(0).getField(0), 1.0);
     }
 
     @Test
@@ -1413,7 +1382,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SELECT * FROM nation")
                 .build();
         assertThat(query(session, "DESCRIBE INPUT my_query"))
-                .hasOutputTypes(List.of(UNKNOWN, UNKNOWN))
+                .hasOutputTypes(List.of(BIGINT, VARCHAR))
                 .returnsEmptyResult();
     }
 
@@ -1601,6 +1570,23 @@ public abstract class AbstractTestEngineOnlyQueries
                             .build();
                     assertQuery(session, "EXECUTE my_query USING 2", "SELECT true");
                 });
+    }
+
+    @Test
+    public void testExecuteImmediateWithSubqueries()
+    {
+        List<QueryTemplate.Parameter> leftValues = parameter("left").of(
+                "", "1 = ",
+                "EXISTS",
+                "1 IN",
+                "1 = ANY", "1 = ALL",
+                "2 <> ANY", "2 <> ALL",
+                "0 < ALL", "0 < ANY",
+                "1 <= ALL", "1 <= ANY");
+
+        queryTemplate("SELECT %left% (SELECT 1 WHERE 2 = ?)")
+                .replaceAll(leftValues)
+                .forEach(query -> assertQuery("EXECUTE IMMEDIATE '" + query + "' USING 2", "SELECT true"));
     }
 
     @Test
@@ -5332,9 +5318,11 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         Session session = new Session(
                 getSession().getQueryId(),
+                Span.getInvalid(),
                 Optional.empty(),
                 getSession().isClientTransactionSupport(),
                 getSession().getIdentity(),
+                getSession().getOriginalIdentity(),
                 getSession().getSource(),
                 getSession().getCatalog(),
                 getSession().getSchema(),
@@ -5508,7 +5496,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT apply(5 + RANDOM(1), x -> x + TRY(1 / 0))", "SELECT NULL");
 
         // test try with invalid JSON
-        assertQueryFails("SELECT JSON_FORMAT(TRY(JSON 'INVALID'))", "line 1:24: 'INVALID' is not a valid json literal");
+        assertQueryFails("SELECT JSON_FORMAT(TRY(JSON 'INVALID'))", "line 1:24: 'INVALID' is not a valid JSON literal");
         assertQuery("SELECT JSON_FORMAT(TRY (JSON_PARSE('INVALID')))", "SELECT NULL");
 
         // tests that might be constant folded
@@ -5523,7 +5511,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT COALESCE(TRY(CAST(CONCAT('a', CAST(123 AS VARCHAR)) AS BIGINT)), 0)", "SELECT 0L");
         assertQuery("SELECT 123 + TRY(ABS(-9223372036854775807 - 1))", "SELECT NULL");
         assertQuery("SELECT JSON_FORMAT(TRY(JSON '[]')) || '123'", "SELECT '[]123'");
-        assertQueryFails("SELECT JSON_FORMAT(TRY(JSON 'INVALID')) || '123'", "line 1:24: 'INVALID' is not a valid json literal");
+        assertQueryFails("SELECT JSON_FORMAT(TRY(JSON 'INVALID')) || '123'", "line 1:24: 'INVALID' is not a valid JSON literal");
         assertQuery("SELECT TRY(2/1)", "SELECT 2");
         assertQuery("SELECT TRY(2/0)", "SELECT null");
         assertQuery("SELECT COALESCE(TRY(2/0), 0)", "SELECT 0");
@@ -6241,7 +6229,8 @@ public abstract class AbstractTestEngineOnlyQueries
         return format("SELECT * FROM (SELECT %s FROM region LIMIT 1) a(%s) INNER JOIN unnest(ARRAY[%s], ARRAY[%2$s]) b(b1, b2) ON true", fields, columns, literals);
     }
 
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testLateMaterializationOuterJoin()
     {
         Session session = Session.builder(getSession())
@@ -6622,6 +6611,99 @@ public abstract class AbstractTestEngineOnlyQueries
 
         MaterializedResult showCreateTableResult = computeActual("SHOW CREATE TABLE nation");
         assertEquals(showCreateTableResult.getColumnNames(), ImmutableList.of("Create Table"));
+    }
+
+    @Test
+    public void testInlineSqlFunctions()
+    {
+        assertThat(query("""
+                WITH FUNCTION abc(x integer) RETURNS integer RETURN x * 2
+                SELECT abc(21)
+                """))
+                .matches("VALUES 42");
+        assertThat(query("""
+                WITH FUNCTION abc(x integer) RETURNS integer RETURN abs(x)
+                SELECT abc(-21)
+                """))
+                .matches("VALUES 21");
+
+        assertThat(query("""
+                WITH
+                  FUNCTION abc(x integer) RETURNS integer RETURN x * 2,
+                  FUNCTION xyz(x integer) RETURNS integer RETURN abc(x) + 1
+                SELECT xyz(21)
+                """))
+                .matches("VALUES 43");
+
+        assertThat(query("""
+                WITH
+                  FUNCTION my_pow(n int, p int)
+                  RETURNS int
+                  BEGIN
+                    DECLARE r int DEFAULT n;
+                    top: LOOP
+                      IF p <= 1 THEN
+                        LEAVE top;
+                      END IF;
+                      SET r = r * n;
+                      SET p = p - 1;
+                    END LOOP;
+                    RETURN r;
+                  END
+                SELECT my_pow(2, 8)
+                """))
+                .matches("VALUES 256");
+
+        // validations for inline functions
+        assertQueryFails("WITH FUNCTION a.b() RETURNS int RETURN 42 SELECT a.b()",
+                "line 1:6: Inline function names cannot be qualified: a.b");
+
+        assertQueryFails("WITH FUNCTION x() RETURNS int SECURITY INVOKER RETURN 42 SELECT x()",
+                "line 1:31: Security mode not supported for inline functions");
+
+        assertQueryFails("WITH FUNCTION x() RETURNS bigint SECURITY DEFINER RETURN 42 SELECT x()",
+                "line 1:34: Security mode not supported for inline functions");
+
+        // Verify the current restrictions on inline functions are enforced
+
+        // inline function can mask a global function
+        assertThat(query("""
+                WITH FUNCTION abs(x integer) RETURNS integer RETURN x * 2
+                SELECT abs(-10)
+                """))
+                .matches("VALUES -20");
+        assertThat(query("""
+                WITH
+                  FUNCTION abs(x integer) RETURNS integer RETURN x * 2,
+                  FUNCTION wrap_abs(x integer) RETURNS integer RETURN abs(x)
+                SELECT wrap_abs(-10)
+                """))
+                .matches("VALUES -20");
+
+        // inline function can have the same name as a global function with a different signature
+        assertThat(query("""
+                WITH FUNCTION abs(x varchar) RETURNS varchar RETURN reverse(x)
+                SELECT abs('abc')
+                """))
+                .skippingTypesCheck()
+                .matches("VALUES 'cba'");
+
+        // inline functions must be declared before they are used
+        assertThatThrownBy(() -> query("""
+                WITH
+                  FUNCTION a(x integer) RETURNS integer RETURN b(x),
+                  FUNCTION b(x integer) RETURNS integer RETURN x * 2
+                SELECT a(10)
+                """))
+                .hasMessage("line 3:8: Function 'b' not registered");
+
+        // inline function cannot be recursive
+        // note: mutual recursion is not supported either, but it is not tested due to the forward declaration limitation above
+        assertThatThrownBy(() -> query("""
+                WITH FUNCTION a(x integer) RETURNS integer RETURN a(x)
+                SELECT a(10)
+                """))
+                .hasMessage("line 3:8: Recursive language functions are not supported: a(integer):integer");
     }
 
     private static ZonedDateTime zonedDateTime(String value)

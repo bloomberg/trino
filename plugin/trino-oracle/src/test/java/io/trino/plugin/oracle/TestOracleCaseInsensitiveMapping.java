@@ -18,13 +18,13 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.jdbc.BaseCaseInsensitiveMappingTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.util.Optional;
 
-import static io.trino.plugin.jdbc.mapping.RuleBasedIdentifierMappingUtils.REFRESH_PERIOD_DURATION;
-import static io.trino.plugin.jdbc.mapping.RuleBasedIdentifierMappingUtils.createRuleBasedIdentifierMappingFile;
+import static io.trino.plugin.base.mapping.RuleBasedIdentifierMappingUtils.REFRESH_PERIOD_DURATION;
+import static io.trino.plugin.base.mapping.RuleBasedIdentifierMappingUtils.createRuleBasedIdentifierMappingFile;
 import static io.trino.plugin.oracle.OracleQueryRunner.createOracleQueryRunner;
 import static io.trino.plugin.oracle.TestingOracleServer.TEST_USER;
 import static java.lang.String.format;
@@ -32,7 +32,6 @@ import static java.util.Objects.requireNonNull;
 
 // With case-insensitive-name-matching enabled colliding schema/table names are considered as errors.
 // Some tests here create colliding names which can cause any other concurrent test to fail.
-@Test(singleThreaded = true)
 public class TestOracleCaseInsensitiveMapping
         extends BaseCaseInsensitiveMappingTest
 {

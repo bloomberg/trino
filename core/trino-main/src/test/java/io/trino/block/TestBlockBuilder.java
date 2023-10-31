@@ -16,11 +16,12 @@ package io.trino.block;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
 import io.trino.spi.PageBuilder;
+import io.trino.spi.block.ArrayBlockBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.Type;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -55,20 +56,21 @@ public class TestBlockBuilder
     @Test
     public void testNewBlockBuilderLike()
     {
-        ArrayType longArrayType = new ArrayType(BIGINT);
-        ArrayType arrayType = new ArrayType(longArrayType);
-        List<Type> channels = ImmutableList.of(BIGINT, VARCHAR, arrayType);
+        List<Type> channels = ImmutableList.of(BIGINT, VARCHAR, new ArrayType(new ArrayType(BIGINT)));
         PageBuilder pageBuilder = new PageBuilder(channels);
         BlockBuilder bigintBlockBuilder = pageBuilder.getBlockBuilder(0);
         BlockBuilder varcharBlockBuilder = pageBuilder.getBlockBuilder(1);
-        BlockBuilder arrayBlockBuilder = pageBuilder.getBlockBuilder(2);
+        ArrayBlockBuilder arrayBlockBuilder = (ArrayBlockBuilder) pageBuilder.getBlockBuilder(2);
 
         for (int i = 0; i < 100; i++) {
-            BIGINT.writeLong(bigintBlockBuilder, i);
-            VARCHAR.writeSlice(varcharBlockBuilder, Slices.utf8Slice("test" + i));
-            BlockBuilder blockBuilder = longArrayType.createBlockBuilder(null, 1);
-            longArrayType.writeObject(blockBuilder, BIGINT.createBlockBuilder(null, 2).writeLong(i).writeLong(i * 2).build());
-            arrayType.writeObject(arrayBlockBuilder, blockBuilder);
+            int value = i;
+            BIGINT.writeLong(bigintBlockBuilder, value);
+            VARCHAR.writeSlice(varcharBlockBuilder, Slices.utf8Slice("test" + value));
+            arrayBlockBuilder.buildEntry(elementBuilder -> {
+                ArrayBlockBuilder nestedArrayBuilder = (ArrayBlockBuilder) elementBuilder;
+                nestedArrayBuilder.buildEntry(valueBuilder -> BIGINT.writeLong(valueBuilder, value));
+                nestedArrayBuilder.buildEntry(valueBuilder -> BIGINT.writeLong(valueBuilder, value * 2L));
+            });
             pageBuilder.declarePosition();
         }
 
@@ -85,30 +87,21 @@ public class TestBlockBuilder
     @Test
     public void testGetPositions()
     {
-        BlockBuilder blockBuilder = BIGINT.createFixedSizeBlockBuilder(5).appendNull().writeLong(42L).appendNull().writeLong(43L).appendNull();
+        BlockBuilder blockBuilder = BIGINT.createFixedSizeBlockBuilder(5);
+        blockBuilder.appendNull();
+        BIGINT.writeLong(blockBuilder, 42L);
+        blockBuilder.appendNull();
+        BIGINT.writeLong(blockBuilder, 43L);
+        blockBuilder.appendNull();
         int[] positions = new int[] {0, 1, 1, 1, 4};
-
-        // test getPositions for block builder
-        assertBlockEquals(BIGINT, blockBuilder.getPositions(positions, 0, positions.length), BIGINT.createFixedSizeBlockBuilder(5).appendNull().writeLong(42).writeLong(42).writeLong(42).appendNull().build());
-        assertBlockEquals(BIGINT, blockBuilder.getPositions(positions, 1, 4), BIGINT.createFixedSizeBlockBuilder(5).writeLong(42).writeLong(42).writeLong(42).appendNull().build());
-        assertBlockEquals(BIGINT, blockBuilder.getPositions(positions, 2, 1), BIGINT.createFixedSizeBlockBuilder(5).writeLong(42).build());
-        assertBlockEquals(BIGINT, blockBuilder.getPositions(positions, 0, 0), BIGINT.createFixedSizeBlockBuilder(5).build());
-        assertBlockEquals(BIGINT, blockBuilder.getPositions(positions, 1, 0), BIGINT.createFixedSizeBlockBuilder(5).build());
-
-        // out of range
-        assertInvalidPosition(blockBuilder, new int[] {-1}, 0, 1);
-        assertInvalidPosition(blockBuilder, new int[] {6}, 0, 1);
-        assertInvalidOffset(blockBuilder, new int[] {6}, 1, 1);
-        assertInvalidOffset(blockBuilder, new int[] {6}, -1, 1);
-        assertInvalidOffset(blockBuilder, new int[] {6}, 2, -1);
 
         // test getPositions for block
         Block block = blockBuilder.build();
-        assertBlockEquals(BIGINT, block.getPositions(positions, 0, positions.length), BIGINT.createFixedSizeBlockBuilder(5).appendNull().writeLong(42).writeLong(42).writeLong(42).appendNull().build());
-        assertBlockEquals(BIGINT, block.getPositions(positions, 1, 4), BIGINT.createFixedSizeBlockBuilder(5).writeLong(42).writeLong(42).writeLong(42).appendNull().build());
-        assertBlockEquals(BIGINT, block.getPositions(positions, 2, 1), BIGINT.createFixedSizeBlockBuilder(5).writeLong(42).build());
-        assertBlockEquals(BIGINT, block.getPositions(positions, 0, 0), BIGINT.createFixedSizeBlockBuilder(5).build());
-        assertBlockEquals(BIGINT, block.getPositions(positions, 1, 0), BIGINT.createFixedSizeBlockBuilder(5).build());
+        assertBlockEquals(BIGINT, block.getPositions(positions, 0, positions.length), buildBigintBlock(null, 42, 42, 42, null));
+        assertBlockEquals(BIGINT, block.getPositions(positions, 1, 4), buildBigintBlock(42, 42, 42, null));
+        assertBlockEquals(BIGINT, block.getPositions(positions, 2, 1), buildBigintBlock(42));
+        assertBlockEquals(BIGINT, block.getPositions(positions, 0, 0), buildBigintBlock());
+        assertBlockEquals(BIGINT, block.getPositions(positions, 1, 0), buildBigintBlock());
 
         // out of range
         assertInvalidPosition(block, new int[] {-1}, 0, 1);
@@ -127,11 +120,25 @@ public class TestBlockBuilder
         assertTrue(isIdentical.get());
     }
 
+    private static Block buildBigintBlock(Integer... values)
+    {
+        BlockBuilder blockBuilder = BIGINT.createFixedSizeBlockBuilder(5);
+        for (Integer value : values) {
+            if (value == null) {
+                blockBuilder.appendNull();
+            }
+            else {
+                BIGINT.writeLong(blockBuilder, value);
+            }
+        }
+        return blockBuilder.build();
+    }
+
     private static void assertInvalidPosition(Block block, int[] positions, int offset, int length)
     {
         assertThatThrownBy(() -> block.getPositions(positions, offset, length).getLong(0, 0))
                 .isInstanceOfAny(IllegalArgumentException.class, IndexOutOfBoundsException.class)
-                .hasMessage("Invalid position %d in block with %d positions", positions[0], block.getPositionCount());
+                .hasMessage("Invalid position %d and length 1 in block with %d positions", positions[0], block.getPositionCount());
     }
 
     private static void assertInvalidOffset(Block block, int[] positions, int offset, int length)

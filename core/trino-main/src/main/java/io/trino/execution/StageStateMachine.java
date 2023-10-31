@@ -15,9 +15,14 @@ package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.log.Logger;
 import io.airlift.stats.Distribution;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.common.Attributes;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.scheduler.SplitSchedulerStats;
 import io.trino.operator.BlockedReason;
@@ -29,12 +34,10 @@ import io.trino.spi.eventlistener.StageGcStatistics;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.tracing.TrinoAttributes;
 import io.trino.util.Failures;
-import io.trino.util.Optionals;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.joda.time.DateTime;
-
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -82,6 +85,7 @@ public class StageStateMachine
 
     private final StateMachine<StageState> stageState;
     private final StateMachine<Optional<StageInfo>> finalStageInfo;
+    private final Span stageSpan;
     private final AtomicReference<ExecutionFailureInfo> failureCause = new AtomicReference<>();
 
     private final AtomicReference<DateTime> schedulingComplete = new AtomicReference<>();
@@ -98,6 +102,8 @@ public class StageStateMachine
             PlanFragment fragment,
             Map<PlanNodeId, TableInfo> tables,
             Executor executor,
+            Tracer tracer,
+            Span querySpan,
             SplitSchedulerStats schedulerStats)
     {
         this.stageId = requireNonNull(stageId, "stageId is null");
@@ -109,6 +115,20 @@ public class StageStateMachine
         stageState.addStateChangeListener(state -> log.debug("Stage %s is %s", stageId, state));
 
         finalStageInfo = new StateMachine<>("final stage " + stageId, executor, Optional.empty());
+
+        stageSpan = tracer.spanBuilder("stage")
+                .setParent(Context.current().with(querySpan))
+                .setAttribute(TrinoAttributes.QUERY_ID, stageId.getQueryId().toString())
+                .setAttribute(TrinoAttributes.STAGE_ID, stageId.toString())
+                .startSpan();
+
+        stageState.addStateChangeListener(state -> {
+            stageSpan.addEvent("stage_state", Attributes.of(
+                    TrinoAttributes.EVENT_STATE, state.toString()));
+            if (state.isDone()) {
+                stageSpan.end();
+            }
+        });
     }
 
     public StageId getStageId()
@@ -124,6 +144,11 @@ public class StageStateMachine
     public PlanFragment getFragment()
     {
         return fragment;
+    }
+
+    public Span getStageSpan()
+    {
+        return stageSpan;
     }
 
     /**
@@ -247,8 +272,8 @@ public class StageStateMachine
         int runningDrivers = 0;
         int completedDrivers = 0;
 
-        long cumulativeUserMemory = 0;
-        long failedCumulativeUserMemory = 0;
+        double cumulativeUserMemory = 0;
+        double failedCumulativeUserMemory = 0;
         long userMemoryReservation = 0;
         long totalMemoryReservation = 0;
 
@@ -323,6 +348,10 @@ public class StageStateMachine
         if (isScheduled && totalDrivers != 0) {
             progressPercentage = OptionalDouble.of(min(100, (completedDrivers * 100.0) / totalDrivers));
         }
+        OptionalDouble runningPercentage = OptionalDouble.empty();
+        if (isScheduled && totalDrivers != 0) {
+            runningPercentage = OptionalDouble.of(min(100, (runningDrivers * 100.0) / totalDrivers));
+        }
 
         return new BasicStageStats(
                 isScheduled,
@@ -357,7 +386,8 @@ public class StageStateMachine
                 fullyBlocked,
                 blockedReasons,
 
-                progressPercentage);
+                progressPercentage,
+                runningPercentage);
     }
 
     public StageInfo getStageInfo(Supplier<Iterable<TaskInfo>> taskInfosSupplier)
@@ -386,8 +416,8 @@ public class StageStateMachine
         int blockedDrivers = 0;
         int completedDrivers = 0;
 
-        long cumulativeUserMemory = 0;
-        long failedCumulativeUserMemory = 0;
+        double cumulativeUserMemory = 0;
+        double failedCumulativeUserMemory = 0;
         long userMemoryReservation = currentUserMemory.get();
         long revocableMemoryReservation = currentRevocableMemory.get();
         long totalMemoryReservation = currentTotalMemory.get();
@@ -426,7 +456,7 @@ public class StageStateMachine
         long failedInputBlockedTime = 0;
 
         long bufferedDataSize = 0;
-        Optional<TDigestHistogram> outputBufferUtilization = Optional.empty();
+        ImmutableList.Builder<TDigestHistogram> bufferUtilizationHistograms = ImmutableList.builderWithExpectedSize(taskInfos.size());
         long outputDataSize = 0;
         long failedOutputDataSize = 0;
         long outputPositions = 0;
@@ -503,7 +533,7 @@ public class StageStateMachine
             inputBlockedTime += taskStats.getInputBlockedTime().roundTo(NANOSECONDS);
 
             bufferedDataSize += taskInfo.getOutputBuffers().getTotalBufferedBytes();
-            outputBufferUtilization = Optionals.combine(outputBufferUtilization, taskInfo.getOutputBuffers().getUtilization(), TDigestHistogram::mergeWith);
+            taskInfo.getOutputBuffers().getUtilization().ifPresent(bufferUtilizationHistograms::add);
             outputDataSize += taskStats.getOutputDataSize().toBytes();
             outputPositions += taskStats.getOutputPositions();
 
@@ -608,7 +638,7 @@ public class StageStateMachine
                 succinctDuration(inputBlockedTime, NANOSECONDS),
                 succinctDuration(failedInputBlockedTime, NANOSECONDS),
                 succinctBytes(bufferedDataSize),
-                outputBufferUtilization,
+                TDigestHistogram.merge(bufferUtilizationHistograms.build()),
                 succinctBytes(outputDataSize),
                 succinctBytes(failedOutputDataSize),
                 outputPositions,

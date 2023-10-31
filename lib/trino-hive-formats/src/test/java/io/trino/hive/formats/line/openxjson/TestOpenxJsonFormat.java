@@ -52,8 +52,8 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
+import org.junit.jupiter.api.Test;
 import org.openx.data.jsonserde.JsonSerDe;
-import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -122,7 +122,6 @@ import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardStructObjectInspector;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertTrue;
 
 public class TestOpenxJsonFormat
 {
@@ -498,7 +497,7 @@ public class TestOpenxJsonFormat
             hiveCanonicalValue = padSpaces(hiveCanonicalValue, charType);
         }
 
-        assertTrue(CharMatcher.whitespace().matchesNoneOf(jsonValue));
+        assertThat(CharMatcher.whitespace().matchesNoneOf(jsonValue)).isTrue();
 
         // quoted values are not canonicalized
         assertValue(type, "\"" + jsonValue + "\"", nonCanonicalValue);
@@ -1576,7 +1575,7 @@ public class TestOpenxJsonFormat
 
     private static MapType toMapKeyType(Type type)
     {
-        assertTrue(isScalarType(type));
+        assertThat(isScalarType(type)).isTrue();
         return new MapType(type, BIGINT, TYPE_OPERATORS);
     }
 

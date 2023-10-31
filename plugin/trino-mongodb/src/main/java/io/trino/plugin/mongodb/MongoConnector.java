@@ -14,6 +14,8 @@
 package io.trino.plugin.mongodb;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
+import io.trino.plugin.base.session.SessionPropertiesProvider;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
@@ -21,16 +23,17 @@ import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.ptf.ConnectorTableFunction;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
 
-import javax.inject.Inject;
-
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.transaction.IsolationLevel.READ_UNCOMMITTED;
 import static io.trino.spi.transaction.IsolationLevel.checkConnectorSupports;
 import static java.util.Objects.requireNonNull;
@@ -42,7 +45,9 @@ public class MongoConnector
     private final MongoSplitManager splitManager;
     private final MongoPageSourceProvider pageSourceProvider;
     private final MongoPageSinkProvider pageSinkProvider;
+    private final MongoMetadataFactory mongoMetadataFactory;
     private final Set<ConnectorTableFunction> connectorTableFunctions;
+    private final List<PropertyMetadata<?>> sessionProperties;
 
     private final ConcurrentMap<ConnectorTransactionHandle, MongoMetadata> transactions = new ConcurrentHashMap<>();
 
@@ -52,13 +57,19 @@ public class MongoConnector
             MongoSplitManager splitManager,
             MongoPageSourceProvider pageSourceProvider,
             MongoPageSinkProvider pageSinkProvider,
-            Set<ConnectorTableFunction> connectorTableFunctions)
+            MongoMetadataFactory mongoMetadataFactory,
+            Set<ConnectorTableFunction> connectorTableFunctions,
+            Set<SessionPropertiesProvider> sessionPropertiesProviders)
     {
         this.mongoSession = mongoSession;
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
         this.pageSinkProvider = requireNonNull(pageSinkProvider, "pageSinkProvider is null");
+        this.mongoMetadataFactory = requireNonNull(mongoMetadataFactory, "mongoMetadataFactory is null");
         this.connectorTableFunctions = ImmutableSet.copyOf(requireNonNull(connectorTableFunctions, "connectorTableFunctions is null"));
+        this.sessionProperties = sessionPropertiesProviders.stream()
+                .flatMap(sessionPropertiesProvider -> sessionPropertiesProvider.getSessionProperties().stream())
+                .collect(toImmutableList());
     }
 
     @Override
@@ -66,7 +77,7 @@ public class MongoConnector
     {
         checkConnectorSupports(READ_UNCOMMITTED, isolationLevel);
         MongoTransactionHandle transaction = new MongoTransactionHandle();
-        transactions.put(transaction, new MongoMetadata(mongoSession));
+        transactions.put(transaction, mongoMetadataFactory.create());
         return transaction;
     }
 
@@ -114,6 +125,12 @@ public class MongoConnector
     public Set<ConnectorTableFunction> getTableFunctions()
     {
         return connectorTableFunctions;
+    }
+
+    @Override
+    public List<PropertyMetadata<?>> getSessionProperties()
+    {
+        return sessionProperties;
     }
 
     @Override

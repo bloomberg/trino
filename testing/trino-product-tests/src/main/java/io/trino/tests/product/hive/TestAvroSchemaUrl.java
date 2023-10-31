@@ -14,10 +14,11 @@
 package io.trino.tests.product.hive;
 
 import com.google.inject.Inject;
-import io.trino.tempto.AfterTestWithContext;
-import io.trino.tempto.BeforeTestWithContext;
+import io.trino.tempto.AfterMethodWithContext;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.hadoop.hdfs.HdfsClient;
 import io.trino.tempto.query.QueryExecutionException;
+import io.trino.testng.services.Flaky;
 import org.testng.SkipException;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -29,13 +30,15 @@ import java.nio.file.Paths;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.tests.product.TestGroups.AVRO;
 import static io.trino.tests.product.TestGroups.STORAGE_FORMATS;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_ISSUES;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_MATCH;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static java.nio.file.Files.newInputStream;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestAvroSchemaUrl
         extends HiveProductTest
@@ -43,7 +46,7 @@ public class TestAvroSchemaUrl
     @Inject
     private HdfsClient hdfsClient;
 
-    @BeforeTestWithContext
+    @BeforeMethodWithContext
     public void setup()
             throws Exception
     {
@@ -52,12 +55,13 @@ public class TestAvroSchemaUrl
         hdfsClient.createDirectory("/user/hive/warehouse/TestAvroSchemaUrl/schemas");
         saveResourceOnHdfs("avro/original_schema.avsc", "/user/hive/warehouse/TestAvroSchemaUrl/schemas/original_schema.avsc");
         saveResourceOnHdfs("avro/column_with_long_type_definition_schema.avsc", "/user/hive/warehouse/TestAvroSchemaUrl/schemas/column_with_long_type_definition_schema.avsc");
+        saveResourceOnHdfs("avro/camelCaseSchema.avsc", "/user/hive/warehouse/TestAvroSchemaUrl/schemas/camelCaseSchema.avsc");
 
         hdfsClient.createDirectory("/user/hive/warehouse/TestAvroSchemaUrl/data");
         saveResourceOnHdfs("avro/column_with_long_type_definition_data.avro", "/user/hive/warehouse/TestAvroSchemaUrl/data/column_with_long_type_definition_data.avro");
     }
 
-    @AfterTestWithContext
+    @AfterMethodWithContext
     public void cleanup()
     {
         hdfsClient.delete("/user/hive/warehouse/TestAvroSchemaUrl");
@@ -84,6 +88,7 @@ public class TestAvroSchemaUrl
     }
 
     @Test(dataProvider = "avroSchemaLocations", groups = {AVRO, STORAGE_FORMATS})
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testHiveCreatedTable(String schemaLocation)
     {
         onHive().executeQuery("DROP TABLE IF EXISTS test_avro_schema_url_hive");
@@ -104,6 +109,7 @@ public class TestAvroSchemaUrl
     }
 
     @Test(groups = AVRO)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testAvroSchemaUrlInSerdeProperties()
             throws IOException
     {
@@ -146,6 +152,7 @@ public class TestAvroSchemaUrl
     }
 
     @Test(dataProvider = "avroSchemaLocations", groups = {AVRO, STORAGE_FORMATS})
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testPrestoCreatedTable(String schemaLocation)
     {
         onTrino().executeQuery("DROP TABLE IF EXISTS test_avro_schema_url_presto");
@@ -159,6 +166,7 @@ public class TestAvroSchemaUrl
     }
 
     @Test(groups = {AVRO, STORAGE_FORMATS})
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testTableWithLongColumnType()
     {
         onTrino().executeQuery("DROP TABLE IF EXISTS test_avro_schema_url_long_column");
@@ -188,6 +196,7 @@ public class TestAvroSchemaUrl
     }
 
     @Test(groups = {AVRO, STORAGE_FORMATS})
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testPartitionedTableWithLongColumnType()
     {
         if (isOnHdp() && getHiveVersionMajor() < 3) {
@@ -229,6 +238,30 @@ public class TestAvroSchemaUrl
                         "... \",\"record_field499\":\"val499\"}"));
 
         onHive().executeQuery("DROP TABLE IF EXISTS test_avro_schema_url_partitioned_long_column");
+    }
+
+    @Test(groups = {AVRO, STORAGE_FORMATS})
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
+    public void testHiveCreatedCamelCaseColumnTable()
+    {
+        onHive().executeQuery("DROP TABLE IF EXISTS test_camelCase_avro_schema_url_hive");
+        onHive().executeQuery("" +
+                "CREATE TABLE test_camelCase_avro_schema_url_hive " +
+                "ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.avro.AvroSerDe' " +
+                "STORED AS " +
+                "INPUTFORMAT 'org.apache.hadoop.hive.ql.io.avro.AvroContainerInputFormat' " +
+                "OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.avro.AvroContainerOutputFormat' " +
+                "TBLPROPERTIES ('avro.schema.url'='/user/hive/warehouse/TestAvroSchemaUrl/schemas/camelCaseSchema.avsc')");
+        onHive().executeQuery("INSERT INTO test_camelCase_avro_schema_url_hive VALUES ('hi', 1)");
+        onTrino().executeQuery("INSERT INTO test_camelCase_avro_schema_url_hive VALUES ('bye', 2)");
+        assertThat(onHive().executeQuery("SELECT * FROM test_camelCase_avro_schema_url_hive")).containsOnly(row("hi", 1), row("bye", 2));
+        assertThat(onTrino().executeQuery("SELECT * FROM test_camelCase_avro_schema_url_hive")).containsOnly(row("hi", 1), row("bye", 2));
+        assertThat(onHive().executeQuery("SELECT intCol, stringCol FROM test_camelCase_avro_schema_url_hive")).containsOnly(row(1, "hi"), row(2, "bye"));
+        assertThat(onTrino().executeQuery("SELECT intCol, stringCol FROM test_camelCase_avro_schema_url_hive")).containsOnly(row(1, "hi"), row(2, "bye"));
+        assertThat(onTrino().executeQuery("SELECT column_name FROM information_schema.columns WHERE table_name = 'test_camelcase_avro_schema_url_hive'"))
+                .containsOnly(row("stringcol"), row("intcol"));
+
+        onHive().executeQuery("DROP TABLE IF EXISTS test_camelCase_avro_schema_url_hive");
     }
 
     private boolean isOnHdp()

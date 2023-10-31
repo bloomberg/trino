@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
-import io.airlift.slice.Slices;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.BlockBuilderStatus;
@@ -25,13 +24,14 @@ import io.trino.spi.block.BlockEncodingSerde;
 import io.trino.spi.block.DictionaryBlock;
 import io.trino.spi.block.DictionaryId;
 import io.trino.spi.block.MapHashTables;
-import io.trino.spi.block.SingleRowBlockWriter;
 import io.trino.spi.block.TestingBlockEncodingSerde;
-import org.testng.annotations.Test;
+import io.trino.spi.block.ValueBlock;
+import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
 import java.util.List;
@@ -56,7 +56,6 @@ import static org.testng.Assert.assertNotSame;
 import static org.testng.Assert.assertSame;
 import static org.testng.Assert.assertTrue;
 
-@Test
 public abstract class AbstractTestBlock
 {
     private static final BlockEncodingSerde BLOCK_ENCODING_SERDE = new TestingBlockEncodingSerde(TESTING_TYPE_MANAGER::getType);
@@ -85,6 +84,10 @@ public abstract class AbstractTestBlock
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessage("Invalid position %d in block with %d positions", block.getPositionCount(), block.getPositionCount());
         }
+
+        if (block instanceof ValueBlock valueBlock) {
+            assertBlockClassImplementation(valueBlock.getClass());
+        }
     }
 
     private void assertRetainedSize(Block block)
@@ -97,7 +100,7 @@ public abstract class AbstractTestBlock
                     continue;
                 }
                 Class<?> type = field.getType();
-                if (type.isPrimitive()) {
+                if (type.isPrimitive() || Type.class.isAssignableFrom(type)) {
                     continue;
                 }
 
@@ -114,10 +117,10 @@ public abstract class AbstractTestBlock
                         retainedSize += BlockBuilderStatus.INSTANCE_SIZE;
                     }
                 }
-                else if (type == BlockBuilder.class || type == Block.class) {
+                else if (Block.class.isAssignableFrom(type)) {
                     retainedSize += ((Block) field.get(block)).getRetainedSizeInBytes();
                 }
-                else if (type == BlockBuilder[].class || type == Block[].class) {
+                else if (type == Block[].class) {
                     Block[] blocks = (Block[]) field.get(block);
                     for (Block innerBlock : blocks) {
                         assertRetainedSize(innerBlock);
@@ -126,9 +129,6 @@ public abstract class AbstractTestBlock
                 }
                 else if (type == SliceOutput.class) {
                     retainedSize += ((SliceOutput) field.get(block)).getRetainedSize();
-                }
-                else if (type == SingleRowBlockWriter.class) {
-                    retainedSize += SingleRowBlockWriter.INSTANCE_SIZE;
                 }
                 else if (type == int[].class) {
                     retainedSize += sizeOf((int[]) field.get(block));
@@ -152,10 +152,14 @@ public abstract class AbstractTestBlock
                     retainedSize += ((MapHashTables) field.get(block)).getRetainedSizeInBytes();
                 }
                 else if (type == MethodHandle.class) {
-                    // MethodHandles are only used in MapBlock/MapBlockBuilder,
+                    // MethodHandles are only used in MapBlock
                     // and they are shared among blocks created by the same MapType.
                     // So we don't account for the memory held onto by MethodHandle instances.
                     // Otherwise, we will be counting it multiple times.
+                }
+                else if (field.getName().equals("fieldBlocksList")) {
+                    // RowBlockBuilder fieldBlockBuildersList is a simple wrapper around the
+                    // array already accounted for in the instance
                 }
                 else {
                     throw new IllegalArgumentException(format("Unknown type encountered: %s", type));
@@ -295,7 +299,13 @@ public abstract class AbstractTestBlock
 
             if (isSliceAccessSupported()) {
                 assertEquals(block.getSliceLength(position), expectedSliceValue.length());
-                assertSlicePosition(block, position, expectedSliceValue);
+
+                int length = block.getSliceLength(position);
+                assertEquals(length, expectedSliceValue.length());
+
+                for (int offset = 0; offset < length - 3; offset++) {
+                    assertEquals(block.getSlice(position, offset, 3), expectedSliceValue.slice(offset, 3));
+                }
             }
 
             assertPositionEquals(block, position, expectedSliceValue);
@@ -323,35 +333,6 @@ public abstract class AbstractTestBlock
         }
         else {
             throw new IllegalArgumentException();
-        }
-    }
-
-    protected void assertSlicePosition(Block block, int position, Slice expectedSliceValue)
-    {
-        int length = block.getSliceLength(position);
-        assertEquals(length, expectedSliceValue.length());
-
-        Block expectedBlock = toSingeValuedBlock(expectedSliceValue);
-        for (int offset = 0; offset < length - 3; offset++) {
-            assertEquals(block.getSlice(position, offset, 3), expectedSliceValue.slice(offset, 3));
-            assertTrue(block.bytesEqual(position, offset, expectedSliceValue, offset, 3));
-            // if your tests fail here, please change your test to not use this value
-            assertFalse(block.bytesEqual(position, offset, Slices.utf8Slice("XXX"), 0, 3));
-
-            assertEquals(block.bytesCompare(position, offset, 3, expectedSliceValue, offset, 3), 0);
-            assertTrue(block.bytesCompare(position, offset, 3, expectedSliceValue, offset, 2) > 0);
-            Slice greaterSlice = createGreaterValue(expectedSliceValue, offset, 3);
-            assertTrue(block.bytesCompare(position, offset, 3, greaterSlice, 0, greaterSlice.length()) < 0);
-
-            assertTrue(block.equals(position, offset, expectedBlock, 0, offset, 3));
-            assertEquals(block.compareTo(position, offset, 3, expectedBlock, 0, offset, 3), 0);
-
-            BlockBuilder blockBuilder = VARBINARY.createBlockBuilder(null, 1);
-            block.writeBytesTo(position, offset, 3, blockBuilder);
-            blockBuilder.closeEntry();
-            Block segment = blockBuilder.build();
-
-            assertTrue(block.equals(position, offset, segment, 0, 0, 3));
         }
     }
 
@@ -462,13 +443,11 @@ public abstract class AbstractTestBlock
         assertEquals(block.getPositionCount(), expectedSliceValues.length);
         for (int i = 0; i < block.getPositionCount(); i++) {
             int expectedSize = expectedSliceValues[i] == null ? 0 : expectedSliceValues[i].length();
-            assertEquals(blockBuilder.getEstimatedDataSizeForStats(i), expectedSize);
             assertEquals(block.getEstimatedDataSizeForStats(i), expectedSize);
         }
 
-        BlockBuilder nullValueBlockBuilder = blockBuilder.newBlockBuilderLike(null).appendNull();
-        assertEquals(nullValueBlockBuilder.getEstimatedDataSizeForStats(0), 0);
-        assertEquals(nullValueBlockBuilder.build().getEstimatedDataSizeForStats(0), 0);
+        Block nullValueBlock = blockBuilder.newBlockBuilderLike(null).appendNull().build();
+        assertEquals(nullValueBlock.getEstimatedDataSizeForStats(0), 0);
     }
 
     protected static void testCopyRegionCompactness(Block block)
@@ -500,5 +479,14 @@ public abstract class AbstractTestBlock
     {
         assertNotCompact(block);
         testCopyRegionCompactness(block);
+    }
+
+    private void assertBlockClassImplementation(Class<? extends ValueBlock> clazz)
+    {
+        for (Method method : clazz.getMethods()) {
+            if (method.getReturnType() == ValueBlock.class && !method.isBridge()) {
+                throw new AssertionError(format("ValueBlock method %s should override return type to be %s", method, clazz.getSimpleName()));
+            }
+        }
     }
 }

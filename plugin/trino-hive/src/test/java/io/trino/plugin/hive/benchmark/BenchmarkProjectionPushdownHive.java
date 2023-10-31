@@ -28,6 +28,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import org.junit.jupiter.api.Test;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Measurement;
@@ -38,7 +39,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
-import org.testng.annotations.Test;
 
 import java.io.File;
 import java.io.IOException;
@@ -272,7 +272,7 @@ public class BenchmarkProjectionPushdownHive
                     fieldBlocks[field] = createBlock(parameters.get(field), rowCount);
                 }
 
-                return RowBlock.fromFieldBlocks(rowCount, Optional.empty(), fieldBlocks);
+                return RowBlock.fromFieldBlocks(rowCount, fieldBlocks);
             }
             if (type instanceof VarcharType) {
                 BlockBuilder builder = VARCHAR.createBlockBuilder(null, rowCount);

@@ -16,9 +16,11 @@ package io.trino.plugin.oracle;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.BooleanWriteFunction;
@@ -32,6 +34,8 @@ import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.LongReadFunction;
 import io.trino.plugin.jdbc.LongWriteFunction;
+import io.trino.plugin.jdbc.ObjectReadFunction;
+import io.trino.plugin.jdbc.ObjectWriteFunction;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.SliceWriteFunction;
@@ -52,7 +56,6 @@ import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -62,12 +65,12 @@ import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
+import io.trino.spi.type.LongTimestamp;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import oracle.jdbc.OraclePreparedStatement;
 import oracle.jdbc.OracleTypes;
-
-import javax.inject.Inject;
 
 import java.math.RoundingMode;
 import java.sql.Connection;
@@ -81,6 +84,8 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.temporal.ChronoField;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -98,6 +103,8 @@ import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.charReadFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.fromLongTrinoTimestamp;
+import static io.trino.plugin.jdbc.StandardColumnMappings.fromTrinoTimestamp;
 import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalReadFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
@@ -105,6 +112,8 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalReadFuncti
 import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.toLongTrinoTimestamp;
+import static io.trino.plugin.jdbc.StandardColumnMappings.toTrinoTimestamp;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
@@ -124,12 +133,11 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
+import static io.trino.spi.type.TimestampType.MAX_SHORT_PRECISION;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_SECONDS;
+import static io.trino.spi.type.TimestampType.createTimestampType;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
-import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
-import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
@@ -151,6 +159,7 @@ public class OracleClient
 {
     public static final int ORACLE_MAX_LIST_EXPRESSIONS = 1000;
 
+    private static final int MAX_ORACLE_TIMESTAMP_PRECISION = 9;
     private static final int MAX_BYTES_PER_CHAR = 4;
 
     private static final int ORACLE_VARCHAR2_MAX_BYTES = 4000;
@@ -165,7 +174,13 @@ public class OracleClient
 
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("uuuu-MM-dd");
     private static final DateTimeFormatter TIMESTAMP_SECONDS_FORMATTER = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss");
-    private static final DateTimeFormatter TIMESTAMP_MILLIS_FORMATTER = DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss.SSS");
+
+    private static final DateTimeFormatter TIMESTAMP_NANO_OPTIONAL_FORMATTER = new DateTimeFormatterBuilder()
+            .appendPattern("uuuu-MM-dd HH:mm:ss")
+            .optionalStart()
+            .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)
+            .optionalEnd()
+            .toFormatter();
 
     private static final Set<String> INTERNAL_SCHEMAS = ImmutableSet.<String>builder()
             .add("ctxsys")
@@ -196,7 +211,6 @@ public class OracleClient
             .put(TIMESTAMP_TZ_MILLIS, WriteMapping.longMapping("timestamp(3) with time zone", oracleTimestampWithTimeZoneWriteFunction()))
             .buildOrThrow();
 
-    private final boolean disableAutomaticFetchSize;
     private final boolean synonymsEnabled;
     private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
     private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
@@ -210,9 +224,8 @@ public class OracleClient
             IdentifierMapping identifierMapping,
             RemoteQueryModifier queryModifier)
     {
-        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, false);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, true);
 
-        this.disableAutomaticFetchSize = oracleConfig.isDisableAutomaticFetchSize();
         this.synonymsEnabled = oracleConfig.isSynonymsEnabled();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
@@ -262,12 +275,9 @@ public class OracleClient
             throws SQLException
     {
         PreparedStatement statement = connection.prepareStatement(sql);
-        if (disableAutomaticFetchSize) {
-            statement.setFetchSize(1000);
-        }
         // This is a heuristic, not exact science. A better formula can perhaps be found with measurements.
         // Column count is not known for non-SELECT queries. Not setting fetch size for these.
-        else if (columnCount.isPresent()) {
+        if (columnCount.isPresent()) {
             statement.setFetchSize(max(100_000 / columnCount.get(), 1_000));
         }
         return statement;
@@ -296,9 +306,40 @@ public class OracleClient
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping schemas");
+    }
+
+    @Override
+    protected void dropTable(ConnectorSession session, RemoteTableName remoteTableName, boolean temporaryTable)
+    {
+        String quotedTable = quoted(remoteTableName);
+        String dropTableSql = "DROP TABLE " + quotedTable;
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            if (temporaryTable) {
+                // Turn off auto-commit so the lock is held until after the DROP
+                connection.setAutoCommit(false);
+                // By default, when dropping a table, oracle does not wait for the table lock.
+                // If another transaction is using the table at the same time, DROP TABLE will throw.
+                // The solution is to first lock the table, waiting for other active transactions to complete.
+                // In Oracle, DDL automatically commits, so DROP TABLE will release the lock afterwards.
+                // NOTE: We can only lock tables owned by trino, hence only doing this for temporary tables.
+                execute(session, connection, "LOCK TABLE " + quotedTable + " IN EXCLUSIVE MODE");
+                // Oracle puts dropped tables into a recycling bin, which keeps them accessible for a period of time.
+                // PURGE will bypass the bin and completely delete the table immediately.
+                // We should only PURGE the table if it is a temporary table that trino created,
+                // as purging all dropped tables may be unexpected behavior for our clients.
+                dropTableSql += " PURGE";
+            }
+            execute(session, connection, dropTableSql);
+            // Commit the transaction (for temporaryTables), or a no-op for regular tables.
+            // This is better than connection.commit() because you're not supposed to commit() if autoCommit is true.
+            connection.setAutoCommit(true);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
     }
 
     @Override
@@ -360,7 +401,7 @@ public class OracleClient
         if (jdbcTypeName.equalsIgnoreCase("date")) {
             return Optional.of(ColumnMapping.longMapping(
                     TIMESTAMP_SECONDS,
-                    oracleTimestampReadFunction(),
+                    oracleTimestampReadFunction(TIMESTAMP_SECONDS),
                     trinoTimestampToOracleDateWriteFunction(),
                     FULL_PUSHDOWN));
         }
@@ -457,11 +498,8 @@ public class OracleClient
                         DISABLE_PUSHDOWN));
 
             case OracleTypes.TIMESTAMP:
-                return Optional.of(ColumnMapping.longMapping(
-                        TIMESTAMP_MILLIS,
-                        oracleTimestampReadFunction(),
-                        trinoTimestampToOracleTimestampWriteFunction(),
-                        FULL_PUSHDOWN));
+                int timestampPrecision = typeHandle.getRequiredDecimalDigits();
+                return Optional.of(oracleTimestampColumnMapping(createTimestampType(timestampPrecision)));
             case OracleTypes.TIMESTAMPTZ:
                 return Optional.of(oracleTimestampWithTimeZoneColumnMapping());
         }
@@ -469,6 +507,22 @@ public class OracleClient
             return mapToUnboundedVarchar(typeHandle);
         }
         return Optional.empty();
+    }
+
+    private static ColumnMapping oracleTimestampColumnMapping(TimestampType timestampType)
+    {
+        if (timestampType.isShort()) {
+            return ColumnMapping.longMapping(
+                    timestampType,
+                    oracleTimestampReadFunction(timestampType),
+                    oracleTimestampWriteFunction(timestampType),
+                    FULL_PUSHDOWN);
+        }
+        return ColumnMapping.objectMapping(
+                timestampType,
+                oracleLongTimestampReadFunction(timestampType),
+                oracleLongTimestampWriteFunction(timestampType),
+                FULL_PUSHDOWN);
     }
 
     @Override
@@ -559,24 +613,30 @@ public class OracleClient
         };
     }
 
-    public static LongWriteFunction trinoTimestampToOracleTimestampWriteFunction()
+    private static ObjectWriteFunction oracleLongTimestampWriteFunction(TimestampType timestampType)
     {
-        return new LongWriteFunction()
-        {
+        int precision = timestampType.getPrecision();
+        verifyLongTimestampPrecision(timestampType);
+
+        return new ObjectWriteFunction() {
             @Override
-            public String getBindExpression()
+            public Class<?> getJavaType()
             {
-                return "TO_TIMESTAMP(?, 'SYYYY-MM-DD HH24:MI:SS.FF')";
+                return LongTimestamp.class;
             }
 
             @Override
-            public void set(PreparedStatement statement, int index, long utcMillis)
+            public void set(PreparedStatement statement, int index, Object value)
                     throws SQLException
             {
-                long epochSecond = floorDiv(utcMillis, MICROSECONDS_PER_SECOND);
-                int nanoFraction = floorMod(utcMillis, MICROSECONDS_PER_SECOND) * NANOSECONDS_PER_MICROSECOND;
-                LocalDateTime localDateTime = LocalDateTime.ofEpochSecond(epochSecond, nanoFraction, ZoneOffset.UTC);
-                statement.setString(index, TIMESTAMP_MILLIS_FORMATTER.format(localDateTime));
+                LocalDateTime timestamp = fromLongTrinoTimestamp((LongTimestamp) value, precision);
+                statement.setString(index, TIMESTAMP_NANO_OPTIONAL_FORMATTER.format(timestamp));
+            }
+
+            @Override
+            public String getBindExpression()
+            {
+                return getOracleBindExpression(precision);
             }
 
             @Override
@@ -588,7 +648,46 @@ public class OracleClient
         };
     }
 
-    private static LongReadFunction oracleTimestampReadFunction()
+    private static LongWriteFunction oracleTimestampWriteFunction(TimestampType timestampType)
+    {
+        return new LongWriteFunction()
+        {
+            @Override
+            public String getBindExpression()
+            {
+                return getOracleBindExpression(timestampType.getPrecision());
+            }
+
+            @Override
+            public void set(PreparedStatement statement, int index, long epochMicros)
+                    throws SQLException
+            {
+                LocalDateTime timestamp = fromTrinoTimestamp(epochMicros);
+                statement.setString(index, TIMESTAMP_NANO_OPTIONAL_FORMATTER.format(timestamp));
+            }
+
+            @Override
+            public void setNull(PreparedStatement statement, int index)
+                    throws SQLException
+            {
+                statement.setNull(index, Types.VARCHAR);
+            }
+        };
+    }
+
+    private static String getOracleBindExpression(int precision)
+    {
+        if (precision == 0) {
+            return "TO_TIMESTAMP(?, 'SYYYY-MM-DD HH24:MI:SS')";
+        }
+        if (precision <= 2) {
+            return "TO_TIMESTAMP(?, 'SYYYY-MM-DD HH24:MI:SS.FF')";
+        }
+
+        return format("TO_TIMESTAMP(?, 'SYYYY-MM-DD HH24:MI:SS.FF%d')", precision);
+    }
+
+    private static LongReadFunction oracleTimestampReadFunction(TimestampType timestampType)
     {
         return (resultSet, columnIndex) -> {
             LocalDateTime timestamp = resultSet.getObject(columnIndex, LocalDateTime.class);
@@ -596,8 +695,30 @@ public class OracleClient
             if (timestamp.getYear() <= 0) {
                 timestamp = timestamp.minusYears(1);
             }
-            return timestamp.toInstant(ZoneOffset.UTC).toEpochMilli() * MICROSECONDS_PER_MILLISECOND;
+            return toTrinoTimestamp(timestampType, timestamp);
         };
+    }
+
+    private static ObjectReadFunction oracleLongTimestampReadFunction(TimestampType timestampType)
+    {
+        verifyLongTimestampPrecision(timestampType);
+        return ObjectReadFunction.of(
+                LongTimestamp.class,
+                (resultSet, columnIndex) -> {
+                    LocalDateTime timestamp = resultSet.getObject(columnIndex, LocalDateTime.class);
+                    // Adjust years when the value is B.C. dates because Oracle returns +1 year unless converting to string in their server side
+                    if (timestamp.getYear() <= 0) {
+                        timestamp = timestamp.minusYears(1);
+                    }
+                    return toLongTrinoTimestamp(timestampType, timestamp);
+                });
+    }
+
+    private static void verifyLongTimestampPrecision(TimestampType timestampType)
+    {
+        int precision = timestampType.getPrecision();
+        checkArgument(precision > MAX_SHORT_PRECISION && precision <= MAX_ORACLE_TIMESTAMP_PRECISION,
+                "Precision is out of range: %s", precision);
     }
 
     public static ColumnMapping oracleTimestampWithTimeZoneColumnMapping()
@@ -636,18 +757,18 @@ public class OracleClient
     public static LongWriteFunction oracleRealWriteFunction()
     {
         return LongWriteFunction.of(Types.REAL, (statement, index, value) ->
-                ((OraclePreparedStatement) statement).setBinaryFloat(index, intBitsToFloat(toIntExact(value))));
+                statement.unwrap(OraclePreparedStatement.class).setBinaryFloat(index, intBitsToFloat(toIntExact(value))));
     }
 
     public static DoubleWriteFunction oracleDoubleWriteFunction()
     {
         return DoubleWriteFunction.of(Types.DOUBLE, (statement, index, value) ->
-                ((OraclePreparedStatement) statement).setBinaryDouble(index, value));
+                statement.unwrap(OraclePreparedStatement.class).setBinaryDouble(index, value));
     }
 
     private SliceWriteFunction oracleCharWriteFunction()
     {
-        return SliceWriteFunction.of(Types.NCHAR, (statement, index, value) -> ((OraclePreparedStatement) statement).setFixedCHAR(index, value.toStringUtf8()));
+        return SliceWriteFunction.of(Types.NCHAR, (statement, index, value) -> statement.unwrap(OraclePreparedStatement.class).setFixedCHAR(index, value.toStringUtf8()));
     }
 
     @Override
@@ -680,13 +801,18 @@ public class OracleClient
             }
             return WriteMapping.objectMapping(dataType, longDecimalWriteFunction(decimalType));
         }
-        if (type.equals(TIMESTAMP_SECONDS)) {
-            // Specify 'date' instead of 'timestamp(0)' to propagate the type in case of CTAS from date columns
-            // Oracle date stores year, month, day, hour, minute, seconds, but not second fraction
-            return WriteMapping.longMapping("date", trinoTimestampToOracleDateWriteFunction());
-        }
-        if (type.equals(TIMESTAMP_MILLIS)) {
-            return WriteMapping.longMapping("timestamp(3)", trinoTimestampToOracleTimestampWriteFunction());
+        if (type instanceof TimestampType timestampType) {
+            if (type.equals(TIMESTAMP_SECONDS)) {
+                // Specify 'date' instead of 'timestamp(0)' to propagate the type in case of CTAS from date columns
+                // Oracle date stores year, month, day, hour, minute, seconds, but not second fraction
+                return WriteMapping.longMapping("date", trinoTimestampToOracleDateWriteFunction());
+            }
+            int precision = min(timestampType.getPrecision(), MAX_ORACLE_TIMESTAMP_PRECISION);
+            String dataType = format("timestamp(%d)", precision);
+            if (timestampType.isShort()) {
+                return WriteMapping.longMapping(dataType, oracleTimestampWriteFunction(timestampType));
+            }
+            return WriteMapping.objectMapping(dataType, oracleLongTimestampWriteFunction(createTimestampType(precision)));
         }
         WriteMapping writeMapping = WRITE_MAPPINGS.get(type);
         if (writeMapping != null) {

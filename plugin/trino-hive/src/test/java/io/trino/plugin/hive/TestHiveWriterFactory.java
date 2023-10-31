@@ -13,8 +13,9 @@
  */
 package io.trino.plugin.hive;
 
+import io.trino.filesystem.Location;
 import org.apache.hadoop.fs.Path;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 
@@ -43,31 +44,38 @@ public class TestHiveWriterFactory
     public void testSetsSchemeToFile()
     {
         String pathWithoutScheme = "/simple/file/path";
-        String result = setSchemeToFileIfAbsent(pathWithoutScheme);
-        assertThat(result).isEqualTo("file:////simple/file/path");
+        String result = setSchemeToFileIfAbsent(Location.of(pathWithoutScheme)).toString();
+        assertThat(result).isEqualTo("file:///simple/file/path");
         URI resultUri = new Path(result).toUri();
         assertThat(resultUri.getScheme()).isEqualTo("file");
         assertThat(resultUri.getPath()).isEqualTo("/simple/file/path");
 
         String pathWithScheme = "s3://simple/file/path";
-        result = setSchemeToFileIfAbsent(pathWithScheme);
+        result = setSchemeToFileIfAbsent(Location.of(pathWithScheme)).toString();
         assertThat(result).isEqualTo(pathWithScheme);
         resultUri = new Path(result).toUri();
         assertThat(resultUri.getScheme()).isEqualTo("s3");
         assertThat(resultUri.getPath()).isEqualTo("/file/path");
 
         String pathWithEmptySpaces = "/simple/file 1/path";
-        result = setSchemeToFileIfAbsent(pathWithEmptySpaces);
-        assertThat(result).isEqualTo("file:////simple/file 1/path");
+        result = setSchemeToFileIfAbsent(Location.of(pathWithEmptySpaces)).toString();
+        assertThat(result).isEqualTo("file:///simple/file 1/path");
         resultUri = new Path(result).toUri();
         assertThat(resultUri.getScheme()).isEqualTo("file");
         assertThat(resultUri.getPath()).isEqualTo("/simple/file 1/path");
 
         String pathWithEmptySpacesAndScheme = "s3://simple/file 1/path";
-        result = setSchemeToFileIfAbsent(pathWithEmptySpacesAndScheme);
+        result = setSchemeToFileIfAbsent(Location.of(pathWithEmptySpacesAndScheme)).toString();
         assertThat(result).isEqualTo(pathWithEmptySpacesAndScheme);
         resultUri = new Path(result).toUri();
         assertThat(resultUri.getScheme()).isEqualTo("s3");
         assertThat(resultUri.getPath()).isEqualTo("/file 1/path");
+
+        String pathWithAtSign = "/tmp/user@example.com";
+        result = setSchemeToFileIfAbsent(Location.of(pathWithAtSign)).toString();
+        assertThat(result).isEqualTo("file:///tmp/user@example.com");
+        resultUri = new Path(result).toUri();
+        assertThat(resultUri.getScheme()).isEqualTo("file");
+        assertThat(resultUri.getPath()).isEqualTo("/tmp/user@example.com");
     }
 }

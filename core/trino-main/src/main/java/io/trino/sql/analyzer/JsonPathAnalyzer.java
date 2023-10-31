@@ -36,6 +36,7 @@ import io.trino.sql.jsonpath.tree.ComparisonPredicate;
 import io.trino.sql.jsonpath.tree.ConjunctionPredicate;
 import io.trino.sql.jsonpath.tree.ContextVariable;
 import io.trino.sql.jsonpath.tree.DatetimeMethod;
+import io.trino.sql.jsonpath.tree.DescendantMemberAccessor;
 import io.trino.sql.jsonpath.tree.DisjunctionPredicate;
 import io.trino.sql.jsonpath.tree.DoubleMethod;
 import io.trino.sql.jsonpath.tree.ExistsPredicate;
@@ -58,7 +59,6 @@ import io.trino.sql.jsonpath.tree.SqlValueLiteral;
 import io.trino.sql.jsonpath.tree.StartsWithPredicate;
 import io.trino.sql.jsonpath.tree.TypeMethod;
 import io.trino.sql.tree.Node;
-import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.StringLiteral;
 
 import java.util.LinkedHashMap;
@@ -147,7 +147,7 @@ public class JsonPathAnalyzer
             if (sourceType != null) {
                 Type resultType;
                 try {
-                    resultType = metadata.resolveFunction(session, QualifiedName.of("abs"), fromTypes(sourceType)).getSignature().getReturnType();
+                    resultType = metadata.resolveBuiltinFunction("abs", fromTypes(sourceType)).getSignature().getReturnType();
                 }
                 catch (TrinoException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "cannot perform JSON path abs() method with %s argument: %s", sourceType.getDisplayName(), e.getMessage());
@@ -167,7 +167,7 @@ public class JsonPathAnalyzer
             if (leftType != null && rightType != null) {
                 BoundSignature signature;
                 try {
-                    signature = metadata.resolveOperator(session, OperatorType.valueOf(node.getOperator().name()), ImmutableList.of(leftType, rightType)).getSignature();
+                    signature = metadata.resolveOperator(OperatorType.valueOf(node.getOperator().name()), ImmutableList.of(leftType, rightType)).getSignature();
                 }
                 catch (OperatorNotFoundException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "invalid operand types (%s and %s) in JSON path arithmetic binary expression: %s", leftType.getDisplayName(), rightType.getDisplayName(), e.getMessage());
@@ -194,7 +194,7 @@ public class JsonPathAnalyzer
                 }
                 Type resultType;
                 try {
-                    resultType = metadata.resolveOperator(session, NEGATION, ImmutableList.of(sourceType)).getSignature().getReturnType();
+                    resultType = metadata.resolveOperator(NEGATION, ImmutableList.of(sourceType)).getSignature().getReturnType();
                 }
                 catch (OperatorNotFoundException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "invalid operand type (%s) in JSON path arithmetic unary expression: %s", sourceType.getDisplayName(), e.getMessage());
@@ -225,7 +225,7 @@ public class JsonPathAnalyzer
             if (sourceType != null) {
                 Type resultType;
                 try {
-                    resultType = metadata.resolveFunction(session, QualifiedName.of("ceiling"), fromTypes(sourceType)).getSignature().getReturnType();
+                    resultType = metadata.resolveBuiltinFunction("ceiling", fromTypes(sourceType)).getSignature().getReturnType();
                 }
                 catch (TrinoException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "cannot perform JSON path ceiling() method with %s argument: %s", sourceType.getDisplayName(), e.getMessage());
@@ -255,6 +255,13 @@ public class JsonPathAnalyzer
         }
 
         @Override
+        protected Type visitDescendantMemberAccessor(DescendantMemberAccessor node, Void context)
+        {
+            process(node.getBase());
+            return null;
+        }
+
+        @Override
         protected Type visitDoubleMethod(DoubleMethod node, Void context)
         {
             Type sourceType = process(node.getBase());
@@ -263,7 +270,7 @@ public class JsonPathAnalyzer
                     throw semanticException(INVALID_PATH, pathNode, "cannot perform JSON path double() method with %s argument", sourceType.getDisplayName());
                 }
                 try {
-                    metadata.getCoercion(session, sourceType, DOUBLE);
+                    metadata.getCoercion(sourceType, DOUBLE);
                 }
                 catch (OperatorNotFoundException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "cannot perform JSON path double() method with %s argument: %s", sourceType.getDisplayName(), e.getMessage());
@@ -298,7 +305,7 @@ public class JsonPathAnalyzer
             if (sourceType != null) {
                 Type resultType;
                 try {
-                    resultType = metadata.resolveFunction(session, QualifiedName.of("floor"), fromTypes(sourceType)).getSignature().getReturnType();
+                    resultType = metadata.resolveBuiltinFunction("floor", fromTypes(sourceType)).getSignature().getReturnType();
                 }
                 catch (TrinoException e) {
                     throw semanticException(INVALID_PATH, pathNode, e, "cannot perform JSON path floor() method with %s argument: %s", sourceType.getDisplayName(), e.getMessage());

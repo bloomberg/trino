@@ -44,8 +44,7 @@ import io.trino.orc.writer.ColumnWriter;
 import io.trino.orc.writer.SliceDictionaryColumnWriter;
 import io.trino.spi.Page;
 import io.trino.spi.type.Type;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -115,7 +114,7 @@ public final class OrcWriter
     private final DictionaryCompressionOptimizer dictionaryCompressionOptimizer;
     private int stripeRowCount;
     private int rowGroupRowCount;
-    private int bufferedBytes;
+    private long bufferedBytes;
     private long columnWritersRetainedBytes;
     private long closedStripesRetainedBytes;
     private long previouslyRecordedSizeInBytes;
@@ -225,7 +224,7 @@ public final class OrcWriter
     /**
      * Number of pending bytes not yet flushed.
      */
-    public int getBufferedBytes()
+    public long getBufferedBytes()
     {
         return bufferedBytes;
     }
@@ -259,26 +258,19 @@ public final class OrcWriter
             validationBuilder.addPage(page);
         }
 
-        while (page != null) {
+        int writeOffset = 0;
+        while (writeOffset < page.getPositionCount()) {
             // align page to row group boundaries
-            int chunkRows = min(page.getPositionCount(), min(rowGroupMaxRowCount - rowGroupRowCount, stripeMaxRowCount - stripeRowCount));
-            Page chunk = page.getRegion(0, chunkRows);
+            Page chunk = page.getRegion(writeOffset, min(page.getPositionCount() - writeOffset, min(rowGroupMaxRowCount - rowGroupRowCount, stripeMaxRowCount - stripeRowCount)));
 
             // avoid chunk with huge logical size
-            while (chunkRows > 1 && chunk.getLogicalSizeInBytes() > chunkMaxLogicalBytes) {
-                chunkRows /= 2;
-                chunk = chunk.getRegion(0, chunkRows);
+            while (chunk.getPositionCount() > 1 && chunk.getLogicalSizeInBytes() > chunkMaxLogicalBytes) {
+                chunk = chunk.getRegion(writeOffset, chunk.getPositionCount() / 2);
             }
 
-            if (chunkRows < page.getPositionCount()) {
-                page = page.getRegion(chunkRows, page.getPositionCount() - chunkRows);
-            }
-            else {
-                page = null;
-            }
-
+            writeOffset += chunk.getPositionCount();
             writeChunk(chunk);
-            fileRowCount += chunkRows;
+            fileRowCount += chunk.getPositionCount();
         }
 
         long recordedSizeInBytes = getRetainedBytes();
@@ -384,7 +376,7 @@ public final class OrcWriter
         }
 
         // convert any dictionary encoded column with a low compression ratio to direct
-        dictionaryCompressionOptimizer.finalOptimize(bufferedBytes);
+        dictionaryCompressionOptimizer.finalOptimize(toIntExact(bufferedBytes));
 
         columnWriters.forEach(ColumnWriter::close);
 

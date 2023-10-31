@@ -19,7 +19,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.hive.HiveBucketProperty;
 import io.trino.plugin.hive.HiveStorageFormat;
-import io.trino.plugin.hive.metastore.Column;
 import io.trino.plugin.hive.metastore.HiveColumnStatistics;
 import io.trino.plugin.hive.metastore.Storage;
 import io.trino.plugin.hive.metastore.StorageFormat;
@@ -47,6 +46,7 @@ public class TableMetadata
     private final Map<String, String> parameters;
 
     private final Optional<HiveStorageFormat> storageFormat;
+    private final Optional<StorageFormat> originalStorageFormat;
     private final Optional<HiveBucketProperty> bucketProperty;
     private final Map<String, String> serdeParameters;
 
@@ -66,6 +66,7 @@ public class TableMetadata
             @JsonProperty("partitionColumns") List<Column> partitionColumns,
             @JsonProperty("parameters") Map<String, String> parameters,
             @JsonProperty("storageFormat") Optional<HiveStorageFormat> storageFormat,
+            @JsonProperty("originalStorageFormat") Optional<StorageFormat> originalStorageFormat,
             @JsonProperty("bucketProperty") Optional<HiveBucketProperty> bucketProperty,
             @JsonProperty("serdeParameters") Map<String, String> serdeParameters,
             @JsonProperty("externalLocation") Optional<String> externalLocation,
@@ -81,6 +82,7 @@ public class TableMetadata
         this.parameters = ImmutableMap.copyOf(requireNonNull(parameters, "parameters is null"));
 
         this.storageFormat = requireNonNull(storageFormat, "storageFormat is null");
+        this.originalStorageFormat = requireNonNull(originalStorageFormat, "originalStorageFormat is null");
         this.bucketProperty = requireNonNull(bucketProperty, "bucketProperty is null");
         this.serdeParameters = requireNonNull(serdeParameters, "serdeParameters is null");
         this.externalLocation = requireNonNull(externalLocation, "externalLocation is null");
@@ -102,14 +104,20 @@ public class TableMetadata
         writerVersion = Optional.of(requireNonNull(currentVersion, "currentVersion is null"));
         owner = table.getOwner();
         tableType = table.getTableType();
-        dataColumns = table.getDataColumns();
-        partitionColumns = table.getPartitionColumns();
+        dataColumns = Column.fromMetastoreModel(table.getDataColumns());
+        partitionColumns = Column.fromMetastoreModel(table.getPartitionColumns());
         parameters = table.getParameters();
 
         StorageFormat tableFormat = table.getStorage().getStorageFormat();
         storageFormat = Arrays.stream(HiveStorageFormat.values())
                 .filter(format -> tableFormat.equals(StorageFormat.fromHiveStorageFormat(format)))
                 .findFirst();
+        if (storageFormat.isPresent()) {
+            originalStorageFormat = Optional.empty();
+        }
+        else {
+            originalStorageFormat = Optional.of(tableFormat);
+        }
         bucketProperty = table.getStorage().getBucketProperty();
         serdeParameters = table.getStorage().getSerdeParameters();
 
@@ -183,6 +191,12 @@ public class TableMetadata
     }
 
     @JsonProperty
+    public Optional<StorageFormat> getOriginalStorageFormat()
+    {
+        return originalStorageFormat;
+    }
+
+    @JsonProperty
     public Optional<HiveBucketProperty> getBucketProperty()
     {
         return bucketProperty;
@@ -228,6 +242,7 @@ public class TableMetadata
                 partitionColumns,
                 parameters,
                 storageFormat,
+                originalStorageFormat,
                 bucketProperty,
                 serdeParameters,
                 externalLocation,
@@ -246,6 +261,7 @@ public class TableMetadata
                 partitionColumns,
                 parameters,
                 storageFormat,
+                originalStorageFormat,
                 bucketProperty,
                 serdeParameters,
                 externalLocation,
@@ -264,6 +280,7 @@ public class TableMetadata
                 partitionColumns,
                 parameters,
                 storageFormat,
+                originalStorageFormat,
                 bucketProperty,
                 serdeParameters,
                 externalLocation,
@@ -281,12 +298,14 @@ public class TableMetadata
                 tableType,
                 Storage.builder()
                         .setLocation(externalLocation.or(() -> Optional.ofNullable(parameters.get(LOCATION_PROPERTY))).orElse(location))
-                        .setStorageFormat(storageFormat.map(StorageFormat::fromHiveStorageFormat).orElse(VIEW_STORAGE_FORMAT))
+                        .setStorageFormat(storageFormat.map(StorageFormat::fromHiveStorageFormat)
+                                .or(() -> originalStorageFormat)
+                                .orElse(VIEW_STORAGE_FORMAT))
                         .setBucketProperty(bucketProperty)
                         .setSerdeParameters(serdeParameters)
                         .build(),
-                dataColumns,
-                partitionColumns,
+                Column.toMetastoreModel(dataColumns),
+                Column.toMetastoreModel(partitionColumns),
                 parameters,
                 viewOriginalText,
                 viewExpandedText,

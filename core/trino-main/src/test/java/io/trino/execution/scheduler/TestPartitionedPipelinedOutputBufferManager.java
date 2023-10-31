@@ -15,7 +15,7 @@ package io.trino.execution.scheduler;
 
 import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.execution.buffer.PipelinedOutputBuffers.OutputBufferId;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -47,10 +47,9 @@ public class TestPartitionedPipelinedOutputBufferManager
                 .hasMessage("Unexpected new output buffer 5");
         assertOutputBuffers(hashOutputBufferManager.getOutputBuffers());
 
-        // try to a buffer out side of the partition range, which should result in an error
-        assertThatThrownBy(() -> hashOutputBufferManager.addOutputBuffer(new OutputBufferId(6)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Unexpected new output buffer 6");
+        // try to set no more buffers again, which should not result in an error
+        // and output buffers should not change
+        hashOutputBufferManager.noMoreBuffers();
         assertOutputBuffers(hashOutputBufferManager.getOutputBuffers());
     }
 

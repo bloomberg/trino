@@ -16,7 +16,10 @@ package io.trino.tests.product.hive;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Streams;
 import io.trino.jdbc.TrinoArray;
+import io.trino.plugin.hive.HiveTimestampPrecision;
 import io.trino.tempto.assertions.QueryAssert.Row;
 import io.trino.tempto.fulfillment.table.MutableTablesState;
 import io.trino.tempto.fulfillment.table.TableDefinition;
@@ -28,29 +31,35 @@ import io.trino.tempto.query.QueryResult;
 
 import java.math.BigDecimal;
 import java.sql.JDBCType;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
+import static io.trino.plugin.hive.HiveTimestampPrecision.NANOSECONDS;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.tempto.context.ThreadLocalTestContextHolder.testContext;
 import static io.trino.tempto.fulfillment.table.TableHandle.tableHandle;
+import static io.trino.tests.product.utils.JdbcDriverUtils.setSessionProperty;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static java.sql.JDBCType.ARRAY;
 import static java.sql.JDBCType.BIGINT;
 import static java.sql.JDBCType.CHAR;
+import static java.sql.JDBCType.DATE;
 import static java.sql.JDBCType.DECIMAL;
 import static java.sql.JDBCType.DOUBLE;
 import static java.sql.JDBCType.FLOAT;
@@ -59,10 +68,14 @@ import static java.sql.JDBCType.JAVA_OBJECT;
 import static java.sql.JDBCType.REAL;
 import static java.sql.JDBCType.SMALLINT;
 import static java.sql.JDBCType.STRUCT;
+import static java.sql.JDBCType.TIMESTAMP;
+import static java.sql.JDBCType.TINYINT;
 import static java.sql.JDBCType.VARCHAR;
+import static java.util.Collections.nCopies;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
@@ -95,6 +108,9 @@ public abstract class BaseTestHiveCoercion
                 "bigint_to_varchar",
                 "float_to_double",
                 "double_to_float",
+                "double_to_string",
+                "double_to_bounded_varchar",
+                "double_infinity_to_string",
                 "shortdecimal_to_shortdecimal",
                 "shortdecimal_to_longdecimal",
                 "longdecimal_to_shortdecimal",
@@ -103,14 +119,31 @@ public abstract class BaseTestHiveCoercion
                 "double_to_decimal",
                 "decimal_to_float",
                 "decimal_to_double",
+                "longdecimal_to_tinyint",
+                "shortdecimal_to_tinyint",
+                "longdecimal_to_smallint",
+                "shortdecimal_to_smallint",
+                "too_big_shortdecimal_to_smallint",
+                "longdecimal_to_int",
+                "shortdecimal_to_int",
+                "shortdecimal_with_0_scale_to_int",
+                "longdecimal_to_bigint",
+                "shortdecimal_to_bigint",
                 "short_decimal_to_varchar",
                 "long_decimal_to_varchar",
                 "short_decimal_to_bounded_varchar",
                 "long_decimal_to_bounded_varchar",
                 "varchar_to_bigger_varchar",
                 "varchar_to_smaller_varchar",
+                "varchar_to_date",
+                "varchar_to_distant_date",
                 "char_to_bigger_char",
                 "char_to_smaller_char",
+                "timestamp_to_string",
+                "timestamp_to_bounded_varchar",
+                "timestamp_to_smaller_varchar",
+                "smaller_varchar_to_timestamp",
+                "varchar_to_timestamp",
                 "id");
 
         Function<Engine, Map<String, List<Object>>> expected = engine -> expectedValuesForEngineProvider(engine, tableName, decimalToFloatVal, floatToDecimalVal);
@@ -151,10 +184,23 @@ public abstract class BaseTestHiveCoercion
                         "  12345, " +
                         "  REAL '0.5', " +
                         "  DOUBLE '0.5', " +
+                        "  DOUBLE '12345.12345', " +
+                        "  DOUBLE '12345.12345', " +
+                        "  DOUBLE 'Infinity' ," +
                         "  DECIMAL '12345678.12', " +
                         "  DECIMAL '12345678.12', " +
                         "  DECIMAL '12345678.123456123456', " +
                         "  DECIMAL '12345678.123456123456', " +
+                        "  DECIMAL '13.1313', " +
+                        "  DECIMAL '11.99', " +
+                        "  DECIMAL '140.1323', " +
+                        "  DECIMAL '142.99', " +
+                        "  DECIMAL '312343.99', " +
+                        "  DECIMAL '312345.99', " +
+                        "  DECIMAL '312347.13433', " +
+                        "  DECIMAL '123', " +
+                        "  DECIMAL '123471234567.9989', " +
+                        "  DECIMAL '12345678.12', " +
                         "  %2$s '12345.12345', " +
                         "  DOUBLE '12345.12345', " +
                         "  DECIMAL '12345.12345', " +
@@ -165,8 +211,15 @@ public abstract class BaseTestHiveCoercion
                         "  DECIMAL '12345678.123456123456', " +
                         "  'abc', " +
                         "  'abc', " +
+                        "  '2023-09-28', " +
+                        "  '8000-04-13', " +
                         "  'abc', " +
                         "  'abc', " +
+                        "  TIMESTAMP '2121-07-15 15:30:12.123', " +
+                        "  TIMESTAMP '2121-07-15 15:30:12.123', " +
+                        "  TIMESTAMP '2121-07-15 15:30:12.123', " +
+                        "  '2121', " +
+                        "  '2019-01-29 23:59:59.123', " +
                         "  1), " +
                         "(" +
                         "  CAST(ROW (NULL, 1, -100, -2323, -12345, 2) AS ROW(keep VARCHAR, ti2si TINYINT, si2int SMALLINT, int2bi INTEGER, bi2vc BIGINT, lower2uppercase BIGINT)), " +
@@ -181,10 +234,23 @@ public abstract class BaseTestHiveCoercion
                         "  -12345, " +
                         "  REAL '-1.5', " +
                         "  DOUBLE '-1.5', " +
+                        "  DOUBLE 'NaN', " +
+                        "  DOUBLE '-12345.12345', " +
+                        "  DOUBLE '-Infinity' ," +
                         "  DECIMAL '-12345678.12', " +
                         "  DECIMAL '-12345678.12', " +
                         "  DECIMAL '-12345678.123456123456', " +
                         "  DECIMAL '-12345678.123456123456', " +
+                        "  DECIMAL '-12.1313', " +
+                        "  DECIMAL '-10.99', " +
+                        "  DECIMAL '-141.1323', " +
+                        "  DECIMAL '-143.99', " +
+                        "  DECIMAL '-312342.99', " +
+                        "  DECIMAL '-312346.99', " +
+                        "  DECIMAL '-312348.13433', " +
+                        "  DECIMAL '-124', " +
+                        "  DECIMAL '-123471234577.9989', " +
+                        "  DECIMAL '-12345678.12', " +
                         "  %2$s '-12345.12345', " +
                         "  DOUBLE '-12345.12345', " +
                         "  DECIMAL '-12345.12345', " +
@@ -195,8 +261,15 @@ public abstract class BaseTestHiveCoercion
                         "  DECIMAL '-12345678.123456123456', " +
                         "  '\uD83D\uDCB0\uD83D\uDCB0\uD83D\uDCB0', " +
                         "  '\uD83D\uDCB0\uD83D\uDCB0\uD83D\uDCB0', " +
+                        "  '2023-09-27', " +
+                        "  '1900-01-01', " +
                         "  '\uD83D\uDCB0\uD83D\uDCB0\uD83D\uDCB0', " +
                         "  '\uD83D\uDCB0\uD83D\uDCB0\uD83D\uDCB0', " +
+                        "  TIMESTAMP '1970-01-01 00:00:00.123', " +
+                        "  TIMESTAMP '1970-01-01 00:00:00.123', " +
+                        "  TIMESTAMP '1970-01-01 00:00:00.123', " +
+                        "  '1970', " +
+                        "  '1970-01-01 00:00:00.123', " +
                         "  1)",
                 tableName,
                 floatToDoubleType));
@@ -205,8 +278,9 @@ public abstract class BaseTestHiveCoercion
     protected Map<String, List<Object>> expectedValuesForEngineProvider(Engine engine, String tableName, String decimalToFloatVal, String floatToDecimalVal)
     {
         String hiveValueForCaseChangeField;
+        String coercedNaN = "NaN";
         Predicate<String> isFormat = formatName -> tableName.toLowerCase(ENGLISH).contains(formatName);
-        if (isFormat.test("rctext") || isFormat.test("textfile")) {
+        if (Stream.of("rctext", "textfile", "sequencefile").anyMatch(isFormat)) {
             hiveValueForCaseChangeField = "\"lower2uppercase\":2";
         }
         else if (getHiveVersionMajor() == 3 && isFormat.test("orc")) {
@@ -214,6 +288,11 @@ public abstract class BaseTestHiveCoercion
         }
         else {
             hiveValueForCaseChangeField = "\"LOWER2UPPERCASE\":2";
+        }
+
+        // Apache Hive reads Double.NaN as null when coerced to varchar for ORC file format
+        if (isFormat.test("orc")) {
+            coercedNaN = null;
         }
 
         return ImmutableMap.<String, List<Object>>builder()
@@ -296,6 +375,9 @@ public abstract class BaseTestHiveCoercion
                         0.5,
                         -1.5))
                 .put("double_to_float", ImmutableList.of(0.5, -1.5))
+                .put("double_to_string", Arrays.asList("12345.12345", coercedNaN))
+                .put("double_to_bounded_varchar", ImmutableList.of("12345.12345", "-12345.12345"))
+                .put("double_infinity_to_string", ImmutableList.of("Infinity", "-Infinity"))
                 .put("shortdecimal_to_shortdecimal", ImmutableList.of(
                         new BigDecimal("12345678.1200"),
                         new BigDecimal("-12345678.1200")))
@@ -316,6 +398,36 @@ public abstract class BaseTestHiveCoercion
                 .put("decimal_to_double", ImmutableList.of(
                         12345.12345,
                         -12345.12345))
+                .put("longdecimal_to_tinyint", ImmutableList.of(
+                        13,
+                        -12))
+                .put("shortdecimal_to_tinyint", ImmutableList.of(
+                        11,
+                        -10))
+                .put("longdecimal_to_smallint", ImmutableList.of(
+                        140,
+                        -141))
+                .put("shortdecimal_to_smallint", ImmutableList.of(
+                        142,
+                        -143))
+                .put("too_big_shortdecimal_to_smallint", Arrays.asList(
+                        null,
+                        null))
+                .put("longdecimal_to_int", ImmutableList.of(
+                        312345,
+                        -312346))
+                .put("shortdecimal_to_int", ImmutableList.of(
+                        312347,
+                        -312348))
+                .put("shortdecimal_with_0_scale_to_int", ImmutableList.of(
+                        123,
+                        -124))
+                .put("longdecimal_to_bigint", ImmutableList.of(
+                        123471234567L,
+                        -123471234577L))
+                .put("shortdecimal_to_bigint", ImmutableList.of(
+                        12345678,
+                        -12345678))
                 .put("short_decimal_to_varchar", ImmutableList.of(
                         "12345.12345",
                         "-12345.12345"))
@@ -334,15 +446,189 @@ public abstract class BaseTestHiveCoercion
                 .put("varchar_to_smaller_varchar", ImmutableList.of(
                         "ab",
                         "\uD83D\uDCB0\uD83D\uDCB0"))
+                .put("varchar_to_date", ImmutableList.of(
+                        java.sql.Date.valueOf("2023-09-28"),
+                        java.sql.Date.valueOf("2023-09-27")))
+                .put("varchar_to_distant_date", ImmutableList.of(
+                        java.sql.Date.valueOf("8000-04-13"),
+                        java.sql.Date.valueOf("1900-01-01")))
                 .put("char_to_bigger_char", ImmutableList.of(
                         "abc ",
                         "\uD83D\uDCB0\uD83D\uDCB0\uD83D\uDCB0 "))
                 .put("char_to_smaller_char", ImmutableList.of(
                         "ab",
                         "\uD83D\uDCB0\uD83D\uDCB0"))
+                .put("timestamp_to_string", ImmutableList.of(
+                        "2121-07-15 15:30:12.123",
+                        "1970-01-01 00:00:00.123"))
+                .put("timestamp_to_bounded_varchar", ImmutableList.of(
+                        "2121-07-15 15:30:12.123",
+                        "1970-01-01 00:00:00.123"))
+                .put("timestamp_to_smaller_varchar", ImmutableList.of(
+                        "2121",
+                        "1970"))
+                .put("smaller_varchar_to_timestamp", Arrays.asList(
+                        null,
+                        null))
+                .put("varchar_to_timestamp", Arrays.asList(
+                        Timestamp.valueOf("2019-01-29 23:59:59.123"),
+                        Timestamp.valueOf("1970-01-01 00:00:00.123")))
                 .put("id", ImmutableList.of(
                         1,
                         1))
+                .buildOrThrow();
+    }
+
+    protected void doTestHiveCoercionWithDifferentTimestampPrecision(HiveTableDefinition tableDefinition)
+    {
+        String tableName = mutableTableInstanceOf(tableDefinition).getNameInDatabase();
+
+        // Insert all the data with nanoseconds precision
+        setHiveTimestampPrecision(NANOSECONDS);
+        onTrino().executeQuery(
+                """
+                        INSERT INTO %s
+                            SELECT
+                                (CAST(ROW (timestamp_value, -1, timestamp_value, CAST(timestamp_value AS VARCHAR)) AS ROW(keep TIMESTAMP(9), si2i SMALLINT, timestamp2string TIMESTAMP(9), string2timestamp VARCHAR))),
+                                ARRAY [CAST(ROW (timestamp_value, -1, timestamp_value, CAST(timestamp_value AS VARCHAR)) AS ROW (keep TIMESTAMP(9), si2i SMALLINT, timestamp2string TIMESTAMP(9), string2timestamp VARCHAR))],
+                                MAP (ARRAY [2], ARRAY [CAST(ROW (timestamp_value, -1, timestamp_value, CAST(timestamp_value AS VARCHAR)) AS ROW (keep TIMESTAMP(9), si2i SMALLINT, timestamp2string TIMESTAMP(9), string2timestamp VARCHAR))]),
+                                timestamp_value,
+                                CAST(timestamp_value AS VARCHAR),
+                                1
+                            FROM (VALUES
+                                (TIMESTAMP '2121-07-15 15:30:12.123499'),
+                                (TIMESTAMP '2121-07-15 15:30:12.123500'),
+                                (TIMESTAMP '2121-07-15 15:30:12.123501'),
+                                (TIMESTAMP '2121-07-15 15:30:12.123499999'),
+                                (TIMESTAMP '2121-07-15 15:30:12.123500000'),
+                                (TIMESTAMP '2121-07-15 15:30:12.123500001')) AS t (timestamp_value)
+                        """.formatted(tableName));
+
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_row_to_row timestamp_row_to_row struct<keep:timestamp, si2i:int, timestamp2string:string, string2timestamp:timestamp>", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_list_to_list timestamp_list_to_list array<struct<keep:timestamp, si2i:int, timestamp2string:string, string2timestamp:timestamp>>", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_map_to_map timestamp_map_to_map map<int,struct<keep:timestamp, si2i:int, timestamp2string:string, string2timestamp:timestamp>>", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_to_string timestamp_to_string string", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN string_to_timestamp string_to_timestamp TIMESTAMP", tableName));
+
+        for (HiveTimestampPrecision hiveTimestampPrecision : HiveTimestampPrecision.values()) {
+            String timestampType = "timestamp(%d)".formatted(hiveTimestampPrecision.getPrecision());
+            setHiveTimestampPrecision(hiveTimestampPrecision);
+            assertThat(onTrino().executeQuery("SHOW COLUMNS FROM " + tableName).project(1, 2)).containsExactlyInOrder(
+                    row("timestamp_row_to_row", "row(keep %1$s, si2i integer, timestamp2string varchar, string2timestamp %1$s)".formatted(timestampType)),
+                    row("timestamp_list_to_list", "array(row(keep %1$s, si2i integer, timestamp2string varchar, string2timestamp %1$s))".formatted(timestampType)),
+                    row("timestamp_map_to_map", "map(integer, row(keep %1$s, si2i integer, timestamp2string varchar, string2timestamp %1$s))".formatted(timestampType)),
+                    row("timestamp_to_string", "varchar"),
+                    row("string_to_timestamp", timestampType),
+                    row("id", "bigint"));
+
+            List<String> allColumns = ImmutableList.of(
+                    "timestamp_row_to_row",
+                    "timestamp_list_to_list",
+                    "timestamp_map_to_map",
+                    "timestamp_to_string",
+                    "string_to_timestamp",
+                    "id");
+
+            // For Trino, remove unsupported columns
+            List<String> trinoReadColumns = removeUnsupportedColumnsForTrino(allColumns, tableName);
+            Map<String, List<Object>> expectedTinoResults = Maps.filterKeys(
+                    expectedRowsForEngineProvider(Engine.TRINO, hiveTimestampPrecision),
+                    trinoReadColumns::contains);
+
+            String trinoReadQuery = format("SELECT %s FROM %s", String.join(", ", trinoReadColumns), tableName);
+            assertQueryResults(Engine.TRINO, trinoReadQuery, expectedTinoResults, trinoReadColumns, 6, tableName);
+
+            List<String> hiveReadColumns = removeUnsupportedColumnsForHive(allColumns, tableName);
+            Map<String, List<Object>> expectedHiveResults = Maps.filterKeys(
+                    expectedRowsForEngineProvider(Engine.HIVE, hiveTimestampPrecision),
+                    hiveReadColumns::contains);
+
+            String hiveSelectQuery = format("SELECT %s FROM %s", String.join(", ", hiveReadColumns), tableName);
+            assertQueryResults(Engine.HIVE, hiveSelectQuery, expectedHiveResults, hiveReadColumns, 6, tableName);
+        }
+    }
+
+    protected Map<String, List<Object>> expectedRowsForEngineProvider(Engine engine, HiveTimestampPrecision timestampPrecision)
+    {
+        List<Object> timestampAsString = ImmutableList.of(
+                "2121-07-15 15:30:12.123499",
+                "2121-07-15 15:30:12.1235",
+                "2121-07-15 15:30:12.123501",
+                "2121-07-15 15:30:12.123499999",
+                "2121-07-15 15:30:12.1235",
+                "2121-07-15 15:30:12.123500001");
+        if (engine == Engine.HIVE) {
+            List<Object> baseData = ImmutableList.of(
+                    "{\"keep\":\"2121-07-15 15:30:12.123499\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.123499\",\"string2timestamp\":\"2121-07-15 15:30:12.123499\"}",
+                    "{\"keep\":\"2121-07-15 15:30:12.1235\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.1235\",\"string2timestamp\":\"2121-07-15 15:30:12.1235\"}",
+                    "{\"keep\":\"2121-07-15 15:30:12.123501\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.123501\",\"string2timestamp\":\"2121-07-15 15:30:12.123501\"}",
+                    "{\"keep\":\"2121-07-15 15:30:12.123499999\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.123499999\",\"string2timestamp\":\"2121-07-15 15:30:12.123499999\"}",
+                    "{\"keep\":\"2121-07-15 15:30:12.1235\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.1235\",\"string2timestamp\":\"2121-07-15 15:30:12.1235\"}",
+                    "{\"keep\":\"2121-07-15 15:30:12.123500001\",\"si2i\":-1,\"timestamp2string\":\"2121-07-15 15:30:12.123500001\",\"string2timestamp\":\"2121-07-15 15:30:12.123500001\"}");
+            return ImmutableMap.<String, List<Object>>builder()
+                    .put("timestamp_row_to_row", baseData)
+                    .put("timestamp_list_to_list", baseData.stream()
+                            .map(ImmutableList::of)
+                            .map(Objects::toString)
+                            .collect(toImmutableList()))
+                    .put("timestamp_map_to_map", baseData.stream()
+                            .map("{2:%s}"::formatted)
+                            .collect(toImmutableList()))
+                    .put("timestamp_to_string", timestampAsString)
+                    .put("string_to_timestamp", timestampAsString.stream()
+                            .map(String.class::cast)
+                            .map(Timestamp::valueOf)
+                            .collect(toImmutableList()))
+                    .put("id", nCopies(6, 1))
+                    .buildOrThrow();
+        }
+
+        List<Object> timestampValue = switch (timestampPrecision) {
+            case MILLISECONDS -> ImmutableList.of(
+                    Timestamp.valueOf("2121-07-15 15:30:12.123"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.124"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.124"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.123"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.124"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.124"));
+            case MICROSECONDS -> ImmutableList.of(
+                    Timestamp.valueOf("2121-07-15 15:30:12.123499"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.123501"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"));
+            case NANOSECONDS -> ImmutableList.of(
+                    Timestamp.valueOf("2121-07-15 15:30:12.123499"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.123501"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.123499999"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.1235"),
+                    Timestamp.valueOf("2121-07-15 15:30:12.123500001"));
+        };
+
+        List<Object> baseData = Streams.zip(
+                timestampValue.stream(),
+                timestampAsString.stream(),
+                (timestamp, timestampCoerced) -> rowBuilder()
+                        .addField("keep", timestamp)
+                        .addField("si2i", -1)
+                        .addField("timestamp2string", timestampCoerced)
+                        .addField("string2timestamp", timestamp)
+                        .build())
+                .collect(toImmutableList());
+
+        return ImmutableMap.<String, List<Object>>builder()
+                .put("timestamp_row_to_row", baseData)
+                .put("timestamp_list_to_list", baseData.stream()
+                        .map(ImmutableList::of)
+                        .collect(toImmutableList()))
+                .put("timestamp_map_to_map", baseData.stream()
+                        .map(entry -> ImmutableMap.of(2, entry))
+                        .collect(toImmutableList()))
+                .put("timestamp_to_string", timestampAsString)
+                .put("string_to_timestamp", timestampValue)
+                .put("id", nCopies(6, 1))
                 .buildOrThrow();
     }
 
@@ -442,10 +728,16 @@ public abstract class BaseTestHiveCoercion
                 .put(columnContext("1.2", "orc", "map_to_map"), "Unknown encoding kind: DIRECT_V2")
                 // Parquet
                 .put(columnContext("1.2", "parquet", "list_to_list"), "java.lang.UnsupportedOperationException: Cannot inspect java.util.ArrayList")
+                .put(columnContext("1.2", "parquet", "timestamp_row_to_row"), "Timestamp value coerced to a different value due to zone difference in HiveServer")
+                .put(columnContext("1.2", "parquet", "timestamp_list_to_list"), "java.lang.UnsupportedOperationException: Cannot inspect java.util.ArrayList")
+                .put(columnContext("1.2", "parquet", "timestamp_map_to_map"), "java.lang.UnsupportedOperationException: Cannot inspect java.util.ArrayList")
                 // Rcbinary
                 .put(columnContext("1.2", "rcbinary", "row_to_row"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryStruct")
                 .put(columnContext("1.2", "rcbinary", "list_to_list"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryArray")
                 .put(columnContext("1.2", "rcbinary", "map_to_map"), "java.util.HashMap cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryMap")
+                .put(columnContext("1.2", "rcbinary", "timestamp_row_to_row"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryStruct")
+                .put(columnContext("1.2", "rcbinary", "timestamp_list_to_list"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryArray")
+                .put(columnContext("1.2", "rcbinary", "timestamp_map_to_map"), "java.util.HashMap cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryMap")
                 //
                 // 2.1
                 // Parquet
@@ -472,6 +764,9 @@ public abstract class BaseTestHiveCoercion
                 .put(columnContext("3.1", "rcbinary", "row_to_row"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryStruct")
                 .put(columnContext("3.1", "rcbinary", "list_to_list"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryArray")
                 .put(columnContext("3.1", "rcbinary", "map_to_map"), "java.util.LinkedHashMap cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryMap")
+                .put(columnContext("3.1", "rcbinary", "timestamp_row_to_row"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryStruct")
+                .put(columnContext("3.1", "rcbinary", "timestamp_list_to_list"), "java.util.ArrayList cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryArray")
+                .put(columnContext("3.1", "rcbinary", "timestamp_map_to_map"), "java.util.LinkedHashMap cannot be cast to org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryMap")
                 .buildOrThrow();
     }
 
@@ -509,7 +804,7 @@ public abstract class BaseTestHiveCoercion
         for (int sqlIndex = 1; sqlIndex <= columns.size(); sqlIndex++) {
             String column = columns.get(sqlIndex - 1);
 
-            if (column.equals("row_to_row") || column.equals("map_to_map")) {
+            if (column.contains("row_to_row") || column.contains("map_to_map")) {
                 assertEqualsIgnoreOrder(
                         actual.column(sqlIndex),
                         column(expectedRows, sqlIndex),
@@ -517,7 +812,7 @@ public abstract class BaseTestHiveCoercion
                 continue;
             }
 
-            if (column.equals("list_to_list")) {
+            if (column.contains("list_to_list")) {
                 assertEqualsIgnoreOrder(
                         engine == Engine.TRINO ? extract(actual.column(sqlIndex)) : actual.column(sqlIndex),
                         column(expectedRows, sqlIndex),
@@ -548,10 +843,23 @@ public abstract class BaseTestHiveCoercion
                 row("bigint_to_varchar", "varchar"),
                 row("float_to_double", "double"),
                 row("double_to_float", floatType),
+                row("double_to_string", "varchar"),
+                row("double_to_bounded_varchar", "varchar(12)"),
+                row("double_infinity_to_string", "varchar"),
                 row("shortdecimal_to_shortdecimal", "decimal(18,4)"),
                 row("shortdecimal_to_longdecimal", "decimal(20,4)"),
                 row("longdecimal_to_shortdecimal", "decimal(12,2)"),
                 row("longdecimal_to_longdecimal", "decimal(38,14)"),
+                row("longdecimal_to_tinyint", "tinyint"),
+                row("shortdecimal_to_tinyint", "tinyint"),
+                row("longdecimal_to_smallint", "smallint"),
+                row("shortdecimal_to_smallint", "smallint"),
+                row("too_big_shortdecimal_to_smallint", "smallint"),
+                row("longdecimal_to_int", "integer"),
+                row("shortdecimal_to_int", "integer"),
+                row("shortdecimal_with_0_scale_to_int", "integer"),
+                row("longdecimal_to_bigint", "bigint"),
+                row("shortdecimal_to_bigint", "bigint"),
                 row("float_to_decimal", "decimal(10,5)"),
                 row("double_to_decimal", "decimal(10,5)"),
                 row("decimal_to_float", floatType),
@@ -562,8 +870,15 @@ public abstract class BaseTestHiveCoercion
                 row("long_decimal_to_bounded_varchar", "varchar(30)"),
                 row("varchar_to_bigger_varchar", "varchar(4)"),
                 row("varchar_to_smaller_varchar", "varchar(2)"),
+                row("varchar_to_date", "date"),
+                row("varchar_to_distant_date", "date"),
                 row("char_to_bigger_char", "char(4)"),
                 row("char_to_smaller_char", "char(2)"),
+                row("timestamp_to_string", "varchar"),
+                row("timestamp_to_bounded_varchar", "varchar(30)"),
+                row("timestamp_to_smaller_varchar", "varchar(4)"),
+                row("smaller_varchar_to_timestamp", "timestamp(3)"),
+                row("varchar_to_timestamp", "timestamp(3)"),
                 row("id", "bigint"));
     }
 
@@ -594,10 +909,23 @@ public abstract class BaseTestHiveCoercion
                 .put("bigint_to_varchar", VARCHAR)
                 .put("float_to_double", DOUBLE)
                 .put("double_to_float", floatType)
+                .put("double_to_string", VARCHAR)
+                .put("double_to_bounded_varchar", VARCHAR)
+                .put("double_infinity_to_string", VARCHAR)
                 .put("shortdecimal_to_shortdecimal", DECIMAL)
                 .put("shortdecimal_to_longdecimal", DECIMAL)
                 .put("longdecimal_to_shortdecimal", DECIMAL)
                 .put("longdecimal_to_longdecimal", DECIMAL)
+                .put("longdecimal_to_tinyint", TINYINT)
+                .put("shortdecimal_to_tinyint", TINYINT)
+                .put("longdecimal_to_smallint", SMALLINT)
+                .put("shortdecimal_to_smallint", SMALLINT)
+                .put("too_big_shortdecimal_to_smallint", SMALLINT)
+                .put("longdecimal_to_int", INTEGER)
+                .put("shortdecimal_to_int", INTEGER)
+                .put("shortdecimal_with_0_scale_to_int", INTEGER)
+                .put("longdecimal_to_bigint", BIGINT)
+                .put("shortdecimal_to_bigint", BIGINT)
                 .put("float_to_decimal", DECIMAL)
                 .put("double_to_decimal", DECIMAL)
                 .put("decimal_to_float", floatType)
@@ -608,10 +936,22 @@ public abstract class BaseTestHiveCoercion
                 .put("long_decimal_to_bounded_varchar", VARCHAR)
                 .put("varchar_to_bigger_varchar", VARCHAR)
                 .put("varchar_to_smaller_varchar", VARCHAR)
+                .put("varchar_to_date", DATE)
+                .put("varchar_to_distant_date", DATE)
                 .put("char_to_bigger_char", CHAR)
                 .put("char_to_smaller_char", CHAR)
                 .put("id", BIGINT)
                 .put("nested_field", BIGINT)
+                .put("timestamp_to_string", VARCHAR)
+                .put("timestamp_to_bounded_varchar", VARCHAR)
+                .put("timestamp_to_smaller_varchar", VARCHAR)
+                .put("smaller_varchar_to_timestamp", TIMESTAMP)
+                .put("varchar_to_timestamp", TIMESTAMP)
+                .put("timestamp_to_varchar", VARCHAR)
+                .put("timestamp_row_to_row", engine == Engine.TRINO ? JAVA_OBJECT : STRUCT)   // row
+                .put("timestamp_list_to_list", ARRAY) // list
+                .put("timestamp_map_to_map", JAVA_OBJECT) // map
+                .put("string_to_timestamp", TIMESTAMP)
                 .buildOrThrow();
 
         assertThat(queryResult)
@@ -634,10 +974,23 @@ public abstract class BaseTestHiveCoercion
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN bigint_to_varchar bigint_to_varchar string", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN float_to_double float_to_double double", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN double_to_float double_to_float %s", tableName, floatType));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN double_to_string double_to_string string", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN double_to_bounded_varchar double_to_bounded_varchar varchar(12)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN double_infinity_to_string double_infinity_to_string string", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_shortdecimal shortdecimal_to_shortdecimal DECIMAL(18,4)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_longdecimal shortdecimal_to_longdecimal DECIMAL(20,4)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_shortdecimal longdecimal_to_shortdecimal DECIMAL(12,2)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_longdecimal longdecimal_to_longdecimal DECIMAL(38,14)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_tinyint longdecimal_to_tinyint TINYINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_tinyint shortdecimal_to_tinyint TINYINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_smallint longdecimal_to_smallint SMALLINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_smallint shortdecimal_to_smallint SMALLINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN too_big_shortdecimal_to_smallint too_big_shortdecimal_to_smallint SMALLINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_int longdecimal_to_int INTEGER", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_int shortdecimal_to_int INTEGER", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_with_0_scale_to_int shortdecimal_with_0_scale_to_int INTEGER", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN longdecimal_to_bigint longdecimal_to_bigint BIGINT", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN shortdecimal_to_bigint shortdecimal_to_bigint BIGINT", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN float_to_decimal float_to_decimal DECIMAL(10,5)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN double_to_decimal double_to_decimal DECIMAL(10,5)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN decimal_to_float decimal_to_float %s", tableName, floatType));
@@ -648,8 +1001,15 @@ public abstract class BaseTestHiveCoercion
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN long_decimal_to_bounded_varchar long_decimal_to_bounded_varchar varchar(30)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN varchar_to_bigger_varchar varchar_to_bigger_varchar varchar(4)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN varchar_to_smaller_varchar varchar_to_smaller_varchar varchar(2)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN varchar_to_date varchar_to_date date", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN varchar_to_distant_date varchar_to_distant_date date", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN char_to_bigger_char char_to_bigger_char char(4)", tableName));
         onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN char_to_smaller_char char_to_smaller_char char(2)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_to_string timestamp_to_string string", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_to_bounded_varchar timestamp_to_bounded_varchar varchar(30)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN timestamp_to_smaller_varchar timestamp_to_smaller_varchar varchar(4)", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN smaller_varchar_to_timestamp smaller_varchar_to_timestamp timestamp", tableName));
+        onHive().executeQuery(format("ALTER TABLE %s CHANGE COLUMN varchar_to_timestamp varchar_to_timestamp timestamp", tableName));
     }
 
     protected static TableInstance<?> mutableTableInstanceOf(TableDefinition tableDefinition)
@@ -735,5 +1095,15 @@ public abstract class BaseTestHiveCoercion
     private static QueryResult execute(Engine engine, String sql, QueryExecutor.QueryParam... params)
     {
         return engine.queryExecutor().executeQuery(sql, params);
+    }
+
+    private static void setHiveTimestampPrecision(HiveTimestampPrecision hiveTimestampPrecision)
+    {
+        try {
+            setSessionProperty(onTrino().getConnection(), "hive.timestamp_precision", hiveTimestampPrecision.name());
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

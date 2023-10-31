@@ -21,8 +21,7 @@ import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TestView;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.stream.Stream;
 
@@ -35,18 +34,11 @@ import static org.testng.Assert.assertEquals;
 
 // With case-insensitive-name-matching enabled colliding schema/table names are considered as errors.
 // Some tests here create colliding names which can cause any other concurrent test to fail.
-@Test(singleThreaded = true)
 public class TestBigQueryCaseInsensitiveMapping
         // TODO extends BaseCaseInsensitiveMappingTest - https://github.com/trinodb/trino/issues/7864
         extends AbstractTestQueryFramework
 {
-    protected BigQuerySqlExecutor bigQuerySqlExecutor;
-
-    @BeforeClass(alwaysRun = true)
-    public void initBigQueryExecutor()
-    {
-        this.bigQuerySqlExecutor = new BigQuerySqlExecutor();
-    }
+    private final BigQuerySqlExecutor bigQuerySqlExecutor = new BigQuerySqlExecutor();
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -216,11 +208,11 @@ public class TestBigQueryCaseInsensitiveMapping
                     // listing must not fail but will filter out ambiguous names
                     assertThat(computeActual("SHOW TABLES FROM " + schema).getOnlyColumn()).doesNotContain("casesensitivename");
                     assertQueryReturnsEmptyResult("SELECT table_name FROM information_schema.tables WHERE table_schema = '" + schema + "'");
+                    assertQueryReturnsEmptyResult("SELECT column_name FROM information_schema.columns WHERE table_schema = '" + schema + "' AND table_name = 'casesensitivename'");
 
                     // queries which use the ambiguous object must fail
                     assertQueryFails("SHOW CREATE TABLE " + schema + ".casesensitivename", "Found ambiguous names in BigQuery.*");
                     assertQueryFails("SHOW COLUMNS FROM " + schema + ".casesensitivename", "Found ambiguous names in BigQuery.*");
-                    assertQueryFails("SELECT column_name FROM information_schema.columns WHERE table_schema = '" + schema + "' AND table_name = 'casesensitivename'", "Found ambiguous names in BigQuery.*");
                     assertQueryFails("SELECT * FROM " + schema + ".casesensitivename", "Found ambiguous names in BigQuery.*");
                     // TODO: test with INSERT and CTAS https://github.com/trinodb/trino/issues/6868, https://github.com/trinodb/trino/issues/6869
                 }

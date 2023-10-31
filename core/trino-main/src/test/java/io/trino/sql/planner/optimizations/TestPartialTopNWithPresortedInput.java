@@ -31,7 +31,7 @@ import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.tree.LongLiteral;
 import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -91,7 +91,6 @@ public class TestPartialTopNWithPresortedInput
                     if (tableHandle.getTableName().equals(tableA)) {
                         return new ConnectorTableProperties(
                                 TupleDomain.all(),
-                                Optional.empty(),
                                 Optional.empty(),
                                 Optional.empty(),
                                 ImmutableList.of(new SortingProperty<>(columnHandleA, ASC_NULLS_FIRST)));

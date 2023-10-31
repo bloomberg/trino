@@ -13,14 +13,13 @@
  */
 package io.trino.plugin.hive.metastore.file;
 
-import io.trino.hdfs.HdfsEnvironment;
+import com.google.inject.Inject;
+import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.plugin.hive.HideDeltaLakeTables;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.spi.security.ConnectorIdentity;
-
-import javax.inject.Inject;
 
 import java.util.Optional;
 
@@ -30,10 +29,10 @@ public class FileHiveMetastoreFactory
     private final FileHiveMetastore metastore;
 
     @Inject
-    public FileHiveMetastoreFactory(NodeVersion nodeVersion, HdfsEnvironment hdfsEnvironment, @HideDeltaLakeTables boolean hideDeltaLakeTables, FileHiveMetastoreConfig config)
+    public FileHiveMetastoreFactory(NodeVersion nodeVersion, TrinoFileSystemFactory fileSystemFactory, @HideDeltaLakeTables boolean hideDeltaLakeTables, FileHiveMetastoreConfig config)
     {
         // file metastore does not support impersonation, so just create a single shared instance
-        metastore = new FileHiveMetastore(nodeVersion, hdfsEnvironment, hideDeltaLakeTables, config);
+        metastore = new FileHiveMetastore(nodeVersion, fileSystemFactory, hideDeltaLakeTables, config);
     }
 
     @Override

@@ -15,6 +15,7 @@ package io.trino.execution;
 
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.Metadata;
@@ -26,8 +27,6 @@ import io.trino.spi.TrinoException;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.RenameTable;
-
-import javax.inject.Inject;
 
 import java.util.List;
 
@@ -87,15 +86,15 @@ public class RenameTableTask
         }
 
         RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, tableName);
-        if (redirectionAwareTableHandle.getTableHandle().isEmpty()) {
+        if (redirectionAwareTableHandle.tableHandle().isEmpty()) {
             if (!statement.isExists()) {
                 throw semanticException(TABLE_NOT_FOUND, statement, "Table '%s' does not exist", tableName);
             }
             return immediateVoidFuture();
         }
 
-        TableHandle tableHandle = redirectionAwareTableHandle.getTableHandle().get();
-        QualifiedObjectName source = redirectionAwareTableHandle.getRedirectedTableName().orElse(tableName);
+        TableHandle tableHandle = redirectionAwareTableHandle.tableHandle().get();
+        QualifiedObjectName source = redirectionAwareTableHandle.redirectedTableName().orElse(tableName);
         QualifiedObjectName target = createTargetQualifiedObjectName(source, statement.getTarget());
         if (metadata.getCatalogHandle(session, target.getCatalogName()).isEmpty()) {
             throw semanticException(CATALOG_NOT_FOUND, statement, "Target catalog '%s' does not exist", target.getCatalogName());

@@ -41,12 +41,13 @@ import io.trino.orc.metadata.statistics.StatisticsHasher;
 import io.trino.orc.metadata.statistics.StringStatistics;
 import io.trino.orc.metadata.statistics.StringStatisticsBuilder;
 import io.trino.orc.metadata.statistics.StripeStatistics;
+import io.trino.orc.metadata.statistics.TimeMicrosStatisticsBuilder;
 import io.trino.orc.metadata.statistics.TimestampStatisticsBuilder;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.ColumnarMap;
-import io.trino.spi.block.ColumnarRow;
+import io.trino.spi.block.RowBlock;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
@@ -93,6 +94,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.TimeType.TIME_MICROS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MICROS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_NANOS;
@@ -628,6 +630,11 @@ public class OrcWriteValidation
                 fieldExtractor = ignored -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
+            else if (TIME_MICROS.equals(type)) {
+                statisticsBuilder = new TimeMicrosStatisticsBuilder(new NoOpBloomFilterBuilder());
+                fieldExtractor = ignored -> ImmutableList.of();
+                fieldBuilders = ImmutableList.of();
+            }
             else if (DATE.equals(type)) {
                 statisticsBuilder = new DateStatisticsBuilder(new NoOpBloomFilterBuilder());
                 fieldExtractor = ignored -> ImmutableList.of();
@@ -680,14 +687,7 @@ public class OrcWriteValidation
             }
             else if (type instanceof RowType) {
                 statisticsBuilder = new CountStatisticsBuilder();
-                fieldExtractor = block -> {
-                    ColumnarRow columnarRow = ColumnarRow.toColumnarRow(block);
-                    ImmutableList.Builder<Block> fields = ImmutableList.builder();
-                    for (int index = 0; index < columnarRow.getFieldCount(); index++) {
-                        fields.add(columnarRow.getField(index));
-                    }
-                    return fields.build();
-                };
+                fieldExtractor = block -> RowBlock.getRowFieldsFromBlock(block.getLoadedBlock());
                 fieldBuilders = type.getTypeParameters().stream()
                         .map(ColumnStatisticsValidation::new)
                         .collect(toImmutableList());

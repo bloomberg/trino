@@ -13,19 +13,28 @@
  */
 package io.trino.filesystem;
 
-import static com.google.common.base.Preconditions.checkArgument;
-
 public final class Locations
 {
     private Locations() {}
 
+    /**
+     * @deprecated use {@link Location#appendPath(String)} instead
+     */
+    @Deprecated
     public static String appendPath(String location, String path)
     {
-        checkArgument(location.indexOf('?') < 0, "location contains a query string: %s", location);
-        checkArgument(location.indexOf('#') < 0, "location contains a fragment: %s", location);
         if (!location.endsWith("/")) {
             location += "/";
         }
         return location + path;
+    }
+
+    /**
+     * Verifies whether the two provided directory location parameters point to the same actual location.
+     */
+    public static boolean areDirectoryLocationsEquivalent(Location leftLocation, Location rightLocation)
+    {
+        return leftLocation.equals(rightLocation) ||
+                leftLocation.removeOneTrailingSlash().equals(rightLocation.removeOneTrailingSlash());
     }
 }

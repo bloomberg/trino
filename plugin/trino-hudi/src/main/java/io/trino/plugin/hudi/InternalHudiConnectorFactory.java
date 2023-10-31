@@ -16,25 +16,28 @@ package io.trino.plugin.hudi;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Injector;
 import com.google.inject.Key;
+import com.google.inject.Module;
 import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.event.client.EventModule;
 import io.airlift.json.JsonModule;
-import io.trino.filesystem.hdfs.HdfsFileSystemModule;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
+import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.filesystem.manager.FileSystemModule;
 import io.trino.hdfs.HdfsModule;
 import io.trino.hdfs.authentication.HdfsAuthenticationModule;
+import io.trino.hdfs.gcs.HiveGcsModule;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorPageSourceProvider;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorSplitManager;
 import io.trino.plugin.base.classloader.ClassLoaderSafeNodePartitioningProvider;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
-import io.trino.plugin.hive.azure.HiveAzureModule;
-import io.trino.plugin.hive.gcs.HiveGcsModule;
+import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.metastore.HiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastoreModule;
-import io.trino.plugin.hive.s3.HiveS3Module;
 import io.trino.spi.NodeManager;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.Connector;
@@ -49,7 +52,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-public class InternalHudiConnectorFactory
+public final class InternalHudiConnectorFactory
 {
     private InternalHudiConnectorFactory() {}
 
@@ -57,7 +60,8 @@ public class InternalHudiConnectorFactory
             String catalogName,
             Map<String, String> config,
             ConnectorContext context,
-            Optional<HiveMetastore> metastore)
+            Optional<HiveMetastore> metastore,
+            Optional<TrinoFileSystemFactory> fileSystemFactory)
     {
         ClassLoader classLoader = InternalHudiConnectorFactory.class.getClassLoader();
         try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
@@ -68,13 +72,16 @@ public class InternalHudiConnectorFactory
                     new HudiModule(),
                     new HiveMetastoreModule(metastore),
                     new HdfsModule(),
-                    new HiveS3Module(),
                     new HiveGcsModule(),
-                    new HiveAzureModule(),
                     new HdfsAuthenticationModule(),
-                    new HdfsFileSystemModule(),
+                    fileSystemFactory
+                            .map(factory -> (Module) binder -> binder.bind(TrinoFileSystemFactory.class).toInstance(factory))
+                            .orElseGet(FileSystemModule::new),
                     new MBeanServerModule(),
                     binder -> {
+                        binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
+                        binder.bind(Tracer.class).toInstance(context.getTracer());
+                        binder.bind(NodeVersion.class).toInstance(new NodeVersion(context.getNodeManager().getCurrentNode().getVersion()));
                         binder.bind(NodeManager.class).toInstance(context.getNodeManager());
                         binder.bind(TypeManager.class).toInstance(context.getTypeManager());
                         binder.bind(CatalogName.class).toInstance(new CatalogName(catalogName));

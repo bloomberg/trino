@@ -18,14 +18,17 @@ import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
+import com.google.inject.Singleton;
 import com.google.inject.multibindings.Multibinder;
 import io.airlift.event.client.EventClient;
-import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.hdfs.HdfsNamenodeStats;
 import io.trino.hdfs.TrinoFileSystemCache;
 import io.trino.hdfs.TrinoFileSystemCacheStats;
 import io.trino.plugin.base.CatalogName;
+import io.trino.plugin.hive.avro.AvroFileWriterFactory;
+import io.trino.plugin.hive.avro.AvroPageSourceFactory;
 import io.trino.plugin.hive.fs.CachingDirectoryLister;
+import io.trino.plugin.hive.fs.TransactionScopeCachingDirectoryListerFactory;
 import io.trino.plugin.hive.line.CsvFileWriterFactory;
 import io.trino.plugin.hive.line.CsvPageSourceFactory;
 import io.trino.plugin.hive.line.JsonFileWriterFactory;
@@ -49,14 +52,10 @@ import io.trino.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.plugin.hive.rcfile.RcFilePageSourceFactory;
-import io.trino.plugin.hive.s3select.S3SelectRecordCursorProvider;
-import io.trino.plugin.hive.s3select.TrinoS3ClientFactory;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSplitManager;
-
-import javax.inject.Singleton;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
@@ -87,13 +86,8 @@ public class HiveModule
         newOptionalBinder(binder, HiveMaterializedViewPropertiesProvider.class)
                 .setDefault().toInstance(ImmutableList::of);
 
-        binder.bind(TrinoS3ClientFactory.class).in(Scopes.SINGLETON);
-
         binder.bind(CachingDirectoryLister.class).in(Scopes.SINGLETON);
         newExporter(binder).export(CachingDirectoryLister.class).withGeneratedName();
-
-        binder.bind(NamenodeStats.class).in(Scopes.SINGLETON);
-        newExporter(binder).export(NamenodeStats.class).withGeneratedName();
 
         binder.bind(HiveWriterStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(HiveWriterStats.class).withGeneratedName();
@@ -110,6 +104,7 @@ public class HiveModule
                 .setDefault().to(DefaultHiveMaterializedViewMetadataFactory.class).in(Scopes.SINGLETON);
         newOptionalBinder(binder, TransactionalMetadataFactory.class)
                 .setDefault().to(HiveMetadataFactory.class).in(Scopes.SINGLETON);
+        binder.bind(TransactionScopeCachingDirectoryListerFactory.class).in(Scopes.SINGLETON);
         binder.bind(HiveTransactionManager.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorSplitManager.class).to(HiveSplitManager.class).in(Scopes.SINGLETON);
         newExporter(binder).export(ConnectorSplitManager.class).as(generator -> generator.generatedNameOf(HiveSplitManager.class));
@@ -126,8 +121,9 @@ public class HiveModule
         newExporter(binder).export(TrinoFileSystemCacheStats.class)
                 .as(generator -> generator.generatedNameOf(io.trino.plugin.hive.fs.TrinoFileSystemCache.class));
 
-        configBinder(binder).bindConfig(HiveFormatsConfig.class);
-        binder.bind(TrinoFileSystemFactory.class).to(HdfsFileSystemFactory.class).in(Scopes.SINGLETON);
+        binder.bind(HdfsNamenodeStats.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(HdfsNamenodeStats.class)
+                .as(generator -> generator.generatedNameOf(NamenodeStats.class));
 
         Multibinder<HivePageSourceFactory> pageSourceFactoryBinder = newSetBinder(binder, HivePageSourceFactory.class);
         pageSourceFactoryBinder.addBinding().to(CsvPageSourceFactory.class).in(Scopes.SINGLETON);
@@ -139,11 +135,7 @@ public class HiveModule
         pageSourceFactoryBinder.addBinding().to(OrcPageSourceFactory.class).in(Scopes.SINGLETON);
         pageSourceFactoryBinder.addBinding().to(ParquetPageSourceFactory.class).in(Scopes.SINGLETON);
         pageSourceFactoryBinder.addBinding().to(RcFilePageSourceFactory.class).in(Scopes.SINGLETON);
-
-        Multibinder<HiveRecordCursorProvider> recordCursorProviderBinder = newSetBinder(binder, HiveRecordCursorProvider.class);
-        recordCursorProviderBinder.addBinding().to(S3SelectRecordCursorProvider.class).in(Scopes.SINGLETON);
-
-        binder.bind(GenericHiveRecordCursorProvider.class).in(Scopes.SINGLETON);
+        pageSourceFactoryBinder.addBinding().to(AvroPageSourceFactory.class).in(Scopes.SINGLETON);
 
         Multibinder<HiveFileWriterFactory> fileWriterFactoryBinder = newSetBinder(binder, HiveFileWriterFactory.class);
         binder.bind(OrcFileWriterFactory.class).in(Scopes.SINGLETON);
@@ -158,6 +150,7 @@ public class HiveModule
         fileWriterFactoryBinder.addBinding().to(SimpleSequenceFileWriterFactory.class).in(Scopes.SINGLETON);
         fileWriterFactoryBinder.addBinding().to(OrcFileWriterFactory.class).in(Scopes.SINGLETON);
         fileWriterFactoryBinder.addBinding().to(RcFileFileWriterFactory.class).in(Scopes.SINGLETON);
+        fileWriterFactoryBinder.addBinding().to(AvroFileWriterFactory.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(ParquetReaderConfig.class);
         configBinder(binder).bindConfig(ParquetWriterConfig.class);

@@ -15,7 +15,6 @@ package io.trino.sql.query;
 
 import io.trino.Session;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
@@ -28,19 +27,12 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 @TestInstance(PER_CLASS)
 public class TestRecursiveCte
 {
-    private QueryAssertions assertions;
-
-    @BeforeAll
-    public void init()
-    {
-        assertions = new QueryAssertions();
-    }
+    private final QueryAssertions assertions = new QueryAssertions();
 
     @AfterAll
     public void teardown()
     {
         assertions.close();
-        assertions = null;
     }
 
     @Test
@@ -327,5 +319,32 @@ public class TestRecursiveCte
                         "        (5, 2, 'derived',    2), " +
                         "        (6, 3, 'derived',    1), " +
                         "        (7, 5, 'derived',    2)");
+    }
+
+    @Test
+    public void testLambda()
+    {
+        assertThat(assertions.query("""
+                WITH RECURSIVE t(list) AS (
+                    SELECT ARRAY[0]
+                    UNION ALL
+                    SELECT list || 0
+                    FROM t
+                    WHERE any_match(list, x -> x = x) AND cardinality(list) < 4)
+                SELECT * FROM t
+                """))
+                .matches("VALUES (ARRAY[0]), (ARRAY[0, 0]), (ARRAY[0, 0, 0]), (ARRAY[0, 0, 0, 0])");
+
+        // lambda contains a symbol other than lambda argument (a)
+        assertThat(assertions.query("""
+                WITH RECURSIVE t(list, a) AS (
+                    SELECT ARRAY[0], 1
+                    UNION ALL
+                    SELECT list || a, a + 1
+                    FROM t
+                    WHERE all_match(list, x -> x < a) AND cardinality(list) < 4)
+                SELECT list FROM t
+                """))
+                .matches("VALUES (ARRAY[0]), (ARRAY[0, 1]), (ARRAY[0, 1, 2]), (ARRAY[0, 1, 2, 3])");
     }
 }

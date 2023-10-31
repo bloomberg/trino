@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.Session;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.TableProperties;
@@ -66,6 +67,7 @@ import io.trino.sql.planner.plan.TableFinishNode;
 import io.trino.sql.planner.plan.TableFunctionNode;
 import io.trino.sql.planner.plan.TableFunctionProcessorNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.sql.planner.plan.TableUpdateNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.sql.planner.plan.TopNNode;
 import io.trino.sql.planner.plan.TopNRankingNode;
@@ -75,8 +77,6 @@ import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.SymbolReference;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -290,19 +290,24 @@ public final class StreamPropertyDerivations
                     .filter(entry -> !entry.getValue().isNull())  // TODO consider allowing nulls
                     .forEach(entry -> constants.add(entry.getKey()));
 
-            Optional<Set<Symbol>> streamPartitionSymbols = layout.getStreamPartitioningColumns()
-                    .flatMap(columns -> getNonConstantSymbols(columns, assignments, constants));
+            Optional<Set<Symbol>> partitioningSymbols = layout.getTablePartitioning().flatMap(partitioning -> {
+                if (!partitioning.isSingleSplitPerPartition()) {
+                    return Optional.empty();
+                }
+                Optional<Set<Symbol>> symbols = getNonConstantSymbols(partitioning.getPartitioningColumns(), assignments, constants);
+                // if we are partitioned on empty set, we must say multiple of unknown partitioning, because
+                // the connector does not guarantee a single split in this case (since it might not understand
+                // that the value is a constant).
+                if (symbols.isPresent() && symbols.get().isEmpty()) {
+                    return Optional.empty();
+                }
+                return symbols;
+            });
 
-            // if we are partitioned on empty set, we must say multiple of unknown partitioning, because
-            // the connector does not guarantee a single split in this case (since it might not understand
-            // that the value is a constant).
-            if (streamPartitionSymbols.isPresent() && streamPartitionSymbols.get().isEmpty()) {
-                return new StreamProperties(MULTIPLE, Optional.empty(), false);
-            }
-            return new StreamProperties(MULTIPLE, streamPartitionSymbols, false);
+            return new StreamProperties(MULTIPLE, partitioningSymbols, false);
         }
 
-        private static Optional<Set<Symbol>> getNonConstantSymbols(Set<ColumnHandle> columnHandles, Map<ColumnHandle, Symbol> assignments, Set<ColumnHandle> globalConstants)
+        private static Optional<Set<Symbol>> getNonConstantSymbols(List<ColumnHandle> columnHandles, Map<ColumnHandle, Symbol> assignments, Set<ColumnHandle> globalConstants)
         {
             // Strip off the constants from the partitioning columns (since those are not required for translation)
             Set<ColumnHandle> constantsStrippedPartitionColumns = columnHandles.stream()
@@ -422,6 +427,13 @@ public final class StreamPropertyDerivations
         public StreamProperties visitTableDelete(TableDeleteNode node, List<StreamProperties> inputProperties)
         {
             // delete only outputs a single row count
+            return StreamProperties.singleStream();
+        }
+
+        @Override
+        public StreamProperties visitTableUpdate(TableUpdateNode node, List<StreamProperties> inputProperties)
+        {
+            // update only outputs a single row count
             return StreamProperties.singleStream();
         }
 

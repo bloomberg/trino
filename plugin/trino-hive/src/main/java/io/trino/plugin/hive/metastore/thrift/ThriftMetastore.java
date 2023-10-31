@@ -35,6 +35,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,9 +66,13 @@ public interface ThriftMetastore
 
     List<String> getAllTables(String databaseName);
 
+    Optional<List<SchemaTableName>> getAllTables();
+
     List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue);
 
     List<String> getAllViews(String databaseName);
+
+    Optional<List<SchemaTableName>> getAllViews();
 
     Optional<Database> getDatabase(String databaseName);
 
@@ -220,4 +225,14 @@ public interface ThriftMetastore
     {
         throw new UnsupportedOperationException();
     }
+
+    Optional<io.trino.hive.thrift.metastore.Function> getFunction(String databaseName, String functionName);
+
+    Collection<String> getFunctions(String databaseName, String functionNamePattern);
+
+    void createFunction(io.trino.hive.thrift.metastore.Function function);
+
+    void alterFunction(io.trino.hive.thrift.metastore.Function function);
+
+    void dropFunction(String databaseName, String functionName);
 }

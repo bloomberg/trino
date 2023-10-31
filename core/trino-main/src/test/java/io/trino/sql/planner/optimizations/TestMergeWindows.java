@@ -26,19 +26,16 @@ import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.iterative.rule.GatherAndMergeWindows;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantIdentityProjections;
 import io.trino.sql.planner.plan.DataOrganizationSpecification;
-import io.trino.sql.planner.plan.WindowNode;
 import io.trino.sql.tree.FrameBound;
 import io.trino.sql.tree.WindowFrame;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static io.trino.sql.planner.PlanOptimizers.columnPruningRules;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.any;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.anyNot;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
@@ -101,12 +98,7 @@ public class TestMergeWindows
 
     public TestMergeWindows()
     {
-        this(ImmutableMap.of());
-    }
-
-    public TestMergeWindows(Map<String, String> sessionProperties)
-    {
-        super(sessionProperties);
+        super(ImmutableMap.of());
 
         specificationA = specification(
                 ImmutableList.of(SUPPKEY_ALIAS),
@@ -164,8 +156,7 @@ public class TestMergeWindows
                                         window(windowMatcherBuilder -> windowMatcherBuilder
                                                         .specification(specificationB)
                                                         .addFunction(functionCall("sum", COMMON_FRAME, ImmutableList.of(QUANTITY_ALIAS))),
-                                                anyNot(WindowNode.class,
-                                                        LINEITEM_TABLESCAN_DOQSS)))));  // should be anyTree(LINEITEM_TABLESCAN_DOQSS) but anyTree does not handle zero nodes case correctly
+                                                LINEITEM_TABLESCAN_DOQSS))));  // should be anyTree(LINEITEM_TABLESCAN_DOQSS) but anyTree does not handle zero nodes case correctly
 
         assertPlan(sql, pattern);
     }

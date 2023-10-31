@@ -15,15 +15,15 @@ package io.trino.plugin.deltalake.transactionlog.writer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.airlift.json.ObjectMapperProvider;
+import io.trino.filesystem.Location;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
-import io.trino.plugin.deltalake.transactionlog.CdfFileEntry;
+import io.trino.plugin.deltalake.transactionlog.CdcEntry;
 import io.trino.plugin.deltalake.transactionlog.CommitInfoEntry;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeTransactionLogEntry;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.plugin.deltalake.transactionlog.RemoveFileEntry;
 import io.trino.spi.connector.ConnectorSession;
-import org.apache.hadoop.fs.Path;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -81,9 +81,9 @@ public class TransactionLogWriter
         entries.add(DeltaLakeTransactionLogEntry.removeFileEntry(removeFileEntry));
     }
 
-    public void appendCdfFileEntry(CdfFileEntry cdfFileEntry)
+    public void appendCdcEntry(CdcEntry cdcEntry)
     {
-        entries.add(DeltaLakeTransactionLogEntry.cdfFileEntry(cdfFileEntry));
+        entries.add(DeltaLakeTransactionLogEntry.cdcEntry(cdcEntry));
     }
 
     public boolean isUnsafe()
@@ -98,7 +98,7 @@ public class TransactionLogWriter
 
         String transactionLogLocation = getTransactionLogDir(tableLocation);
         CommitInfoEntry commitInfo = requireNonNull(commitInfoEntry.get().getCommitInfo(), "commitInfoEntry.get().getCommitInfo() is null");
-        String logEntry = getTransactionLogJsonEntryPath(transactionLogLocation, commitInfo.getVersion());
+        Location logEntry = getTransactionLogJsonEntryPath(transactionLogLocation, commitInfo.getVersion());
 
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
         writeEntry(bos, commitInfoEntry.get());
@@ -107,7 +107,7 @@ public class TransactionLogWriter
         }
 
         String clusterId = commitInfoEntry.get().getCommitInfo().getClusterId();
-        logSynchronizer.write(session, clusterId, new Path(logEntry), bos.toByteArray());
+        logSynchronizer.write(session, clusterId, logEntry, bos.toByteArray());
     }
 
     private void writeEntry(OutputStream outputStream, DeltaLakeTransactionLogEntry deltaLakeTransactionLogEntry)

@@ -15,10 +15,11 @@ package io.trino.block;
 
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.ByteArrayBlock;
 import io.trino.spi.block.ByteArrayBlockBuilder;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -50,7 +51,7 @@ public class TestByteArrayBlock
         Slice[] expectedValues = createTestValue(100);
         BlockBuilder emptyBlockBuilder = new ByteArrayBlockBuilder(null, 0);
 
-        BlockBuilder blockBuilder = new ByteArrayBlockBuilder(null, expectedValues.length);
+        ByteArrayBlockBuilder blockBuilder = new ByteArrayBlockBuilder(null, expectedValues.length);
         assertEquals(blockBuilder.getSizeInBytes(), emptyBlockBuilder.getSizeInBytes());
         assertEquals(blockBuilder.getRetainedSizeInBytes(), emptyBlockBuilder.getRetainedSizeInBytes());
 
@@ -58,7 +59,7 @@ public class TestByteArrayBlock
         assertTrue(blockBuilder.getSizeInBytes() > emptyBlockBuilder.getSizeInBytes());
         assertTrue(blockBuilder.getRetainedSizeInBytes() > emptyBlockBuilder.getRetainedSizeInBytes());
 
-        blockBuilder = blockBuilder.newBlockBuilderLike(null);
+        blockBuilder = (ByteArrayBlockBuilder) blockBuilder.newBlockBuilderLike(null);
         assertEquals(blockBuilder.getSizeInBytes(), emptyBlockBuilder.getSizeInBytes());
         assertEquals(blockBuilder.getRetainedSizeInBytes(), emptyBlockBuilder.getRetainedSizeInBytes());
     }
@@ -83,9 +84,8 @@ public class TestByteArrayBlock
 
     private void assertFixedWithValues(Slice[] expectedValues)
     {
-        BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
-        assertBlock(blockBuilder, expectedValues);
-        assertBlock(blockBuilder.build(), expectedValues);
+        Block block = createBlockBuilderWithValues(expectedValues).build();
+        assertBlock(block, expectedValues);
     }
 
     private static BlockBuilder createBlockBuilderWithValues(Slice[] expectedValues)
@@ -95,14 +95,14 @@ public class TestByteArrayBlock
         return blockBuilder;
     }
 
-    private static void writeValues(Slice[] expectedValues, BlockBuilder blockBuilder)
+    private static void writeValues(Slice[] expectedValues, ByteArrayBlockBuilder blockBuilder)
     {
         for (Slice expectedValue : expectedValues) {
             if (expectedValue == null) {
                 blockBuilder.appendNull();
             }
             else {
-                blockBuilder.writeByte(expectedValue.getByte(0)).closeEntry();
+                blockBuilder.writeByte(expectedValue.getByte(0));
             }
         }
     }
