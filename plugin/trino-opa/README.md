@@ -4,6 +4,9 @@ This plugin enables Trino to use Open Policy Agent (OPA) as an authorization eng
 
 For more information on OPA, please refer to the Open Policy Agent [documentation](https://www.openpolicyagent.org/).
 
+> While every attempt will be made to keep backwards compatibility, this plugin is a recent addition
+> and as such the API may change.
+
 ## Configuration
 
 You will need to configure Trino to use the OPA plugin as its access control engine, then configure the

@@ -13,123 +13,97 @@
  */
 package io.trino.plugin.opa;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.json.JsonMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
+import io.trino.plugin.opa.HttpClientUtils.InstrumentedHttpClient;
+import io.trino.plugin.opa.HttpClientUtils.MockResponse;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.PrincipalType;
-import io.trino.spi.security.Privilege;
 import io.trino.spi.security.SystemSecurityContext;
 import io.trino.spi.security.TrinoPrincipal;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
-import java.io.IOException;
 import java.net.URI;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static com.google.common.net.MediaType.JSON_UTF_8;
-import static io.trino.plugin.opa.HttpClientUtils.InstrumentedHttpClient;
-import static io.trino.plugin.opa.RequestTestUtilities.assertJsonRequestsEqual;
 import static io.trino.plugin.opa.RequestTestUtilities.assertStringRequestsEqual;
+import static io.trino.plugin.opa.RequestTestUtilities.buildValidatingRequestHandler;
 import static io.trino.plugin.opa.TestHelpers.NO_ACCESS_RESPONSE;
 import static io.trino.plugin.opa.TestHelpers.OK_RESPONSE;
-import static io.trino.plugin.opa.TestHelpers.convertSystemSecurityContextToIdentityArgument;
 import static io.trino.plugin.opa.TestHelpers.createFailingTestCases;
 import static io.trino.plugin.opa.TestHelpers.createIllegalResponseTestCases;
+import static io.trino.plugin.opa.TestHelpers.createMockHttpClient;
+import static io.trino.plugin.opa.TestHelpers.createOpaAuthorizer;
 import static io.trino.plugin.opa.TestHelpers.systemSecurityContextFromIdentity;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class OpaAccessControlUnitTest
+public class TestOpaAccessControl
 {
     private static final URI OPA_SERVER_URI = URI.create("http://my-uri/");
-    private InstrumentedHttpClient mockClient;
-    private OpaAccessControl authorizer;
-    private final JsonMapper jsonMapper = new JsonMapper();
-    private Identity requestingIdentity;
-    private SystemSecurityContext requestingSecurityContext;
-
-    @BeforeEach
-    public void setupAuthorizer()
-    {
-        this.mockClient = new InstrumentedHttpClient(OPA_SERVER_URI, "POST", JSON_UTF_8.toString(), request -> OK_RESPONSE);
-        this.authorizer = (OpaAccessControl) new OpaAccessControlFactory().create(ImmutableMap.of("opa.policy.uri", OPA_SERVER_URI.toString()), Optional.of(mockClient));
-        this.requestingIdentity = Identity.ofUser("source-user");
-        this.requestingSecurityContext = systemSecurityContextFromIdentity(requestingIdentity);
-    }
-
-    @AfterEach
-    public void ensureRequestContextCorrect()
-            throws IOException
-    {
-        for (String request : mockClient.getRequests()) {
-            JsonNode parsedRequest = jsonMapper.readTree(request);
-            assertEquals(parsedRequest.at("/input/context/identity/user").asText(), requestingIdentity.getUser());
-        }
-    }
+    private final Identity requestingIdentity = Identity.ofUser("source-user");
+    private final SystemSecurityContext requestingSecurityContext = systemSecurityContextFromIdentity(requestingIdentity);
 
     @Test
     public void testResponseHasExtraFields()
     {
-        mockClient.setHandler(request -> new HttpClientUtils.MockResponse("""
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, 200,"""
                 {
                     "result": true,
                     "decision_id": "foo",
                     "some_debug_info": {"test": ""}
-                }
-                """,
-                200));
-        authorizer.checkCanShowRoles(requestingSecurityContext);
+                }"""));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+        authorizer.checkCanExecuteQuery(requestingIdentity);
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#noResourceActionTestCases")
-    public void testNoResourceAction(String actionName, BiConsumer<OpaAccessControl, SystemSecurityContext> method)
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#noResourceActionTestCases")
+    public void testNoResourceAction(String actionName, BiConsumer<OpaAccessControl, Identity> method)
     {
-        method.accept(authorizer, requestingSecurityContext);
-        ObjectNode expectedRequest = jsonMapper.createObjectNode().put("operation", actionName);
-        assertJsonRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
+        method.accept(authorizer, requestingIdentity);
+        String expectedRequest = """
+                {
+                    "operation": "%s"
+                }""".formatted(actionName);
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
     }
 
     @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#noResourceActionFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#noResourceActionFailureTestCases")
     public void testNoResourceActionFailure(
             String actionName,
-            BiConsumer<OpaAccessControl, SystemSecurityContext> method,
-            HttpClientUtils.MockResponse failureResponse,
+            BiConsumer<OpaAccessControl, Identity> method,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.accept(authorizer, requestingSecurityContext));
-        ObjectNode expectedRequest = jsonMapper.createObjectNode().put("operation", actionName);
-        assertJsonRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+        assertThatThrownBy(() -> method.accept(authorizer, requestingIdentity))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
+        String expectedRequest = """
+                {
+                    "operation": "%s"
+                }""".formatted(actionName);
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
     }
 
     private static Stream<Arguments> tableResourceTestCases()
@@ -174,11 +148,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableResourceTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableResourceTestCases")
     public void testTableResourceActions(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName> callable)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         callable.accept(
                 authorizer,
                 requestingSecurityContext,
@@ -205,24 +182,24 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableResourceFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableResourceFailureTestCases")
     public void testTableResourceFailure(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
-                        new CatalogSchemaTableName("my_catalog", "my_schema", "my_table")));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        new CatalogSchemaTableName("my_catalog", "my_schema", "my_table")))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> tableWithPropertiesTestCases()
@@ -241,11 +218,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableWithPropertiesTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableWithPropertiesTestCases")
     public void testTableWithPropertiesActions(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, Map> callable)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         Map<String, Optional<Object>> properties = ImmutableMap.<String, Optional<Object>>builder()
                 .put("string_item", Optional.of("string_value"))
@@ -281,25 +261,25 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableWithPropertiesFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableWithPropertiesFailureTestCases")
     public void testTableWithPropertiesActionFailure(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, Map> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
                         new CatalogSchemaTableName("my_catalog", "my_schema", "my_table"),
-                        ImmutableMap.of()));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        ImmutableMap.of()))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> identityResourceTestCases()
@@ -314,14 +294,16 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#identityResourceTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#identityResourceTestCases")
     public void testIdentityResourceActions(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, Identity, Identity> callable)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         Identity dummyIdentity = Identity.forUser("dummy-user")
                 .withGroups(ImmutableSet.of("some-group"))
-                .withExtraCredentials(ImmutableMap.of("some_extra_credential", "value"))
                 .build();
         callable.accept(authorizer, requestingIdentity, dummyIdentity);
 
@@ -331,8 +313,7 @@ public class OpaAccessControlUnitTest
                     "resource": {
                         "user": {
                             "user": "dummy-user",
-                            "groups": ["some-group"],
-                            "extraCredentials": {"some_extra_credential": "value"}
+                            "groups": ["some-group"]
                         }
                     }
                 }
@@ -346,53 +327,54 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#identityResourceFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#identityResourceFailureTestCases")
     public void testIdentityResourceActionsFailure(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, Identity, Identity> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingIdentity,
-                        Identity.ofUser("dummy-user")));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        Identity.ofUser("dummy-user")))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> stringResourceTestCases()
     {
         Stream<FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, String>> methods = Stream.of(
-                convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanSetSystemSessionProperty),
+                (accessControl, systemSecurityContext, argument) -> accessControl.checkCanSetSystemSessionProperty(systemSecurityContext.getIdentity(), argument),
                 OpaAccessControl::checkCanCreateCatalog,
                 OpaAccessControl::checkCanDropCatalog,
-                OpaAccessControl::checkCanShowSchemas,
-                OpaAccessControl::checkCanDropRole);
+                OpaAccessControl::checkCanShowSchemas);
         Stream<FunctionalHelpers.Pair<String, String>> actionAndResource = Stream.of(
                 FunctionalHelpers.Pair.of("SetSystemSessionProperty", "systemSessionProperty"),
                 FunctionalHelpers.Pair.of("CreateCatalog", "catalog"),
                 FunctionalHelpers.Pair.of("DropCatalog", "catalog"),
-                FunctionalHelpers.Pair.of("ShowSchemas", "catalog"),
-                FunctionalHelpers.Pair.of("DropRole", "role"));
+                FunctionalHelpers.Pair.of("ShowSchemas", "catalog"));
         return Streams.zip(
                 actionAndResource,
                 methods,
-                (action, method) -> Arguments.of(Named.of(action.getFirst(), action.getFirst()), action.getSecond(), method));
+                (action, method) -> Arguments.of(Named.of(action.first(), action.first()), action.second(), method));
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#stringResourceTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#stringResourceTestCases")
     public void testStringResourceAction(
             String actionName,
             String resourceName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, String> callable)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         callable.accept(authorizer, requestingSecurityContext, "resource_name");
 
         String expectedRequest = """
@@ -414,30 +396,33 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#stringResourceFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#stringResourceFailureTestCases")
     public void testStringResourceActionsFailure(
             String actionName,
             String resourceName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, String> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
-                        "dummy_value"));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        "dummy_value"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanImpersonateUser()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         authorizer.checkCanImpersonateUser(requestingIdentity, "some_other_user");
 
         String expectedRequest = """
@@ -456,56 +441,57 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCanImpersonateUserFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> authorizer.checkCanImpersonateUser(requestingIdentity, "some_other_user"));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+        assertThatThrownBy(
+                () -> authorizer.checkCanImpersonateUser(requestingIdentity, "some_other_user"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanAccessCatalog()
     {
-        mockClient.setHandler(request -> OK_RESPONSE);
-        assertTrue(authorizer.canAccessCatalog(requestingSecurityContext, "my_catalog_one"));
+        InstrumentedHttpClient permissiveClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl permissiveAuthorizer = createOpaAuthorizer(OPA_SERVER_URI, permissiveClient);
+        assertThat(permissiveAuthorizer.canAccessCatalog(requestingSecurityContext, "test_catalog")).isTrue();
 
-        mockClient.setHandler(request -> NO_ACCESS_RESPONSE);
-        assertFalse(authorizer.canAccessCatalog(requestingSecurityContext, "my_catalog_two"));
+        InstrumentedHttpClient restrictiveClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, NO_ACCESS_RESPONSE));
+        OpaAccessControl restrictiveAuthorizer = createOpaAuthorizer(OPA_SERVER_URI, restrictiveClient);
+        assertThat(restrictiveAuthorizer.canAccessCatalog(requestingSecurityContext, "test_catalog")).isFalse();
 
-        Set<String> expectedRequests = ImmutableSet.of("my_catalog_one", "my_catalog_two").stream().map("""
+        String expectedRequest = """
                 {
                     "operation": "AccessCatalog",
                     "resource": {
                         "catalog": {
-                            "name": "%s"
+                            "name": "test_catalog"
                         }
                     }
-                }
-                """::formatted)
-                .collect(toImmutableSet());
-        assertStringRequestsEqual(expectedRequests, mockClient.getRequests(), "/input/action");
+                }""";
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), permissiveClient.getRequests(), "/input/action");
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), restrictiveClient.getRequests(), "/input/action");
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#illegalResponseArgumentProvider")
     public void testCanAccessCatalogIllegalResponses(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> authorizer.canAccessCatalog(requestingSecurityContext, "my_catalog"));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+        assertThatThrownBy(
+                () -> authorizer.canAccessCatalog(requestingSecurityContext, "my_catalog"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> schemaResourceTestCases()
@@ -524,11 +510,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#schemaResourceTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#schemaResourceTestCases")
     public void testSchemaResourceActions(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, CatalogSchemaName> callable)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         callable.accept(authorizer, requestingSecurityContext, new CatalogSchemaName("my_catalog", "my_schema"));
 
         String expectedRequest = """
@@ -551,34 +540,37 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#schemaResourceFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#schemaResourceFailureTestCases")
     public void testSchemaResourceActionsFailure(
             String actionName,
             FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, CatalogSchemaName> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
-                        new CatalogSchemaName("dummy_catalog", "dummy_schema")));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        new CatalogSchemaName("dummy_catalog", "dummy_schema")))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCreateSchema()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaName schema = new CatalogSchemaName("my_catalog", "my_schema");
         authorizer.checkCanCreateSchema(requestingSecurityContext, schema, ImmutableMap.of("some_key", "some_value"));
         authorizer.checkCanCreateSchema(requestingSecurityContext, schema, ImmutableMap.of());
 
-        List<String> expectedRequests = ImmutableList.<String>builder()
+        Set<String> expectedRequests = ImmutableSet.<String>builder()
                 .add("""
                     {
                         "operation": "CreateSchema",
@@ -612,25 +604,28 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCreateSchemaFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> authorizer.checkCanCreateSchema(
                         requestingSecurityContext,
                         new CatalogSchemaName("my_catalog", "my_schema"),
-                        ImmutableMap.of()));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        ImmutableMap.of()))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanRenameSchema()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaName sourceSchema = new CatalogSchemaName("my_catalog", "my_schema");
         authorizer.checkCanRenameSchema(requestingSecurityContext, sourceSchema, "new_schema_name");
 
@@ -657,20 +652,20 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCanRenameSchemaFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> authorizer.checkCanRenameSchema(
                         requestingSecurityContext,
                         new CatalogSchemaName("my_catalog", "my_schema"),
-                        "new_schema_name"));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        "new_schema_name"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> renameTableTestCases()
@@ -687,11 +682,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#renameTableTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#renameTableTestCases")
     public void testRenameTableActions(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, CatalogSchemaTableName> method)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName sourceTable = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         CatalogSchemaTableName targetTable = new CatalogSchemaTableName("my_catalog", "new_schema_name", "new_table_name");
 
@@ -725,32 +723,35 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#renameTableFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#renameTableFailureTestCases")
     public void testRenameTableFailure(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, CatalogSchemaTableName> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
         CatalogSchemaTableName sourceTable = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         CatalogSchemaTableName targetTable = new CatalogSchemaTableName("my_catalog", "new_schema_name", "new_table_name");
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
                         sourceTable,
-                        targetTable));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        targetTable))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanSetSchemaAuthorization()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaName schema = new CatalogSchemaName("my_catalog", "my_schema");
 
         authorizer.checkCanSetSchemaAuthorization(requestingSecurityContext, schema, new TrinoPrincipal(PrincipalType.USER, "my_user"));
@@ -765,12 +766,8 @@ public class OpaAccessControlUnitTest
                         }
                     },
                     "grantee": {
-                        "principals": [
-                            {
-                                "name": "my_user",
-                                "type": "USER"
-                            }
-                        ]
+                        "name": "my_user",
+                        "type": "USER"
                     }
                 }
                 """;
@@ -780,21 +777,21 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCanSetSchemaAuthorizationFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
         CatalogSchemaName schema = new CatalogSchemaName("my_catalog", "my_schema");
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> authorizer.checkCanSetSchemaAuthorization(
                         requestingSecurityContext,
                         schema,
-                        new TrinoPrincipal(PrincipalType.USER, "my_user")));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        new TrinoPrincipal(PrincipalType.USER, "my_user")))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> setTableAuthorizationTestCases()
@@ -809,11 +806,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#setTableAuthorizationTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#setTableAuthorizationTestCases")
     public void testCanSetTableAuthorization(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, TrinoPrincipal> method)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
 
         method.accept(authorizer, requestingSecurityContext, table, new TrinoPrincipal(PrincipalType.USER, "my_user"));
@@ -829,12 +829,8 @@ public class OpaAccessControlUnitTest
                         }
                     },
                     "grantee": {
-                        "principals": [
-                            {
-                                "name": "my_user",
-                                "type": "USER"
-                            }
-                        ]
+                        "name": "my_user",
+                        "type": "USER"
                     }
                 }
                 """.formatted(actionName);
@@ -847,27 +843,27 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {3}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#setTableAuthorizationFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#setTableAuthorizationFailureTestCases")
     public void testCanSetTableAuthorizationFailure(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, TrinoPrincipal> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> method.accept(
                         authorizer,
                         requestingSecurityContext,
                         table,
-                        new TrinoPrincipal(PrincipalType.USER, "my_user")));
-        assertTrue(actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        new TrinoPrincipal(PrincipalType.USER, "my_user")))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> tableColumnOperationTestCases()
@@ -884,11 +880,14 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableColumnOperationTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableColumnOperationTestCases")
     public void testTableColumnOperations(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, Set<String>> method)
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         Set<String> columns = ImmutableSet.of("my_column");
 
@@ -916,29 +915,32 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tableColumnOperationFailureTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#tableColumnOperationFailureTestCases")
     public void testTableColumnOperationsFailure(
             String actionName,
             FunctionalHelpers.Consumer4<OpaAccessControl, SystemSecurityContext, CatalogSchemaTableName, Set<String>> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         Set<String> columns = ImmutableSet.of("my_column");
 
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.accept(authorizer, requestingSecurityContext, table, columns));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+        assertThatThrownBy(
+                () -> method.accept(authorizer, requestingSecurityContext, table, columns))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanSetCatalogSessionProperty()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         authorizer.checkCanSetCatalogSessionProperty(
                 requestingSecurityContext, "my_catalog", "my_property");
 
@@ -959,365 +961,20 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCanSetCatalogSessionPropertyFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> authorizer.checkCanSetCatalogSessionProperty(
                         requestingSecurityContext,
                         "my_catalog",
-                        "my_property"));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
-    }
-
-    private static Stream<Arguments> schemaPrivilegeTestCases()
-    {
-        Stream<FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaName, TrinoPrincipal>> methods = Stream.of(
-                OpaAccessControl::checkCanDenySchemaPrivilege,
-                (authorizer, context, privilege, catalog, principal) -> authorizer.checkCanGrantSchemaPrivilege(
-                        context, privilege, catalog, principal, true),
-                (authorizer, context, privilege, catalog, principal) -> authorizer.checkCanRevokeSchemaPrivilege(
-                        context, privilege, catalog, principal, true));
-        Stream<String> actions = Stream.of(
-                "DenySchemaPrivilege",
-                "GrantSchemaPrivilege",
-                "RevokeSchemaPrivilege");
-        return Streams.zip(actions, methods, (action, method) -> Arguments.of(Named.of(action, action), method));
-    }
-
-    @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#schemaPrivilegeTestCases")
-    public void testSchemaPrivileges(
-            String actionName,
-            FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaName, TrinoPrincipal> method)
-            throws IOException
-    {
-        Privilege privilege = Privilege.CREATE;
-        method.accept(
-                authorizer,
-                requestingSecurityContext,
-                privilege,
-                new CatalogSchemaName("my_catalog", "my_schema"),
-                new TrinoPrincipal(PrincipalType.USER, "my_user"));
-
-        String expectedRequest = """
-                {
-                    "operation": "%s",
-                    "resource": {
-                        "schema": {
-                            "catalogName": "my_catalog",
-                            "schemaName": "my_schema"
-                        }
-                    },
-                    "grantee": {
-                        "principals": [
-                            {
-                                "name": "my_user",
-                                "type": "USER"
-                            }
-                        ],
-                        "privilege": "CREATE",
-                        "grantOption": true
-                    }
-                }
-                """.formatted(actionName);
-        List<String> actualRequests = mockClient.getRequests();
-        assertEquals(actualRequests.size(), 1, "Unexpected number of requests");
-
-        JsonNode actualRequestInput = jsonMapper.readTree(mockClient.getRequests().get(0)).at("/input/action");
-        if (!actualRequestInput.at("/grantee").has("grantOption")) {
-            // The DenySchemaPrivilege request does not have a grant option, we'll default it to true so we can use the same test
-            ((ObjectNode) actualRequestInput.at("/grantee")).put("grantOption", true);
-        }
-        assertEquals(jsonMapper.readTree(expectedRequest), actualRequestInput);
-    }
-
-    private static Stream<Arguments> schemaPrivilegeFailureTestCases()
-    {
-        return createFailingTestCases(schemaPrivilegeTestCases());
-    }
-
-    @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#schemaPrivilegeFailureTestCases")
-    public void testSchemaPrivilegesFailure(
-            String actionName,
-            FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaName, TrinoPrincipal> method,
-            HttpClientUtils.MockResponse failureResponse,
-            Class<? extends Throwable> expectedException,
-            String expectedErrorMessage)
-    {
-        mockClient.setHandler(request -> failureResponse);
-
-        Privilege privilege = Privilege.CREATE;
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.accept(
-                        authorizer,
-                        requestingSecurityContext,
-                        privilege,
-                        new CatalogSchemaName("my_catalog", "my_schema"),
-                        new TrinoPrincipal(PrincipalType.USER, "my_user")));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
-    }
-
-    private static Stream<Arguments> tablePrivilegeTestCases()
-    {
-        Stream<FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaTableName, TrinoPrincipal>> methods = Stream.of(
-                OpaAccessControl::checkCanDenyTablePrivilege,
-                (authorizer, context, privilege, catalog, principal) -> authorizer.checkCanGrantTablePrivilege(context, privilege, catalog, principal, true),
-                (authorizer, context, privilege, catalog, principal) -> authorizer.checkCanRevokeTablePrivilege(context, privilege, catalog, principal, true));
-        Stream<String> actions = Stream.of(
-                "DenyTablePrivilege",
-                "GrantTablePrivilege",
-                "RevokeTablePrivilege");
-        return Streams.zip(actions, methods, (action, method) -> Arguments.of(Named.of(action, action), method));
-    }
-
-    @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tablePrivilegeTestCases")
-    public void testTablePrivileges(
-            String actionName,
-            FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaTableName, TrinoPrincipal> method)
-            throws IOException
-    {
-        Privilege privilege = Privilege.CREATE;
-        method.accept(
-                authorizer,
-                requestingSecurityContext,
-                privilege,
-                new CatalogSchemaTableName("my_catalog", "my_schema", "my_table"),
-                new TrinoPrincipal(PrincipalType.USER, "my_user"));
-
-        String expectedRequest = """
-                {
-                    "operation": "%s",
-                    "resource": {
-                        "table": {
-                            "catalogName": "my_catalog",
-                            "schemaName": "my_schema",
-                            "tableName": "my_table"
-                        }
-                    },
-                    "grantee": {
-                        "principals": [
-                            {
-                                "name": "my_user",
-                                "type": "USER"
-                            }
-                        ],
-                        "privilege": "CREATE",
-                        "grantOption": true
-                    }
-                }
-                """.formatted(actionName);
-        List<String> actualRequests = mockClient.getRequests();
-        assertEquals(actualRequests.size(), 1, "Unexpected number of requests");
-
-        JsonNode actualRequestInput = jsonMapper.readTree(mockClient.getRequests().get(0)).at("/input/action");
-        if (!actualRequestInput.at("/grantee").has("grantOption")) {
-            // The DenySchemaPrivilege request does not have a grant option, we'll default it to true so we can use the same test
-            ((ObjectNode) actualRequestInput.at("/grantee")).put("grantOption", true);
-        }
-        assertEquals(jsonMapper.readTree(expectedRequest), actualRequestInput);
-    }
-
-    private static Stream<Arguments> tablePrivilegeFailureTestCases()
-    {
-        return createFailingTestCases(tablePrivilegeTestCases());
-    }
-
-    @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#tablePrivilegeFailureTestCases")
-    public void testTablePrivilegesFailure(
-            String actionName,
-            FunctionalHelpers.Consumer5<OpaAccessControl, SystemSecurityContext, Privilege, CatalogSchemaTableName, TrinoPrincipal> method,
-            HttpClientUtils.MockResponse failureResponse,
-            Class<? extends Throwable> expectedException,
-            String expectedErrorMessage)
-    {
-        mockClient.setHandler(request -> failureResponse);
-
-        Privilege privilege = Privilege.CREATE;
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.accept(
-                        authorizer,
-                        requestingSecurityContext,
-                        privilege,
-                        new CatalogSchemaTableName("my_catalog", "my_schema", "my_table"),
-                        new TrinoPrincipal(PrincipalType.USER, "my_user")));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
-    }
-
-    @Test
-    public void testCanCreateRole()
-    {
-        authorizer.checkCanCreateRole(requestingSecurityContext, "my_role_without_grantor", Optional.empty());
-        TrinoPrincipal grantor = new TrinoPrincipal(PrincipalType.USER, "my_grantor");
-        authorizer.checkCanCreateRole(requestingSecurityContext, "my_role_with_grantor", Optional.of(grantor));
-
-        Set<String> expectedRequests = ImmutableSet.<String>builder()
-                .add("""
-                    {
-                        "operation": "CreateRole",
-                        "resource": {
-                            "role": {
-                                "name": "my_role_without_grantor"
-                            }
-                        }
-                    }
-                """)
-                .add("""
-                    {
-                        "operation": "CreateRole",
-                        "resource": {
-                            "role": {
-                                "name": "my_role_with_grantor"
-                            }
-                        },
-                        "grantor": {
-                            "name": "my_grantor",
-                            "type": "USER"
-                        }
-                    }
-                    """)
-                .build();
-        assertStringRequestsEqual(expectedRequests, mockClient.getRequests(), "/input/action");
-    }
-
-    @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
-    public void testCanCreateRoleFailure(
-            HttpClientUtils.MockResponse failureResponse,
-            Class<? extends Throwable> expectedException,
-            String expectedErrorMessage)
-    {
-        mockClient.setHandler(request -> failureResponse);
-
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> authorizer.checkCanCreateRole(
-                        requestingSecurityContext,
-                        "my_role_without_grantor",
-                        Optional.empty()));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
-    }
-
-    private static Stream<Arguments> roleGrantingTestCases()
-    {
-        Stream<FunctionalHelpers.Consumer6<OpaAccessControl, SystemSecurityContext, Set<String>, Set<TrinoPrincipal>, Boolean, Optional<TrinoPrincipal>>> methods = Stream.of(
-                OpaAccessControl::checkCanGrantRoles,
-                OpaAccessControl::checkCanRevokeRoles);
-        Stream<String> actions = Stream.of(
-                "GrantRoles",
-                "RevokeRoles");
-        return Streams.zip(actions, methods, (action, method) -> Arguments.of(Named.of(action, action), method));
-    }
-
-    @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#roleGrantingTestCases")
-    public void testRoleGranting(
-            String actionName,
-            FunctionalHelpers.Consumer6<OpaAccessControl, SystemSecurityContext, Set<String>, Set<TrinoPrincipal>, Boolean, Optional<TrinoPrincipal>> method)
-    {
-        TrinoPrincipal grantee = new TrinoPrincipal(PrincipalType.ROLE, "my_grantee_role");
-        method.accept(authorizer, requestingSecurityContext, ImmutableSet.of("my_role_without_grantor"), ImmutableSet.of(grantee), true, Optional.empty());
-
-        TrinoPrincipal grantor = new TrinoPrincipal(PrincipalType.USER, "my_grantor_user");
-        method.accept(authorizer, requestingSecurityContext, ImmutableSet.of("my_role_with_grantor"), ImmutableSet.of(grantee), false, Optional.of(grantor));
-
-        Set<String> expectedRequests = ImmutableSet.<String>builder()
-                .add("""
-                    {
-                        "operation": "%s",
-                        "resource": {
-                            "roles": [
-                                {
-                                    "name": "my_role_with_grantor"
-                                }
-                            ]
-                        },
-                        "grantor": {
-                            "name": "my_grantor_user",
-                            "type": "USER"
-                        },
-                        "grantee": {
-                            "principals": [
-                                {
-                                    "name": "my_grantee_role",
-                                    "type": "ROLE"
-                                }
-                            ],
-                            "grantOption": false
-                        }
-                    }
-                    """.formatted(actionName))
-                .add("""
-                    {
-                        "operation": "%s",
-                        "resource": {
-                            "roles": [
-                                {
-                                    "name": "my_role_without_grantor"
-                                }
-                            ]
-                        },
-                        "grantee": {
-                            "principals": [
-                                {
-                                    "name": "my_grantee_role",
-                                    "type": "ROLE"
-                                }
-                            ],
-                            "grantOption": true
-                        }
-                    }
-                    """.formatted(actionName))
-                .build();
-        assertStringRequestsEqual(expectedRequests, mockClient.getRequests(), "/input/action");
-    }
-
-    private static Stream<Arguments> roleGrantingFailureTestCases()
-    {
-        return createFailingTestCases(roleGrantingTestCases());
-    }
-
-    @ParameterizedTest(name = "{index}: {0} - {2}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#roleGrantingFailureTestCases")
-    public void testRoleGrantingFailure(
-            String actionName,
-            FunctionalHelpers.Consumer6<OpaAccessControl, SystemSecurityContext, Set<String>, Set<TrinoPrincipal>, Boolean, Optional<TrinoPrincipal>> method,
-            HttpClientUtils.MockResponse failureResponse,
-            Class<? extends Throwable> expectedException,
-            String expectedErrorMessage)
-    {
-        mockClient.setHandler(request -> failureResponse);
-
-        TrinoPrincipal grantee = new TrinoPrincipal(PrincipalType.ROLE, "my_grantee_role");
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.accept(
-                        authorizer,
-                        requestingSecurityContext,
-                        ImmutableSet.of("my_role_without_grantor"),
-                        ImmutableSet.of(grantee),
-                        true,
-                        Optional.empty()));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        "my_property"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> functionResourceTestCases()
@@ -1338,16 +995,18 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#functionResourceTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#functionResourceTestCases")
     public void testFunctionResourceAction(
             String actionName,
             TestHelpers.MethodWrapper<CatalogSchemaRoutineName> method)
     {
-        CatalogSchemaRoutineName routine = new CatalogSchemaRoutineName("my_catalog", "my_schema", "my_routine_name");
-        assertTrue(method.isAccessAllowed(authorizer, requestingSecurityContext, routine));
+        InstrumentedHttpClient permissiveClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        InstrumentedHttpClient restrictiveClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, NO_ACCESS_RESPONSE));
 
-        mockClient.setHandler(request -> NO_ACCESS_RESPONSE);
-        assertFalse(method.isAccessAllowed(authorizer, requestingSecurityContext, routine));
+        CatalogSchemaRoutineName routine = new CatalogSchemaRoutineName("my_catalog", "my_schema", "my_routine_name");
+        assertThat(method.isAccessAllowed(createOpaAuthorizer(OPA_SERVER_URI, permissiveClient), requestingSecurityContext, routine)).isTrue();
+
+        assertThat(method.isAccessAllowed(createOpaAuthorizer(OPA_SERVER_URI, restrictiveClient), requestingSecurityContext, routine)).isFalse();
 
         String expectedRequest = """
                 {
@@ -1360,8 +1019,8 @@ public class OpaAccessControlUnitTest
                         }
                     }
                 }""".formatted(actionName);
-        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input/action");
-        assertEquals(mockClient.getRequests().size(), 2);
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), permissiveClient.getRequests(), "/input/action");
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), restrictiveClient.getRequests(), "/input/action");
     }
 
     private static Stream<Arguments> functionResourceIllegalResponseTestCases()
@@ -1370,28 +1029,30 @@ public class OpaAccessControlUnitTest
     }
 
     @ParameterizedTest(name = "{index}: {0}")
-    @MethodSource("io.trino.plugin.opa.OpaAccessControlUnitTest#functionResourceIllegalResponseTestCases")
+    @MethodSource("io.trino.plugin.opa.TestOpaAccessControl#functionResourceIllegalResponseTestCases")
     public void testFunctionResourceIllegalResponses(
             String actionName,
             TestHelpers.MethodWrapper<CatalogSchemaRoutineName> method,
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
         CatalogSchemaRoutineName routine = new CatalogSchemaRoutineName("my_catalog", "my_schema", "my_routine_name");
-        Throwable actualError = assertThrows(
-                expectedException,
-                () -> method.isAccessAllowed(authorizer, requestingSecurityContext, routine));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+        assertThatThrownBy(
+                () -> method.isAccessAllowed(authorizer, requestingSecurityContext, routine))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     @Test
     public void testCanExecuteTableProcedure()
     {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, OK_RESPONSE));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
+
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
         authorizer.checkCanExecuteTableProcedure(requestingSecurityContext, table, "my_procedure");
 
@@ -1415,40 +1076,33 @@ public class OpaAccessControlUnitTest
     @ParameterizedTest(name = "{index}: {0}")
     @MethodSource("io.trino.plugin.opa.TestHelpers#allErrorCasesArgumentProvider")
     public void testCanExecuteTableProcedureFailure(
-            HttpClientUtils.MockResponse failureResponse,
+            MockResponse failureResponse,
             Class<? extends Throwable> expectedException,
             String expectedErrorMessage)
     {
-        mockClient.setHandler(request -> failureResponse);
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, failureResponse));
+        OpaAccessControl authorizer = createOpaAuthorizer(OPA_SERVER_URI, mockClient);
 
         CatalogSchemaTableName table = new CatalogSchemaTableName("my_catalog", "my_schema", "my_table");
-        Throwable actualError = assertThrows(
-                expectedException,
+        assertThatThrownBy(
                 () -> authorizer.checkCanExecuteTableProcedure(
                         requestingSecurityContext,
                         table,
-                        "my_procedure"));
-        assertTrue(
-                actualError.getMessage().contains(expectedErrorMessage),
-                String.format("Error must contain '%s': %s", expectedErrorMessage, actualError.getMessage()));
+                        "my_procedure"))
+                .isInstanceOf(expectedException)
+                .hasMessageContaining(expectedErrorMessage);
     }
 
     private static Stream<Arguments> noResourceActionTestCases()
     {
-        Stream<BiConsumer<OpaAccessControl, SystemSecurityContext>> methods = Stream.of(
-                convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanExecuteQuery),
-                convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanReadSystemInformation),
-                convertSystemSecurityContextToIdentityArgument(OpaAccessControl::checkCanWriteSystemInformation),
-                OpaAccessControl::checkCanShowRoles,
-                OpaAccessControl::checkCanShowCurrentRoles,
-                OpaAccessControl::checkCanShowRoleGrants);
+        Stream<BiConsumer<OpaAccessControl, Identity>> methods = Stream.of(
+                OpaAccessControl::checkCanExecuteQuery,
+                OpaAccessControl::checkCanReadSystemInformation,
+                OpaAccessControl::checkCanWriteSystemInformation);
         Stream<String> expectedActions = Stream.of(
                 "ExecuteQuery",
                 "ReadSystemInformation",
-                "WriteSystemInformation",
-                "ShowRoles",
-                "ShowCurrentRoles",
-                "ShowRoleGrants");
+                "WriteSystemInformation");
         return Streams.zip(expectedActions, methods, (action, method) -> Arguments.of(Named.of(action, action), method));
     }
 

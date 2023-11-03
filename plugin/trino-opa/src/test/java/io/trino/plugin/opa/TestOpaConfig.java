@@ -32,7 +32,8 @@ public class TestOpaConfig
                 .setOpaUri(null)
                 .setOpaBatchUri(null)
                 .setLogRequests(false)
-                .setLogResponses(false));
+                .setLogResponses(false)
+                .setAllowPermissioningOperations(false));
     }
 
     @Test
@@ -43,13 +44,15 @@ public class TestOpaConfig
                 .put("opa.policy.batched-uri", "https://opa-batch.example.com")
                 .put("opa.log-requests", "true")
                 .put("opa.log-responses", "true")
+                .put("opa.allow-permissioning-operations", "true")
                 .buildOrThrow();
 
         OpaConfig expected = new OpaConfig()
                 .setOpaUri(URI.create("https://opa.example.com"))
                 .setOpaBatchUri(URI.create("https://opa-batch.example.com"))
                 .setLogRequests(true)
-                .setLogResponses(true);
+                .setLogResponses(true)
+                .setAllowPermissioningOperations(true);
 
         assertFullMapping(properties, expected);
     }

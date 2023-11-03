@@ -13,56 +13,52 @@
  */
 package io.trino.plugin.opa;
 
-import com.google.common.collect.ImmutableList;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonCodecFactory;
 import io.trino.plugin.opa.schema.OpaBatchQueryResult;
 import io.trino.plugin.opa.schema.OpaQueryResult;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
-public class ResponseTest
+public class TestOpaResponseDecoding
 {
-    private JsonCodec<OpaQueryResult> responseCodec;
-    private JsonCodec<OpaBatchQueryResult> batchResponseCodec;
+    private final JsonCodec<OpaQueryResult> responseCodec = new JsonCodecFactory().jsonCodec(OpaQueryResult.class);
+    private final JsonCodec<OpaBatchQueryResult> batchResponseCodec = new JsonCodecFactory().jsonCodec(OpaBatchQueryResult.class);
 
-    @BeforeEach
-    public void setupParser()
+    @Test
+    public void testCanDeserializeOpaSingleResponse()
     {
-        this.responseCodec = new JsonCodecFactory().jsonCodec(OpaQueryResult.class);
-        this.batchResponseCodec = new JsonCodecFactory().jsonCodec(OpaBatchQueryResult.class);
+        testCanDeserializeOpaSingleResponse(true);
+        testCanDeserializeOpaSingleResponse(false);
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    public void testCanDeserializeOpaSingleResponse(boolean response)
+    private void testCanDeserializeOpaSingleResponse(boolean response)
     {
         OpaQueryResult result = this.responseCodec.fromJson("""
                 {
                     "decision_id": "foo",
                     "result": %s
                 }""".formatted(String.valueOf(response)));
-        assertEquals(response, result.result());
-        assertEquals("foo", result.decisionId());
+        assertThat(response).isEqualTo(result.result());
+        assertThat(result.decisionId()).isEqualTo("foo");
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    public void testCanDeserializeOpaSingleResponseWithNoDecisionId(boolean response)
+    @Test
+    public void testCanDeserializeOpaSingleResponseWithNoDecisionId()
+    {
+        testCanDeserializeOpaSingleResponseWithNoDecisionId(true);
+        testCanDeserializeOpaSingleResponseWithNoDecisionId(false);
+    }
+
+    private void testCanDeserializeOpaSingleResponseWithNoDecisionId(boolean response)
     {
         OpaQueryResult result = this.responseCodec.fromJson("""
                 {
                     "result": %s
                 }""".formatted(String.valueOf(response)));
-        assertEquals(response, result.result());
-        assertNull(result.decisionId());
+        assertThat(response).isEqualTo(result.result());
+        assertThat(result.decisionId()).isNull();
     }
 
     @Test
@@ -73,25 +69,30 @@ public class ResponseTest
                     "result": true,
                     "someExtraInfo": ["foo"]
                 }""");
-        assertTrue(result.result());
-        assertNull(result.decisionId());
+        assertThat(result.result()).isTrue();
+        assertThat(result.decisionId()).isNull();
     }
 
     @Test
     public void testUndefinedDecisionSingleResponseTreatedAsDeny()
     {
         OpaQueryResult result = this.responseCodec.fromJson("{}");
-        assertFalse(result.result());
-        assertNull(result.decisionId());
+        assertThat(result.result()).isFalse();
+        assertThat(result.decisionId()).isNull();
     }
 
-    @ParameterizedTest
-    @ValueSource(strings = {"{}", "{\"result\": []}"})
-    public void testEmptyOrUndefinedResponses(String response)
+    @Test
+    public void testEmptyOrUndefinedResponses()
+    {
+        testEmptyOrUndefinedResponses("{}");
+        testEmptyOrUndefinedResponses("{\"result\": []}");
+    }
+
+    private void testEmptyOrUndefinedResponses(String response)
     {
         OpaBatchQueryResult result = this.batchResponseCodec.fromJson(response);
-        assertEquals(ImmutableList.of(), result.result());
-        assertNull(result.decisionId());
+        assertThat(result.result()).isEmpty();
+        assertThat(result.decisionId()).isNull();
     }
 
     @Test
@@ -101,8 +102,8 @@ public class ResponseTest
                 {
                     "result": [1, 2, 3]
                 }""");
-        assertEquals(ImmutableList.of(1, 2, 3), result.result());
-        assertNull(result.decisionId());
+        assertThat(result.result()).containsExactly(1, 2, 3);
+        assertThat(result.decisionId()).isNull();
     }
 
     @Test
@@ -113,8 +114,8 @@ public class ResponseTest
                     "result": [1, 2, 3],
                     "decision_id": "foobar"
                 }""");
-        assertEquals(ImmutableList.of(1, 2, 3), result.result());
-        assertEquals("foobar", result.decisionId());
+        assertThat(result.result()).containsExactly(1, 2, 3);
+        assertThat(result.decisionId()).isEqualTo("foobar");
     }
 
     @Test
@@ -127,7 +128,7 @@ public class ResponseTest
                     "someInfo": "foo",
                     "andAnObject": {}
                 }""");
-        assertEquals(ImmutableList.of(1, 2, 3), result.result());
-        assertEquals("foobar", result.decisionId());
+        assertThat(result.result()).containsExactly(1, 2, 3);
+        assertThat(result.decisionId()).isEqualTo("foobar");
     }
 }

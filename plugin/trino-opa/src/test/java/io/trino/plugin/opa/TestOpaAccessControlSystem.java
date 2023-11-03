@@ -49,22 +49,20 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.opa.FunctionalHelpers.Pair;
 import static io.trino.testing.TestingSession.testSessionBuilder;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 @Testcontainers
 @TestInstance(PER_CLASS)
-public class OpaAccessControlSystemTest
+public class TestOpaAccessControlSystem
 {
     private URI opaServerUri;
     private DistributedQueryRunner runner;
 
     private static final int OPA_PORT = 8181;
     @Container
-    public static GenericContainer<?> opaContainer = new GenericContainer<>(DockerImageName.parse("openpolicyagent/opa:latest-rootless"))
+    private static final GenericContainer<?> OPA_CONTAINER = new GenericContainer<>(DockerImageName.parse("openpolicyagent/opa:latest-rootless"))
             .withCommand("run", "--server", "--addr", ":%d".formatted(OPA_PORT))
             .withExposedPorts(OPA_PORT);
 
@@ -89,7 +87,7 @@ public class OpaAccessControlSystemTest
         }
 
         @ParameterizedTest(name = "{index}: {0}")
-        @MethodSource("io.trino.plugin.opa.OpaAccessControlSystemTest#filterSchemaTests")
+        @MethodSource("io.trino.plugin.opa.TestOpaAccessControlSystem#filterSchemaTests")
         public void testAllowsQueryAndFilters(String userName, Set<String> expectedCatalogs)
                 throws IOException, InterruptedException
         {
@@ -120,7 +118,7 @@ public class OpaAccessControlSystemTest
                     }
                     """);
             Set<String> catalogs = querySetOfStrings(user(userName), "SHOW CATALOGS");
-            assertEquals(expectedCatalogs, catalogs);
+            assertThat(catalogs).containsExactlyInAnyOrderElementsOf(expectedCatalogs);
         }
 
         @Test
@@ -136,11 +134,9 @@ public class OpaAccessControlSystemTest
                         input.context.identity.user in ["someone", "admin"]
                     }
                     """);
-            RuntimeException error = assertThrows(RuntimeException.class, () -> {
-                runner.execute(user("bob"), "SHOW CATALOGS");
-            });
-            assertTrue(error.getMessage().contains("Access Denied"),
-                    "Error must mention 'Access Denied': " + error.getMessage());
+            assertThatThrownBy(() -> runner.execute(user("bob"), "SHOW CATALOGS"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Access Denied");
             // smoke test: we can still query if we are the right user
             runner.execute(user("admin"), "SHOW CATALOGS");
         }
@@ -167,7 +163,7 @@ public class OpaAccessControlSystemTest
         }
 
         @ParameterizedTest(name = "{index}: {0}")
-        @MethodSource("io.trino.plugin.opa.OpaAccessControlSystemTest#filterSchemaTests")
+        @MethodSource("io.trino.plugin.opa.TestOpaAccessControlSystem#filterSchemaTests")
         public void testFilterOutItemsBatch(String userName, Set<String> expectedCatalogs)
                 throws IOException, InterruptedException
         {
@@ -206,7 +202,7 @@ public class OpaAccessControlSystemTest
                     }
                     """);
             Set<String> catalogs = querySetOfStrings(user(userName), "SHOW CATALOGS");
-            assertEquals(expectedCatalogs, catalogs);
+            assertThat(catalogs).containsExactlyInAnyOrderElementsOf(expectedCatalogs);
         }
 
         @Test
@@ -218,11 +214,9 @@ public class OpaAccessControlSystemTest
                     import future.keywords.in
                     default allow = false
                     """);
-            RuntimeException error = assertThrows(RuntimeException.class, () -> {
-                runner.execute(user("bob"), "SELECT version()");
-            });
-            assertTrue(error.getMessage().contains("Access Denied"),
-                    "Error must mention 'Access Denied': " + error.getMessage());
+            assertThatThrownBy(() -> runner.execute(user("bob"), "SELECT version()"))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Access Denied");
         }
 
         @Test
@@ -239,15 +233,15 @@ public class OpaAccessControlSystemTest
                     }
                     """);
             Set<String> version = querySetOfStrings(user("bob"), "SELECT version()");
-            assertFalse(version.isEmpty());
+            assertThat(version).isNotEmpty();
         }
     }
 
     private void ensureOpaUp()
             throws IOException, InterruptedException
     {
-        assertTrue(opaContainer.isRunning());
-        InetSocketAddress opaSocket = new InetSocketAddress(opaContainer.getHost(), opaContainer.getMappedPort(OPA_PORT));
+        assertThat(OPA_CONTAINER.isRunning()).isTrue();
+        InetSocketAddress opaSocket = new InetSocketAddress(OPA_CONTAINER.getHost(), OPA_CONTAINER.getMappedPort(OPA_PORT));
         String opaEndpoint = String.format("%s:%d", opaSocket.getHostString(), opaSocket.getPort());
         awaitSocketOpen(opaSocket, 100, 200);
         this.opaServerUri = URI.create(String.format("http://%s/", opaEndpoint));
@@ -307,7 +301,7 @@ public class OpaAccessControlSystemTest
                                 .PUT(HttpRequest.BodyPublishers.ofString(stringOfLines(policyLines)))
                                 .header("Content-Type", "text/plain").build(),
                         HttpResponse.BodyHandlers.ofString());
-        assertEquals(policyResponse.statusCode(), 200, "Failed to submit policy: " + policyResponse.body());
+        assertThat(policyResponse.statusCode()).withFailMessage("Failed to submit policy: %s", policyResponse.body()).isEqualTo(200);
     }
 
     private Session user(String user)
@@ -325,6 +319,6 @@ public class OpaAccessControlSystemTest
         Stream<Pair<String, Set<String>>> userAndExpectedCatalogs = Stream.of(
                 Pair.of("bob", ImmutableSet.of("catalog_one")),
                 Pair.of("admin", ImmutableSet.of("catalog_one", "catalog_two", "system")));
-        return userAndExpectedCatalogs.map(testCase -> Arguments.of(Named.of(testCase.getFirst(), testCase.getFirst()), testCase.getSecond()));
+        return userAndExpectedCatalogs.map(testCase -> Arguments.of(Named.of(testCase.first(), testCase.first()), testCase.second()));
     }
 }

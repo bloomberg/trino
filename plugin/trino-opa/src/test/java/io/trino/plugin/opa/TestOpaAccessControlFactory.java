@@ -18,11 +18,10 @@ import io.airlift.bootstrap.ApplicationConfigurationException;
 import io.trino.spi.security.SystemAccessControl;
 import org.junit.jupiter.api.Test;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-public class TestFactory
+public class TestOpaAccessControlFactory
 {
     @Test
     public void testCreatesSimpleAuthorizerIfNoBatchUriProvided()
@@ -30,8 +29,8 @@ public class TestFactory
         OpaAccessControlFactory factory = new OpaAccessControlFactory();
         SystemAccessControl opaAuthorizer = factory.create(ImmutableMap.of("opa.policy.uri", "foo"));
 
-        assertInstanceOf(OpaAccessControl.class, opaAuthorizer);
-        assertFalse(opaAuthorizer instanceof OpaBatchAccessControl);
+        assertThat(opaAuthorizer).isInstanceOf(OpaAccessControl.class);
+        assertThat(opaAuthorizer).isNotInstanceOf(OpaBatchAccessControl.class);
     }
 
     @Test
@@ -44,8 +43,8 @@ public class TestFactory
                         .put("opa.policy.batched-uri", "bar")
                         .buildOrThrow());
 
-        assertInstanceOf(OpaBatchAccessControl.class, opaAuthorizer);
-        assertInstanceOf(OpaAccessControl.class, opaAuthorizer);
+        assertThat(opaAuthorizer).isInstanceOf(OpaBatchAccessControl.class);
+        assertThat(opaAuthorizer).isInstanceOf(OpaAccessControl.class);
     }
 
     @Test
@@ -53,10 +52,7 @@ public class TestFactory
     {
         OpaAccessControlFactory factory = new OpaAccessControlFactory();
 
-        assertThrows(
-                ApplicationConfigurationException.class,
-                () -> factory.create(ImmutableMap.of()),
-                "may not be null");
+        assertThatThrownBy(() -> factory.create(ImmutableMap.of())).isInstanceOf(ApplicationConfigurationException.class);
     }
 
     @Test
@@ -64,9 +60,7 @@ public class TestFactory
     {
         OpaAccessControlFactory factory = new OpaAccessControlFactory();
 
-        assertThrows(
-                NullPointerException.class,
-                () -> factory.create(null));
+        assertThatThrownBy(() -> factory.create(null)).isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -79,7 +73,7 @@ public class TestFactory
                         .put("opa.http-client.log.enabled", "true")
                         .buildOrThrow());
 
-        assertInstanceOf(OpaAccessControl.class, opaAuthorizer);
-        assertFalse(opaAuthorizer instanceof OpaBatchAccessControl);
+        assertThat(opaAuthorizer).isInstanceOf(OpaAccessControl.class);
+        assertThat(opaAuthorizer).isNotInstanceOf(OpaBatchAccessControl.class);
     }
 }

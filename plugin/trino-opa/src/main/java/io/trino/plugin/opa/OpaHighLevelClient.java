@@ -105,13 +105,13 @@ public class OpaHighLevelClient
         return opaHttpClient.parallelFilterFromOpa(items, requestBuilder, opaPolicyUri, queryResultCodec);
     }
 
-    public static OpaQueryInput buildQueryInputForSimpleAction(OpaQueryContext context, String operation)
-    {
-        return new OpaQueryInput(context, OpaQueryInputAction.builder().operation(operation).build());
-    }
-
     public static OpaQueryInput buildQueryInputForSimpleResource(OpaQueryContext context, String operation, OpaQueryInputResource resource)
     {
         return new OpaQueryInput(context, OpaQueryInputAction.builder().operation(operation).resource(resource).build());
+    }
+
+    private static OpaQueryInput buildQueryInputForSimpleAction(OpaQueryContext context, String operation)
+    {
+        return new OpaQueryInput(context, OpaQueryInputAction.builder().operation(operation).build());
     }
 }

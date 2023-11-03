@@ -55,7 +55,7 @@ public final class OpaBatchAccessControl
             OpaHttpClient opaHttpClient,
             OpaConfig config)
     {
-        super(opaHighLevelClient);
+        super(opaHighLevelClient, config);
         this.opaBatchedPolicyUri = config.getOpaBatchUri().orElseThrow();
         this.batchResultCodec = batchResultCodec;
         this.opaHttpClient = opaHttpClient;
@@ -129,7 +129,16 @@ public final class OpaBatchAccessControl
                         .build());
     }
 
-    private <V> Function<List<V>, OpaQueryInput> batchRequestBuilder(OpaQueryContext context, String operation, Function<V, OpaQueryInputResource> resourceMapper)
+    private <T> Set<T> batchFilterFromOpa(OpaQueryContext context, String operation, Collection<T> items, Function<T, OpaQueryInputResource> converter)
+    {
+        return opaHttpClient.batchFilterFromOpa(
+                items,
+                batchRequestBuilder(context, operation, converter),
+                opaBatchedPolicyUri,
+                batchResultCodec);
+    }
+
+    private static <V> Function<List<V>, OpaQueryInput> batchRequestBuilder(OpaQueryContext context, String operation, Function<V, OpaQueryInputResource> resourceMapper)
     {
         return items -> new OpaQueryInput(
                 context,
@@ -139,7 +148,7 @@ public final class OpaBatchAccessControl
                         .build());
     }
 
-    private <K, V> BiFunction<K, List<V>, OpaQueryInput> batchRequestBuilder(OpaQueryContext context, String operation, BiFunction<K, List<V>, OpaQueryInputResource> resourceMapper)
+    private static <K, V> BiFunction<K, List<V>, OpaQueryInput> batchRequestBuilder(OpaQueryContext context, String operation, BiFunction<K, List<V>, OpaQueryInputResource> resourceMapper)
     {
         return (resourcesKey, resourcesList) -> new OpaQueryInput(
                 context,
@@ -147,14 +156,5 @@ public final class OpaBatchAccessControl
                         .operation(operation)
                         .filterResources(ImmutableList.of(resourceMapper.apply(resourcesKey, resourcesList)))
                         .build());
-    }
-
-    private <T> Set<T> batchFilterFromOpa(OpaQueryContext context, String operation, Collection<T> items, Function<T, OpaQueryInputResource> converter)
-    {
-        return opaHttpClient.batchFilterFromOpa(
-                items,
-                batchRequestBuilder(context, operation, converter),
-                opaBatchedPolicyUri,
-                batchResultCodec);
     }
 }

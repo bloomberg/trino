@@ -29,8 +29,7 @@ public record OpaQueryInputAction(
         OpaQueryInputResource resource,
         List<OpaQueryInputResource> filterResources,
         OpaQueryInputResource targetResource,
-        OpaQueryInputGrant grantee,
-        TrinoGrantPrincipal grantor)
+        TrinoGrantPrincipal grantee)
 {
     public OpaQueryInputAction
     {
@@ -54,8 +53,7 @@ public record OpaQueryInputAction(
         private OpaQueryInputResource resource;
         private List<OpaQueryInputResource> filterResources;
         private OpaQueryInputResource targetResource;
-        private OpaQueryInputGrant grantee;
-        private TrinoGrantPrincipal grantor;
+        private TrinoGrantPrincipal grantee;
 
         private Builder() {}
 
@@ -83,15 +81,9 @@ public record OpaQueryInputAction(
             return this;
         }
 
-        public Builder grantee(OpaQueryInputGrant grantee)
+        public Builder grantee(TrinoGrantPrincipal grantee)
         {
             this.grantee = grantee;
-            return this;
-        }
-
-        public Builder grantor(TrinoGrantPrincipal grantor)
-        {
-            this.grantor = grantor;
             return this;
         }
 
@@ -102,8 +94,7 @@ public record OpaQueryInputAction(
                     this.resource,
                     this.filterResources,
                     this.targetResource,
-                    this.grantee,
-                    this.grantor);
+                    this.grantee);
         }
     }
 }

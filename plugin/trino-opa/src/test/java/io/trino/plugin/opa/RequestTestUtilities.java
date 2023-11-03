@@ -16,14 +16,16 @@ package io.trino.plugin.opa;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.google.common.collect.ImmutableSet;
+import io.trino.plugin.opa.HttpClientUtils.MockResponse;
+import io.trino.spi.security.Identity;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Set;
+import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class RequestTestUtilities
 {
@@ -31,8 +33,7 @@ public class RequestTestUtilities
 
     private static final JsonMapper jsonMapper = new JsonMapper();
 
-    public static void assertStringRequestsEqual(
-            Collection<String> expectedRequests, Collection<String> actualRequests, String extractPath)
+    public static void assertStringRequestsEqual(Set<String> expectedRequests, Collection<JsonNode> actualRequests, String extractPath)
     {
         Set<JsonNode> parsedExpectedRequests = expectedRequests.stream()
                 .map(expectedRequest -> {
@@ -40,37 +41,36 @@ public class RequestTestUtilities
                         return jsonMapper.readTree(expectedRequest);
                     }
                     catch (IOException e) {
-                        fail("Could not parse request", e);
-                        return null;
+                        throw new AssertionError("Cannot parse expected request", e);
                     }
                 })
                 .collect(toImmutableSet());
-        assertJsonRequestsEqual(parsedExpectedRequests, actualRequests, extractPath);
+        Set<JsonNode> extractedActualRequests = actualRequests.stream().map(node -> node.at(extractPath)).collect(toImmutableSet());
+        assertThat(extractedActualRequests).containsExactlyInAnyOrderElementsOf(parsedExpectedRequests);
     }
 
-    public static void assertJsonRequestsEqual(
-            Collection<JsonNode> expectedRequests, Collection<String> actualRequests, String extractPath)
+    public static Function<JsonNode, MockResponse> buildValidatingRequestHandler(Identity expectedUser, int statusCode, String responseContents)
     {
-        Set<JsonNode> parsedActualRequests = actualRequests.stream()
-                .map(actualRequest -> {
-                    try {
-                        JsonNode parsed = jsonMapper.readTree(actualRequest);
-                        if (extractPath != null) {
-                            return parsed.at(extractPath);
-                        }
-                        return parsed;
-                    }
-                    catch (IOException e) {
-                        fail("Could not parse request", e);
-                        return null;
-                    }
-                })
-                .collect(toImmutableSet());
-        Set<JsonNode> expectedRequestSet = ImmutableSet.copyOf(expectedRequests);
-        assertEquals(
-                expectedRequestSet.size(),
-                parsedActualRequests.size(),
-                "Mismatch in expected vs. actual request count");
-        assertEquals(expectedRequestSet, parsedActualRequests, "Requests do not match");
+        return buildValidatingRequestHandler(expectedUser, new MockResponse(responseContents, statusCode));
+    }
+
+    public static Function<JsonNode, MockResponse> buildValidatingRequestHandler(Identity expectedUser, MockResponse response)
+    {
+        return buildValidatingRequestHandler(expectedUser, jsonNode -> response);
+    }
+
+    public static Function<JsonNode, MockResponse> buildValidatingRequestHandler(Identity expectedUser, Function<JsonNode, MockResponse> customHandler)
+    {
+        return parsedRequest -> {
+            if (!parsedRequest.at("/input/context/identity/user").asText().equals(expectedUser.getUser())) {
+                throw new AssertionError("Request had invalid user in the identity block");
+            }
+            ImmutableSet.Builder<String> groupsInRequestBuilder = ImmutableSet.builder();
+            parsedRequest.at("/input/context/identity/groups").iterator().forEachRemaining(node -> groupsInRequestBuilder.add(node.asText()));
+            if (!groupsInRequestBuilder.build().equals(expectedUser.getGroups())) {
+                throw new AssertionError("Request had invalid set of groups in the identity block");
+            }
+            return customHandler.apply(parsedRequest);
+        };
     }
 }

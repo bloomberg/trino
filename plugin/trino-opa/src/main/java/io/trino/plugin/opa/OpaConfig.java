@@ -27,6 +27,7 @@ public class OpaConfig
     private Optional<URI> opaBatchUri = Optional.empty();
     private boolean logRequests;
     private boolean logResponses;
+    private boolean allowPermissioningOperations;
 
     @NotNull
     public URI getOpaUri()
@@ -78,6 +79,19 @@ public class OpaConfig
     public OpaConfig setLogResponses(boolean logResponses)
     {
         this.logResponses = logResponses;
+        return this;
+    }
+
+    public boolean getAllowPermissioningOperations()
+    {
+        return this.allowPermissioningOperations;
+    }
+
+    @Config("opa.allow-permissioning-operations")
+    @ConfigDescription("Whether to allow permissioning operations (GRANT, DENY, ...) as well as role management - OPA will not be queried for any such operations, they will be bulk allowed or denied depending on this setting")
+    public OpaConfig setAllowPermissioningOperations(boolean allowPermissioningOperations)
+    {
+        this.allowPermissioningOperations = allowPermissioningOperations;
         return this;
     }
 }

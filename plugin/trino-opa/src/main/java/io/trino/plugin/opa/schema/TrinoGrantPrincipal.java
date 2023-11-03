@@ -17,8 +17,6 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.trino.spi.security.TrinoPrincipal;
 import jakarta.validation.constraints.NotNull;
 
-import java.util.Optional;
-
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
 import static java.util.Objects.requireNonNull;
 
@@ -28,11 +26,6 @@ public record TrinoGrantPrincipal(@NotNull String type, @NotNull String name)
     public static TrinoGrantPrincipal fromTrinoPrincipal(TrinoPrincipal principal)
     {
         return new TrinoGrantPrincipal(principal.getType().name(), principal.getName());
-    }
-
-    public static TrinoGrantPrincipal fromTrinoPrincipal(Optional<TrinoPrincipal> principal)
-    {
-        return principal.map(TrinoGrantPrincipal::fromTrinoPrincipal).orElse(null);
     }
 
     public TrinoGrantPrincipal

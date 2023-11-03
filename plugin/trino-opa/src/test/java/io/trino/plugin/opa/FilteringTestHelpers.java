@@ -35,8 +35,8 @@ public class FilteringTestHelpers
 
     public static Stream<Arguments> emptyInputTestCases()
     {
-        Stream<BiFunction<OpaAccessControl, SystemSecurityContext, Collection>> callables = Stream.of(
-                (authorizer, context) -> authorizer.filterViewQueryOwnedBy(context.getIdentity(), ImmutableSet.<Identity>of()),
+        Stream<BiFunction<OpaAccessControl, SystemSecurityContext, Collection<?>>> callables = Stream.of(
+                (authorizer, context) -> authorizer.filterViewQueryOwnedBy(context.getIdentity(), ImmutableSet.of()),
                 (authorizer, context) -> authorizer.filterCatalogs(context, ImmutableSet.of()),
                 (authorizer, context) -> authorizer.filterSchemas(context, "my_catalog", ImmutableSet.of()),
                 (authorizer, context) -> authorizer.filterTables(context, "my_catalog", ImmutableSet.of()),

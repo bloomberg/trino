@@ -13,33 +13,28 @@
  */
 package io.trino.plugin.opa.schema;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.security.Identity;
 import jakarta.validation.constraints.NotNull;
 
-import java.util.Map;
 import java.util.Set;
 
 import static java.util.Objects.requireNonNull;
 
 public record TrinoIdentity(
         @NotNull String user,
-        @NotNull Set<String> groups,
-        @NotNull Map<String, String> extraCredentials)
+        @NotNull Set<String> groups)
 {
     public static TrinoIdentity fromTrinoIdentity(Identity identity)
     {
         return new TrinoIdentity(
                 identity.getUser(),
-                identity.getGroups(),
-                identity.getExtraCredentials());
+                identity.getGroups());
     }
 
     public TrinoIdentity
     {
         requireNonNull(user, "user is null");
         groups = ImmutableSet.copyOf(requireNonNull(groups, "groups is null"));
-        extraCredentials = ImmutableMap.copyOf(requireNonNull(extraCredentials, "extraCredentials is null"));
     }
 }

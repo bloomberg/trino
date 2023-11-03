@@ -13,6 +13,8 @@
  */
 package io.trino.plugin.opa;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
 import io.airlift.http.client.HttpStatus;
@@ -22,6 +24,7 @@ import io.airlift.http.client.StaticBodyGenerator;
 import io.airlift.http.client.testing.TestingHttpClient;
 import io.airlift.http.client.testing.TestingResponse;
 
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedList;
@@ -39,13 +42,14 @@ public class HttpClientUtils
     public static class RecordingHttpProcessor
             implements TestingHttpClient.Processor
     {
-        private final List<String> requests = new LinkedList<>();
-        private Function<String, MockResponse> handler;
+        private static final JsonMapper jsonMapper = new JsonMapper();
+        private final List<JsonNode> requests = new LinkedList<>();
+        private final Function<JsonNode, MockResponse> handler;
         private final URI expectedURI;
         private final String expectedMethod;
         private final String expectedContentType;
 
-        public RecordingHttpProcessor(URI expectedURI, String expectedMethod, String expectedContentType, Function<String, MockResponse> handler)
+        public RecordingHttpProcessor(URI expectedURI, String expectedMethod, String expectedContentType, Function<JsonNode, MockResponse> handler)
         {
             this.expectedMethod = requireNonNull(expectedMethod, "expectedMethod is null");
             this.expectedContentType = requireNonNull(expectedContentType, "expectedContentType is null");
@@ -54,7 +58,7 @@ public class HttpClientUtils
         }
 
         @Override
-        public Response handle(Request request)
+        public synchronized Response handle(Request request)
         {
             if (!requireNonNull(request.getMethod()).equalsIgnoreCase(expectedMethod)) {
                 throw new IllegalArgumentException("Unexpected method: %s".formatted(request.getMethod()));
@@ -67,10 +71,14 @@ public class HttpClientUtils
                 throw new IllegalArgumentException("Unexpected URI: %s".formatted(request.getUri().toString()));
             }
             if (requireNonNull(request.getBodyGenerator()) instanceof StaticBodyGenerator bodyGenerator) {
-                synchronized (this.requests) {
-                    String requestContents = new String(bodyGenerator.getBody(), StandardCharsets.UTF_8);
-                    requests.add(requestContents);
-                    return handler.apply(requestContents).buildResponse();
+                String requestContents = new String(bodyGenerator.getBody(), StandardCharsets.UTF_8);
+                try {
+                    JsonNode parsedRequest = jsonMapper.readTree(requestContents);
+                    requests.add(parsedRequest);
+                    return handler.apply(parsedRequest).buildResponse();
+                }
+                catch (IOException e) {
+                    throw new IllegalArgumentException("Request has illegal JSON", e);
                 }
             }
             else {
@@ -78,16 +86,9 @@ public class HttpClientUtils
             }
         }
 
-        public List<String> getRequests()
+        public synchronized List<JsonNode> getRequests()
         {
-            synchronized (this.requests) {
-                return ImmutableList.copyOf(this.requests);
-            }
-        }
-
-        public void setHandler(Function<String, MockResponse> handler)
-        {
-            this.handler = handler;
+            return ImmutableList.copyOf(requests);
         }
     }
 
@@ -96,7 +97,7 @@ public class HttpClientUtils
     {
         private final RecordingHttpProcessor httpProcessor;
 
-        public InstrumentedHttpClient(URI expectedURI, String expectedMethod, String expectedContentType, Function<String, MockResponse> handler)
+        public InstrumentedHttpClient(URI expectedURI, String expectedMethod, String expectedContentType, Function<JsonNode, MockResponse> handler)
         {
             this(new RecordingHttpProcessor(expectedURI, expectedMethod, expectedContentType, handler));
         }
@@ -107,14 +108,9 @@ public class HttpClientUtils
             this.httpProcessor = processor;
         }
 
-        public void setHandler(Function<String, MockResponse> handler)
+        public List<JsonNode> getRequests()
         {
-            this.httpProcessor.setHandler(handler);
-        }
-
-        public List<String> getRequests()
-        {
-            return this.httpProcessor.getRequests();
+            return httpProcessor.getRequests();
         }
     }
 
@@ -127,5 +123,5 @@ public class HttpClientUtils
                     ImmutableListMultimap.of(CONTENT_TYPE, JSON_UTF_8.toString()),
                     this.contents.getBytes(StandardCharsets.UTF_8));
         }
-    };
+    }
 }

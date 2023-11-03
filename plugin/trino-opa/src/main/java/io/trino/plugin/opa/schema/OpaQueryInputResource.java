@@ -14,13 +14,9 @@
 package io.trino.plugin.opa.schema;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.google.common.collect.ImmutableSet;
 import jakarta.validation.constraints.NotNull;
 
-import java.util.Set;
-
 import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 
 @JsonInclude(NON_NULL)
@@ -31,17 +27,8 @@ public record OpaQueryInputResource(
         TrinoFunction function,
         NamedEntity catalog,
         TrinoSchema schema,
-        TrinoTable table,
-        NamedEntity role,
-        Set<NamedEntity> roles)
+        TrinoTable table)
 {
-    public OpaQueryInputResource
-    {
-        if (roles != null) {
-            roles = ImmutableSet.copyOf(roles);
-        }
-    }
-
     public record NamedEntity(@NotNull String name)
     {
         public NamedEntity
@@ -63,8 +50,6 @@ public record OpaQueryInputResource(
         private NamedEntity catalog;
         private TrinoSchema schema;
         private TrinoTable table;
-        private NamedEntity role;
-        private Set<NamedEntity> roles;
         private TrinoFunction function;
 
         private Builder() {}
@@ -105,18 +90,6 @@ public record OpaQueryInputResource(
             return this;
         }
 
-        public Builder role(String role)
-        {
-            this.role = new NamedEntity(role);
-            return this;
-        }
-
-        public Builder roles(Set<String> roles)
-        {
-            this.roles = roles.stream().map(NamedEntity::new).collect(toImmutableSet());
-            return this;
-        }
-
         public Builder function(TrinoFunction function)
         {
             this.function = function;
@@ -138,9 +111,7 @@ public record OpaQueryInputResource(
                     this.function,
                     this.catalog,
                     this.schema,
-                    this.table,
-                    this.role,
-                    this.roles);
+                    this.table);
         }
     }
 }

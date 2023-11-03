@@ -13,46 +13,53 @@
  */
 package io.trino.plugin.opa;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import io.trino.execution.QueryIdGenerator;
+import io.trino.plugin.opa.HttpClientUtils.InstrumentedHttpClient;
+import io.trino.plugin.opa.HttpClientUtils.MockResponse;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.SystemSecurityContext;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.params.provider.Arguments;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.Arrays;
-import java.util.function.BiConsumer;
+import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.net.MediaType.JSON_UTF_8;
 
 public class TestHelpers
 {
     private TestHelpers() {}
 
-    public static final HttpClientUtils.MockResponse OK_RESPONSE = new HttpClientUtils.MockResponse("""
+    public static final MockResponse OK_RESPONSE = new MockResponse("""
             {
                 "decision_id": "",
                 "result": true
             }
             """,
             200);
-    public static final HttpClientUtils.MockResponse NO_ACCESS_RESPONSE = new HttpClientUtils.MockResponse("""
+    public static final MockResponse NO_ACCESS_RESPONSE = new MockResponse("""
             {
                 "decision_id": "",
                 "result": false
             }
             """,
             200);
-    public static final HttpClientUtils.MockResponse MALFORMED_RESPONSE = new HttpClientUtils.MockResponse("""
+    public static final MockResponse MALFORMED_RESPONSE = new MockResponse("""
             { "this"": is broken_json; }
             """,
             200);
-    public static final HttpClientUtils.MockResponse UNDEFINED_RESPONSE = new HttpClientUtils.MockResponse("{}", 404);
-    public static final HttpClientUtils.MockResponse BAD_REQUEST_RESPONSE = new HttpClientUtils.MockResponse("{}", 400);
-    public static final HttpClientUtils.MockResponse SERVER_ERROR_RESPONSE = new HttpClientUtils.MockResponse("", 500);
+    public static final MockResponse UNDEFINED_RESPONSE = new MockResponse("{}", 404);
+    public static final MockResponse BAD_REQUEST_RESPONSE = new MockResponse("{}", 400);
+    public static final MockResponse SERVER_ERROR_RESPONSE = new MockResponse("", 500);
 
     public static Stream<Arguments> createFailingTestCases(Stream<Arguments> baseTestCases)
     {
@@ -94,17 +101,6 @@ public class TestHelpers
         return new SystemSecurityContext(identity, new QueryIdGenerator().createNextQueryId(), Instant.now());
     }
 
-    public static <T> BiConsumer<OpaAccessControl, SystemSecurityContext> convertSystemSecurityContextToIdentityArgument(
-            BiConsumer<OpaAccessControl, Identity> callable)
-    {
-        return (accessControl, systemSecurityContext) -> callable.accept(accessControl, systemSecurityContext.getIdentity());
-    }
-
-    public static <T> FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, T> convertSystemSecurityContextToIdentityArgument(
-            FunctionalHelpers.Consumer3<OpaAccessControl, Identity, T> callable) {
-        return (accessControl, systemSecurityContext, argument) -> callable.accept(accessControl, systemSecurityContext.getIdentity(), argument);
-    }
-
     public abstract static class MethodWrapper<T> {
         public abstract boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument);
     }
@@ -138,5 +134,25 @@ public class TestHelpers
         public boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument) {
             return this.callable.apply(opaAccessControl, systemSecurityContext, argument);
         }
+    }
+
+    public static InstrumentedHttpClient createMockHttpClient(URI expectedUri, Function<JsonNode, MockResponse> handler)
+    {
+        return new InstrumentedHttpClient(expectedUri, "POST", JSON_UTF_8.toString(), handler);
+    }
+
+    public static OpaAccessControl createOpaAuthorizer(URI opaUri, InstrumentedHttpClient mockHttpClient)
+    {
+        return (OpaAccessControl) OpaAccessControlFactory.create(ImmutableMap.of("opa.policy.uri", opaUri.toString()), Optional.of(mockHttpClient));
+    }
+
+    public static OpaAccessControl createOpaAuthorizer(URI opaUri, URI opaBatchUri, InstrumentedHttpClient mockHttpClient)
+    {
+        return (OpaAccessControl) OpaAccessControlFactory.create(
+                ImmutableMap.<String, String>builder()
+                        .put("opa.policy.uri", opaUri.toString())
+                        .put("opa.policy.batched-uri", opaBatchUri.toString())
+                        .buildOrThrow(),
+                Optional.of(mockHttpClient));
     }
 }

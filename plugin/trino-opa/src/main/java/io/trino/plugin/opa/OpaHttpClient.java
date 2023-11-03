@@ -97,7 +97,7 @@ public class OpaHttpClient
             log.debug(
                     "Sending OPA request to URI \"%s\" ; request body = %s ; request headers = %s",
                     uri.toString(),
-                    tryConvertBytesToString(requestBodyGenerator.getBody()),
+                    new String(requestBodyGenerator.getBody(), UTF_8),
                     request.getHeaders());
         }
         return FluentFuture.from(httpClient.executeAsync(request, createFullJsonResponseHandler(deserializer)))
@@ -203,20 +203,9 @@ public class OpaHttpClient
                     "OPA response for URI \"%s\" received: status code = %d ; response payload = %s ; response headers = %s",
                     uriString,
                     statusCode,
-                    tryConvertBytesToString(response.getJsonBytes()),
+                    new String(response.getJsonBytes(), UTF_8),
                     response.getHeaders());
         }
         return response.getValue();
-    }
-
-    private static String tryConvertBytesToString(byte[] bytes)
-    {
-        try {
-            return new String(bytes, UTF_8);
-        }
-        catch (Exception e) {
-            log.error(e, "Failed to convert JSON bytes to string for logging");
-            return "<Failed to convert>";
-        }
     }
 }
