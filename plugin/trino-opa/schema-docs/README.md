@@ -35,7 +35,7 @@ There are 2 top level fields on a request, both of these are _always_ present:
 - `context`: common across all request types, contains contextual information such as _who_ is performing the operation
 - `action`: denotes _what_ operation is being performed, as well as the resource(s) involved on said operation (if any)
 
-## The `context` object
+## The `context` object:
 
 This is common to all requests. It is always present and always contains the same fields, regardless of the operation being performed.
 
@@ -73,7 +73,7 @@ Currently, this object contains the following field:
 }
 ```
 
-## The `action` object
+## The `action` object:
 
 The `action` object contains information about the operation being performed,
 as well as the resources involved.
