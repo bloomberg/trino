@@ -47,19 +47,43 @@ opa.policy.batched-uri=https://your-opa-endpoint/v1/data/batch
 
 ### All configuration entries
 
-| Configuration name       | Required | Default | Description                                                                                                                  |
-|--------------------------|:--------:|:-------:|------------------------------------------------------------------------------------------------------------------------------|
-| `opa.policy.uri`         |   Yes    |   N/A   | Endpoint to query OPA                                                                                                        |
-| `opa.policy.batched-uri` |    No    |  Unset  | Endpoint for batch OPA requests                                                                                              |
-| `opa.log-requests`       |    No    | `false` | Determines whether requests (URI, headers and entire body) are logged prior to sending them to OPA                           |
-| `opa.log-responses`      |    No    | `false` | Determines whether OPA responses (URI, status code, headers and entire body) are logged                                      |
-| `opa.http-client.*`      |    No    |  Unset  | Additional HTTP client configurations that get passed down. E.g. `opa.http-client.http-proxy` for configuring the HTTP proxy |
+| Configuration name                   | Required | Default | Description                                                                                                                                              |
+|--------------------------------------|:--------:|:-------:|----------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `opa.policy.uri`                     |   Yes    |   N/A   | Endpoint to query OPA                                                                                                                                    |
+| `opa.policy.batched-uri`             |    No    |  Unset  | Endpoint for batch OPA requests                                                                                                                          |
+| `opa.log-requests`                   |    No    | `false` | Determines whether requests (URI, headers and entire body) are logged prior to sending them to OPA                                                       |
+| `opa.log-responses`                  |    No    | `false` | Determines whether OPA responses (URI, status code, headers and entire body) are logged                                                                  |
+| `opa.allow-permissioning-operations` |    No    | `false` | Determines whether permissioning operations will be allowed. These operations will be allowed or denied based on this setting, no request is sent to OPA |
+| `opa.http-client.*`                  |    No    |  Unset  | Additional HTTP client configurations that get passed down. E.g. `opa.http-client.http-proxy` for configuring the HTTP proxy                             |
 
 > When request / response logging is enabled, they will be logged at DEBUG level under the `io.trino.plugin.opa.OpaHttpClient` logger, you will need to update
 > your log configuration accordingly.
 >
 > Be aware that enabling these options will produce very large amounts of logs
 
+##### About permissioning operations
+
+The following operations are controlled by the `opa.allow-permissioning-operations` setting. If this setting is `true`, these
+operations will be allowed; they will otherwise be denied. No request is sent to OPA either way:
+
+- `GrantSchemaPrivilege`
+- `DenySchemaPrivilege`
+- `RevokeSchemaPrivilege`
+- `GrantTablePrivilege`
+- `DenyTablePrivilege`
+- `RevokeTablePrivilege`
+- `CreateRole`
+- `DropRole`
+- `GrantRoles`
+- `RevokeRoles`
+
+This is due to the complexity and potential unexpected consequences of having SQL-style grants / roles together with OPA, as per [discussion](https://github.com/trinodb/trino/pull/19532#discussion_r1380776593)
+on the initial PR.
+
+Additionally, users are always allowed to show information about roles (`SHOW ROLES`), regardless of this setting. The following operations are _always_ allowed:
+- `ShowRoles`
+- `ShowCurrentRoles`
+- `ShowRoleGrants`
 
 ## OPA queries
 
@@ -77,7 +101,13 @@ A query will contain a `context` and an `action` as its top level fields.
 
 #### Query context:
 
-This determines _who_ is performing the operations, and reflects the `SystemSecurityContext` class in Trino.
+While the `action` object contains information about _what_ action is being performed, the `context` object
+contains all other contextual information about it. The `context` object contains the following fields:
+- `identity`: The identity of the user performing the operation, containing the following 2 fields:
+  - `user` (string): username
+  - `groups` (array of strings): list of groups this user belongs to
+- `softwareStack`: Information about the software stack running in the Trino server, more fields may be added later, currently:
+  - `trinoVersion` (string): Trino version
 
 #### Query action:
 
@@ -86,8 +116,10 @@ This determines _what_ action is being performed and upon what resources, the to
 - `operation` (string): operation being performed
 - `resource` (object, nullable): information about the object being operated upon
 - `targetResource` (object, nullable): information about the _new object_ being created, if applicable
-- `grantee` (object, nullable): grantee of a grant operation
-- `grantor` (object, nullable): grantor in a grant operation
+- `grantee` (object, nullable): grantee of a grant operation.
+
+Fields that are not applicable for a specific operation (e.g. `targetResource` if not modifying a table/schema/catalog, or `grantee` if not granting
+permissions) will be set to null. Any null field will be omitted altogether from the `action` object.
 
 #### Examples
 
@@ -99,6 +131,9 @@ Accessing a table will result in a query like the one below:
     "identity": {
       "user": "foo",
       "groups": ["some-group"]
+    },
+    "softwareStack": {
+      "trinoVersion": "434"
     }
   },
   "action": {
@@ -128,6 +163,9 @@ when renaming a table.
     "identity": {
       "user": "foo",
       "groups": ["some-group"]
+    },
+    "softwareStack": {
+      "trinoVersion": "434"
     }
   },
   "action": {
