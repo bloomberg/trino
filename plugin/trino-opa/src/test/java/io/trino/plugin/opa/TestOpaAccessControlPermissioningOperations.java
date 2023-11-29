@@ -31,6 +31,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 
+import static io.trino.plugin.opa.TestHelpers.SYSTEM_ACCESS_CONTROL_CONTEXT;
 import static io.trino.plugin.opa.TestHelpers.createMockHttpClient;
 import static io.trino.plugin.opa.TestHelpers.systemSecurityContextFromIdentity;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -142,6 +143,7 @@ public class TestOpaAccessControlPermissioningOperations
                         .put("opa.policy.uri", OPA_SERVER_URI.toString())
                         .put("opa.allow-permissioning-operations", String.valueOf(allowPermissioningOperations))
                         .buildOrThrow(),
-                Optional.of(mockClient));
+                Optional.of(mockClient),
+                Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
     }
 }

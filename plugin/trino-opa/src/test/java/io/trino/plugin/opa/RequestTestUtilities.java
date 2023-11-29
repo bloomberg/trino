@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.trino.plugin.opa.TestHelpers.SYSTEM_ACCESS_CONTROL_CONTEXT;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class RequestTestUtilities
@@ -69,6 +70,9 @@ public class RequestTestUtilities
             parsedRequest.at("/input/context/identity/groups").iterator().forEachRemaining(node -> groupsInRequestBuilder.add(node.asText()));
             if (!groupsInRequestBuilder.build().equals(expectedUser.getGroups())) {
                 throw new AssertionError("Request had invalid set of groups in the identity block");
+            }
+            if (!parsedRequest.at("/input/context/softwareStack/trinoVersion").asText().equals(SYSTEM_ACCESS_CONTROL_CONTEXT.getVersion())) {
+                throw new AssertionError("Request had invalid trinoVersion");
             }
             return customHandler.apply(parsedRequest);
         };

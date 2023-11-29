@@ -16,11 +16,14 @@ package io.trino.plugin.opa;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.execution.QueryIdGenerator;
 import io.trino.plugin.opa.HttpClientUtils.InstrumentedHttpClient;
 import io.trino.plugin.opa.HttpClientUtils.MockResponse;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.Identity;
+import io.trino.spi.security.SystemAccessControlFactory;
 import io.trino.spi.security.SystemSecurityContext;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.params.provider.Arguments;
@@ -60,6 +63,7 @@ public class TestHelpers
     public static final MockResponse UNDEFINED_RESPONSE = new MockResponse("{}", 404);
     public static final MockResponse BAD_REQUEST_RESPONSE = new MockResponse("{}", 400);
     public static final MockResponse SERVER_ERROR_RESPONSE = new MockResponse("", 500);
+    public static final SystemAccessControlFactory.SystemAccessControlContext SYSTEM_ACCESS_CONTROL_CONTEXT = new TestingSystemAccessControlContext("TEST_VERSION");
 
     public static Stream<Arguments> createFailingTestCases(Stream<Arguments> baseTestCases)
     {
@@ -143,7 +147,7 @@ public class TestHelpers
 
     public static OpaAccessControl createOpaAuthorizer(URI opaUri, InstrumentedHttpClient mockHttpClient)
     {
-        return (OpaAccessControl) OpaAccessControlFactory.create(ImmutableMap.of("opa.policy.uri", opaUri.toString()), Optional.of(mockHttpClient));
+        return (OpaAccessControl) OpaAccessControlFactory.create(ImmutableMap.of("opa.policy.uri", opaUri.toString()), Optional.of(mockHttpClient), Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
     }
 
     public static OpaAccessControl createOpaAuthorizer(URI opaUri, URI opaBatchUri, InstrumentedHttpClient mockHttpClient)
@@ -153,6 +157,36 @@ public class TestHelpers
                         .put("opa.policy.uri", opaUri.toString())
                         .put("opa.policy.batched-uri", opaBatchUri.toString())
                         .buildOrThrow(),
-                Optional.of(mockHttpClient));
+                Optional.of(mockHttpClient),
+                Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
+    }
+
+    static final class TestingSystemAccessControlContext
+        implements SystemAccessControlFactory.SystemAccessControlContext
+    {
+        private final String trinoVersion;
+
+        public TestingSystemAccessControlContext(String version)
+        {
+            this.trinoVersion = version;
+        }
+
+        @Override
+        public String getVersion()
+        {
+            return this.trinoVersion;
+        }
+
+        @Override
+        public OpenTelemetry getOpenTelemetry()
+        {
+            return null;
+        }
+
+        @Override
+        public Tracer getTracer()
+        {
+            return null;
+        }
     }
 }

@@ -22,6 +22,7 @@ import io.airlift.bootstrap.Bootstrap;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.http.client.HttpClient;
 import io.airlift.json.JsonModule;
+import io.trino.plugin.opa.schema.OpaPluginContext;
 import io.trino.plugin.opa.schema.OpaQuery;
 import io.trino.plugin.opa.schema.OpaQueryResult;
 import io.trino.spi.security.SystemAccessControl;
@@ -49,19 +50,21 @@ public class OpaAccessControlFactory
     @Override
     public SystemAccessControl create(Map<String, String> config)
     {
-        return create(config, Optional.empty());
+        return create(config, Optional.empty(), Optional.empty());
     }
 
     @Override
     public SystemAccessControl create(Map<String, String> config, SystemAccessControlContext context)
     {
-        return create(config);
+        return create(config, Optional.empty(), Optional.ofNullable(context));
     }
 
     @VisibleForTesting
-    protected static SystemAccessControl create(Map<String, String> config, Optional<HttpClient> httpClient)
+    protected static SystemAccessControl create(Map<String, String> config, Optional<HttpClient> httpClient, Optional<SystemAccessControlContext> context)
     {
         requireNonNull(config, "config is null");
+        requireNonNull(httpClient, "httpClient is null");
+        requireNonNull(context, "context is null");
 
         Bootstrap app = new Bootstrap(
                 new JsonModule(),
@@ -71,6 +74,9 @@ public class OpaAccessControlFactory
                     httpClient.ifPresentOrElse(
                             client -> binder.bind(Key.get(HttpClient.class, ForOpa.class)).toInstance(client),
                             () -> httpClientBinder(binder).bindHttpClient("opa", ForOpa.class));
+                    context.ifPresentOrElse(
+                            actualContext -> binder.bind(OpaPluginContext.class).toInstance(new OpaPluginContext(actualContext.getVersion())),
+                            () -> binder.bind(OpaPluginContext.class).toInstance(new OpaPluginContext("UNKNOWN")));
                     binder.bind(OpaHighLevelClient.class);
                     binder.bind(Key.get(Executor.class, ForOpa.class))
                             .toProvider(ExecutorProvider.class)

@@ -15,11 +15,10 @@ package io.trino.plugin.opa.schema;
 
 import static java.util.Objects.requireNonNull;
 
-public record OpaQueryContext(TrinoIdentity identity, OpaPluginContext softwareStack)
+public record OpaPluginContext(String trinoVersion)
 {
-    public OpaQueryContext
+    public OpaPluginContext
     {
-        requireNonNull(identity, "identity is null");
-        requireNonNull(softwareStack, "softwareStack is null");
+        requireNonNull(trinoVersion, "trinoVersion is null");
     }
 }

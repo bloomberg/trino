@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.trino.plugin.opa.schema.OpaBatchQueryResult;
+import io.trino.plugin.opa.schema.OpaPluginContext;
 import io.trino.plugin.opa.schema.OpaQueryContext;
 import io.trino.plugin.opa.schema.OpaQueryInput;
 import io.trino.plugin.opa.schema.OpaQueryInputAction;
@@ -40,6 +41,7 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Objects.requireNonNull;
 
 public final class OpaBatchAccessControl
         extends OpaAccessControl
@@ -53,19 +55,20 @@ public final class OpaBatchAccessControl
             OpaHighLevelClient opaHighLevelClient,
             JsonCodec<OpaBatchQueryResult> batchResultCodec,
             OpaHttpClient opaHttpClient,
-            OpaConfig config)
+            OpaConfig config,
+            OpaPluginContext pluginContext)
     {
-        super(opaHighLevelClient, config);
+        super(opaHighLevelClient, config, pluginContext);
         this.opaBatchedPolicyUri = config.getOpaBatchUri().orElseThrow();
-        this.batchResultCodec = batchResultCodec;
-        this.opaHttpClient = opaHttpClient;
+        this.batchResultCodec = requireNonNull(batchResultCodec, "batchResultCodec is null");
+        this.opaHttpClient = requireNonNull(opaHttpClient, "opaHttpClient is null");
     }
 
     @Override
     public Collection<Identity> filterViewQueryOwnedBy(Identity identity, Collection<Identity> queryOwners)
     {
         return batchFilterFromOpa(
-                OpaQueryContext.fromIdentity(identity),
+                buildQueryContext(identity),
                 "FilterViewQueryOwnedBy",
                 queryOwners,
                 queryOwner -> OpaQueryInputResource.builder()
@@ -77,7 +80,7 @@ public final class OpaBatchAccessControl
     public Set<String> filterCatalogs(SystemSecurityContext context, Set<String> catalogs)
     {
         return batchFilterFromOpa(
-                OpaQueryContext.fromSystemSecurityContext(context),
+                buildQueryContext(context),
                 "FilterCatalogs",
                 catalogs,
                 catalog -> OpaQueryInputResource.builder()
@@ -89,7 +92,7 @@ public final class OpaBatchAccessControl
     public Set<String> filterSchemas(SystemSecurityContext context, String catalogName, Set<String> schemaNames)
     {
         return batchFilterFromOpa(
-                OpaQueryContext.fromSystemSecurityContext(context),
+                buildQueryContext(context),
                 "FilterSchemas",
                 schemaNames,
                 schema -> OpaQueryInputResource.builder().schema(new TrinoSchema(catalogName, schema)).build());
@@ -99,7 +102,7 @@ public final class OpaBatchAccessControl
     public Set<SchemaTableName> filterTables(SystemSecurityContext context, String catalogName, Set<SchemaTableName> tableNames)
     {
         return batchFilterFromOpa(
-                OpaQueryContext.fromSystemSecurityContext(context),
+                buildQueryContext(context),
                 "FilterTables",
                 tableNames,
                 table -> OpaQueryInputResource.builder().table(new TrinoTable(catalogName, table.getSchemaName(), table.getTableName())).build());
@@ -109,7 +112,7 @@ public final class OpaBatchAccessControl
     public Map<SchemaTableName, Set<String>> filterColumns(SystemSecurityContext context, String catalogName, Map<SchemaTableName, Set<String>> tableColumns)
     {
         BiFunction<SchemaTableName, List<String>, OpaQueryInput> requestBuilder = batchRequestBuilder(
-                OpaQueryContext.fromSystemSecurityContext(context),
+                buildQueryContext(context),
                 "FilterColumns",
                 (schemaTableName, columns) -> OpaQueryInputResource.builder()
                         .table(new TrinoTable(catalogName, schemaTableName.getSchemaName(), schemaTableName.getTableName()).withColumns(ImmutableSet.copyOf(columns)))
@@ -121,7 +124,7 @@ public final class OpaBatchAccessControl
     public Set<SchemaFunctionName> filterFunctions(SystemSecurityContext context, String catalogName, Set<SchemaFunctionName> functionNames)
     {
         return batchFilterFromOpa(
-                OpaQueryContext.fromSystemSecurityContext(context),
+                buildQueryContext(context),
                 "FilterFunctions",
                 functionNames,
                 function -> OpaQueryInputResource.builder()

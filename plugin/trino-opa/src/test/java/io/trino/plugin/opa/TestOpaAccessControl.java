@@ -18,11 +18,13 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Streams;
 import io.trino.plugin.opa.HttpClientUtils.InstrumentedHttpClient;
 import io.trino.plugin.opa.HttpClientUtils.MockResponse;
+import io.trino.plugin.opa.TestHelpers.TestingSystemAccessControlContext;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.PrincipalType;
+import io.trino.spi.security.SystemAccessControlFactory;
 import io.trino.spi.security.SystemSecurityContext;
 import io.trino.spi.security.TrinoPrincipal;
 import org.junit.jupiter.api.Named;
@@ -1091,6 +1093,49 @@ public class TestOpaAccessControl
                         "my_procedure"))
                 .isInstanceOf(expectedException)
                 .hasMessageContaining(expectedErrorMessage);
+    }
+
+    @Test
+    public void testRequestContextContentsWithKnownTrinoVersion()
+    {
+        testRequestContextContentsForGivenTrinoVersion(
+                Optional.of(new TestingSystemAccessControlContext("12345.67890")),
+                "12345.67890");
+    }
+
+    @Test
+    public void testRequestContextContentsWithUnknownTrinoVersion()
+    {
+        testRequestContextContentsForGivenTrinoVersion(Optional.empty(), "UNKNOWN");
+    }
+
+    private void testRequestContextContentsForGivenTrinoVersion(Optional<SystemAccessControlFactory.SystemAccessControlContext> accessControlContext, String expectedTrinoVersion)
+    {
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, request -> OK_RESPONSE);
+        OpaAccessControl authorizer = (OpaAccessControl) OpaAccessControlFactory.create(
+                ImmutableMap.of("opa.policy.uri", OPA_SERVER_URI.toString()),
+                Optional.of(mockClient),
+                accessControlContext);
+        Identity sampleIdentityWithGroups = Identity.forUser("test_user").withGroups(ImmutableSet.of("some_group")).build();
+
+        authorizer.checkCanExecuteQuery(sampleIdentityWithGroups);
+
+        String expectedRequest = """
+                {
+                    "action": {
+                        "operation": "ExecuteQuery"
+                    },
+                    "context": {
+                        "identity": {
+                            "user": "test_user",
+                            "groups": ["some_group"]
+                        },
+                        "softwareStack": {
+                            "trinoVersion": "%s"
+                        }
+                    }
+                }""".formatted(expectedTrinoVersion);
+        assertStringRequestsEqual(ImmutableSet.of(expectedRequest), mockClient.getRequests(), "/input");
     }
 
     private static Stream<Arguments> noResourceActionTestCases()
