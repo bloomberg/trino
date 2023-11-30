@@ -32,6 +32,7 @@ import java.net.URI;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
@@ -105,38 +106,41 @@ public class TestHelpers
         return new SystemSecurityContext(identity, new QueryIdGenerator().createNextQueryId(), Instant.now());
     }
 
-    public abstract static class MethodWrapper<T> {
-        public abstract boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument);
+    public abstract static class MethodWrapper {
+        public abstract boolean isAccessAllowed(OpaAccessControl opaAccessControl);
     }
 
-    public static class ThrowingMethodWrapper<T> extends MethodWrapper<T> {
-        private final FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, T> callable;
+    public static class ThrowingMethodWrapper extends MethodWrapper {
+        private final Consumer<OpaAccessControl> callable;
 
-        public ThrowingMethodWrapper(FunctionalHelpers.Consumer3<OpaAccessControl, SystemSecurityContext, T> callable) {
+        public ThrowingMethodWrapper(Consumer<OpaAccessControl> callable) {
             this.callable = callable;
         }
 
         @Override
-        public boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument) {
+        public boolean isAccessAllowed(OpaAccessControl opaAccessControl) {
             try {
-                this.callable.accept(opaAccessControl, systemSecurityContext, argument);
+                this.callable.accept(opaAccessControl);
                 return true;
             } catch (AccessDeniedException e) {
+                if (!e.getMessage().contains("Access Denied")) {
+                    throw new AssertionError("Expected AccessDenied exception to contain 'Access Denied' in the message");
+                }
                 return false;
             }
         }
     }
 
-    public static class ReturningMethodWrapper<T> extends MethodWrapper<T> {
-        private final FunctionalHelpers.Function3<OpaAccessControl, SystemSecurityContext, T, Boolean> callable;
+    public static class ReturningMethodWrapper extends MethodWrapper {
+        private final Function<OpaAccessControl, Boolean> callable;
 
-        public ReturningMethodWrapper(FunctionalHelpers.Function3<OpaAccessControl, SystemSecurityContext, T, Boolean> callable) {
+        public ReturningMethodWrapper(Function<OpaAccessControl, Boolean> callable) {
             this.callable = callable;
         }
 
         @Override
-        public boolean isAccessAllowed(OpaAccessControl opaAccessControl, SystemSecurityContext systemSecurityContext, T argument) {
-            return this.callable.apply(opaAccessControl, systemSecurityContext, argument);
+        public boolean isAccessAllowed(OpaAccessControl opaAccessControl) {
+            return this.callable.apply(opaAccessControl);
         }
     }
 
