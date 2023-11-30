@@ -27,7 +27,8 @@ import io.airlift.http.client.testing.TestingResponse;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.LinkedList;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 
@@ -43,7 +44,7 @@ public class HttpClientUtils
             implements TestingHttpClient.Processor
     {
         private static final JsonMapper jsonMapper = new JsonMapper();
-        private final List<JsonNode> requests = new LinkedList<>();
+        private final List<JsonNode> requests = Collections.synchronizedList(new ArrayList<>());
         private final Function<JsonNode, MockResponse> handler;
         private final URI expectedURI;
         private final String expectedMethod;
@@ -58,7 +59,7 @@ public class HttpClientUtils
         }
 
         @Override
-        public synchronized Response handle(Request request)
+        public Response handle(Request request)
         {
             if (!requireNonNull(request.getMethod()).equalsIgnoreCase(expectedMethod)) {
                 throw new IllegalArgumentException("Unexpected method: %s".formatted(request.getMethod()));
@@ -86,7 +87,7 @@ public class HttpClientUtils
             }
         }
 
-        public synchronized List<JsonNode> getRequests()
+        public List<JsonNode> getRequests()
         {
             return ImmutableList.copyOf(requests);
         }
