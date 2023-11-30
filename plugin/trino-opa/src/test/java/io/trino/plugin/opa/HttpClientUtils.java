@@ -36,7 +36,7 @@ import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
 import static com.google.common.net.MediaType.JSON_UTF_8;
 import static java.util.Objects.requireNonNull;
 
-public class HttpClientUtils
+public final class HttpClientUtils
 {
     private HttpClientUtils() {}
 
@@ -93,7 +93,7 @@ public class HttpClientUtils
         }
     }
 
-    public static class InstrumentedHttpClient
+    public static final class InstrumentedHttpClient
             extends TestingHttpClient
     {
         private final RecordingHttpProcessor httpProcessor;

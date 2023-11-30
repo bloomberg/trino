@@ -39,7 +39,7 @@ import java.util.stream.Stream;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.net.MediaType.JSON_UTF_8;
 
-public class TestHelpers
+public final class TestHelpers
 {
     private TestHelpers() {}
 

@@ -29,7 +29,7 @@ import java.util.stream.Stream;
 
 import static io.trino.plugin.opa.TestHelpers.createIllegalResponseTestCases;
 
-public class FilteringTestHelpers
+public final class FilteringTestHelpers
 {
     private FilteringTestHelpers() {}
 

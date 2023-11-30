@@ -28,7 +28,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.opa.TestHelpers.SYSTEM_ACCESS_CONTROL_CONTEXT;
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class RequestTestUtilities
+public final class RequestTestUtilities
 {
     private RequestTestUtilities() {}
 
