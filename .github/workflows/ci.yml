@@ -614,6 +614,7 @@ jobs:
             - { modules: plugin/trino-resource-group-managers }
             - { modules: plugin/trino-singlestore }
             - { modules: plugin/trino-snowflake }
+            - { modules: plugin/trino-snowflake, profile: cloud-tests }
             - { modules: plugin/trino-sqlserver }
             - { modules: testing/trino-faulttolerant-tests, profile: default }
             - { modules: testing/trino-faulttolerant-tests, profile: test-fault-tolerant-delta }
@@ -976,6 +977,7 @@ jobs:
             - suite-clickhouse
             - suite-mysql
             - suite-iceberg
+            - suite-snowflake
             - suite-hudi
             - suite-ignite
           exclude:
