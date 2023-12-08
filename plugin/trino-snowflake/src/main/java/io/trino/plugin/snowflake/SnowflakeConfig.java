@@ -24,6 +24,7 @@ public class SnowflakeConfig
     private String role;
     private String warehouse;
     private Boolean timestampNoTimezoneAsUTC;
+    private String httpProxy;
 
     public Optional<String> getAccount()
     {
@@ -82,6 +83,18 @@ public class SnowflakeConfig
     public SnowflakeConfig setTimestampNoTimezoneAsUTC(Boolean timestampNoTimezoneAsUTC)
     {
         this.timestampNoTimezoneAsUTC = timestampNoTimezoneAsUTC;
+        return this;
+    }
+
+    public Optional<String> getHTTPProxy()
+    {
+        return Optional.ofNullable(httpProxy);
+    }
+
+    @Config("snowflake.http-proxy")
+    public SnowflakeConfig setHTTPProxy(String httpProxy)
+    {
+        this.httpProxy = httpProxy;
         return this;
     }
 }
