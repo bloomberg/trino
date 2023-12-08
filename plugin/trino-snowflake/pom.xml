@@ -199,8 +199,6 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <excludes>
-                                <exclude>**/TestSnowflakeClient.java</exclude>
-                                <exclude>**/TestSnowflakeConfig.java</exclude>
                                 <exclude>**/TestSnowflakeConnectorTest.java</exclude>
                                 <exclude>**/TestSnowflakePlugin.java</exclude>
                                 <exclude>**/TestSnowflakeTypeMapping.java</exclude>
