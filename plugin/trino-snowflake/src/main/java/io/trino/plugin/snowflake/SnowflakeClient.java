@@ -198,39 +198,11 @@ public class SnowflakeClient
                 .put("time", handle -> {
                     return Optional.of(timeColumnMapping(handle));
                 })
-                .put("timestampntz", handle -> {
-                    return Optional.of(timestampColumnMapping(handle));
-                })
-                .put("timestamptz", handle -> {
-                    return Optional.of(timestampTZColumnMapping(handle));
-                })
-                .put("timestampltz", handle -> {
-                    return Optional.of(timestampTZColumnMapping(handle));
-                })
                 .put("date", handle -> {
                     return Optional.of(ColumnMapping.longMapping(
                             DateType.DATE, (resultSet, columnIndex) ->
                                     LocalDate.ofEpochDay(resultSet.getLong(columnIndex)).toEpochDay(),
                             snowFlakeDateWriter()));
-                })
-                .put("object", handle -> {
-                    return Optional.of(ColumnMapping.sliceMapping(
-                            VarcharType.createUnboundedVarcharType(),
-                            StandardColumnMappings.varcharReadFunction(VarcharType.createUnboundedVarcharType()),
-                            StandardColumnMappings.varcharWriteFunction(),
-                            PredicatePushdownController.DISABLE_PUSHDOWN));
-                })
-                .put("array", handle -> {
-                    return Optional.of(ColumnMapping.sliceMapping(
-                            VarcharType.createUnboundedVarcharType(),
-                            StandardColumnMappings.varcharReadFunction(VarcharType.createUnboundedVarcharType()),
-                            StandardColumnMappings.varcharWriteFunction(),
-                            PredicatePushdownController.DISABLE_PUSHDOWN));
-                })
-                .put("variant", handle -> {
-                    return Optional.of(ColumnMapping.sliceMapping(
-                            VarcharType.createUnboundedVarcharType(), variantReadFunction(), StandardColumnMappings.varcharWriteFunction(),
-                            PredicatePushdownController.FULL_PUSHDOWN));
                 })
                 .put("varchar", handle -> {
                     return Optional.of(varcharColumnMapping(handle.getRequiredColumnSize()));
