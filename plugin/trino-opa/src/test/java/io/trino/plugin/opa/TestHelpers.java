@@ -16,6 +16,7 @@ package io.trino.plugin.opa;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
+import io.airlift.configuration.ConfigurationMetadata;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import io.trino.execution.QueryIdGenerator;
@@ -28,9 +29,11 @@ import io.trino.spi.security.SystemSecurityContext;
 import org.junit.jupiter.api.Named;
 import org.junit.jupiter.params.provider.Arguments;
 
+import java.lang.reflect.InvocationTargetException;
 import java.net.URI;
 import java.time.Instant;
 import java.util.Arrays;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -149,20 +152,60 @@ public final class TestHelpers
         return new InstrumentedHttpClient(expectedUri, "POST", JSON_UTF_8.toString(), handler);
     }
 
-    public static OpaAccessControl createOpaAuthorizer(URI opaUri, InstrumentedHttpClient mockHttpClient)
+    public static OpaAccessControl createOpaAuthorizer(Map<String, String> config, InstrumentedHttpClient mockHttpClient)
     {
-        return (OpaAccessControl) OpaAccessControlFactory.create(ImmutableMap.of("opa.policy.uri", opaUri.toString()), Optional.of(mockHttpClient), Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
+        return (OpaAccessControl) OpaAccessControlFactory.create(config, Optional.of(mockHttpClient), Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
     }
 
-    public static OpaAccessControl createOpaAuthorizer(URI opaUri, URI opaBatchUri, InstrumentedHttpClient mockHttpClient)
+    public static final class OpaConfigBuilder
     {
-        return (OpaAccessControl) OpaAccessControlFactory.create(
-                ImmutableMap.<String, String>builder()
-                        .put("opa.policy.uri", opaUri.toString())
-                        .put("opa.policy.batched-uri", opaBatchUri.toString())
-                        .buildOrThrow(),
-                Optional.of(mockHttpClient),
-                Optional.of(SYSTEM_ACCESS_CONTROL_CONTEXT));
+        private final OpaConfig config = new OpaConfig();
+
+        public OpaConfigBuilder withBasePolicy(URI basePolicy)
+        {
+            config.setOpaUri(basePolicy);
+            return this;
+        }
+
+        public OpaConfigBuilder withBatchPolicy(URI batchPolicy)
+        {
+            config.setOpaBatchUri(batchPolicy);
+            return this;
+        }
+
+        public OpaConfigBuilder withRowFiltersPolicy(URI rowFiltersPolicy)
+        {
+            config.setOpaRowFiltersUri(rowFiltersPolicy);
+            return this;
+        }
+
+        public OpaConfigBuilder withColumnMaskingPolicy(URI columnMaskingPolicy)
+        {
+            config.setOpaColumnMaskingUri(columnMaskingPolicy);
+            return this;
+        }
+
+        public Map<String, String> buildConfig()
+        {
+            ConfigurationMetadata<OpaConfig> metadata = ConfigurationMetadata.getValidConfigurationMetadata(OpaConfig.class);
+            ImmutableMap.Builder<String, String> opaConfigBuilder = ImmutableMap.builder();
+            try {
+                for (ConfigurationMetadata.AttributeMetadata attribute : metadata.getAttributes().values()) {
+                    convertPropertyToString(attribute.getGetter().invoke(config)).ifPresent(
+                            propertyValue -> opaConfigBuilder.put(attribute.getInjectionPoint().getProperty(), propertyValue));
+                }
+            } catch (InvocationTargetException|IllegalAccessException e) {
+                throw new AssertionError("Failed to build config map", e);
+            }
+            return opaConfigBuilder.buildOrThrow();
+        }
+
+        private static Optional<String> convertPropertyToString(Object value) {
+            if (value instanceof Optional<?> optionalValue) {
+                return optionalValue.map(Object::toString);
+            }
+            return Optional.ofNullable(value).map(Object::toString);
+        }
     }
 
     static final class TestingSystemAccessControlContext
