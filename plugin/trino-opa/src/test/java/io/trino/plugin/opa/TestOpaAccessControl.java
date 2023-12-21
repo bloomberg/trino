@@ -78,7 +78,7 @@ public class TestOpaAccessControl
     @Test
     public void testResponseHasExtraFields()
     {
-        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, 200,"""
+        InstrumentedHttpClient mockClient = createMockHttpClient(OPA_SERVER_URI, buildValidatingRequestHandler(requestingIdentity, 200, """
                 {
                     "result": true,
                     "decision_id": "foo",
@@ -1173,7 +1173,11 @@ public class TestOpaAccessControl
     @Test
     public void testGetRowFiltersDoesNothingIfNotConfigured()
     {
-        InstrumentedHttpClient httpClient = createMockHttpClient(OPA_SERVER_ROW_FILTERING_URI, request -> {throw new AssertionError("Should not have been called");});
+        InstrumentedHttpClient httpClient = createMockHttpClient(
+                OPA_SERVER_ROW_FILTERING_URI,
+                request -> {
+                    throw new AssertionError("Should not have been called");
+                });
         OpaAccessControl authorizer = createOpaAuthorizer(OPA_CONFIG_WITH_ONLY_ALLOW, httpClient);
         CatalogSchemaTableName tableName = new CatalogSchemaTableName("some_catalog", "some_schema", "some_table");
 
@@ -1271,7 +1275,11 @@ public class TestOpaAccessControl
     @Test
     public void testGetColumnMaskDoesNothingIfNotConfigured()
     {
-        InstrumentedHttpClient httpClient = createMockHttpClient(OPA_SERVER_COLUMN_MASK_URI, request -> {throw new AssertionError("Should not have been called");});
+        InstrumentedHttpClient httpClient = createMockHttpClient(
+                OPA_SERVER_COLUMN_MASK_URI,
+                request -> {
+                    throw new AssertionError("Should not have been called");
+                });
         OpaAccessControl authorizer = createOpaAuthorizer(OPA_CONFIG_WITH_ONLY_ALLOW, httpClient);
         CatalogSchemaTableName tableName = new CatalogSchemaTableName("some_catalog", "some_schema", "some_table");
 

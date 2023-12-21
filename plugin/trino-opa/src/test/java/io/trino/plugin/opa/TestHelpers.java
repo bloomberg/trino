@@ -105,27 +105,34 @@ public final class TestHelpers
                 Stream.of(Arguments.of(Named.of("No access response", NO_ACCESS_RESPONSE), AccessDeniedException.class, "Access Denied")));
     }
 
-    public static SystemSecurityContext systemSecurityContextFromIdentity(Identity identity) {
+    public static SystemSecurityContext systemSecurityContextFromIdentity(Identity identity)
+    {
         return new SystemSecurityContext(identity, new QueryIdGenerator().createNextQueryId(), Instant.now());
     }
 
-    public abstract static class MethodWrapper {
+    public abstract static class MethodWrapper
+    {
         public abstract boolean isAccessAllowed(OpaAccessControl opaAccessControl);
     }
 
-    public static class ThrowingMethodWrapper extends MethodWrapper {
+    public static class ThrowingMethodWrapper
+            extends MethodWrapper
+    {
         private final Consumer<OpaAccessControl> callable;
 
-        public ThrowingMethodWrapper(Consumer<OpaAccessControl> callable) {
+        public ThrowingMethodWrapper(Consumer<OpaAccessControl> callable)
+        {
             this.callable = callable;
         }
 
         @Override
-        public boolean isAccessAllowed(OpaAccessControl opaAccessControl) {
+        public boolean isAccessAllowed(OpaAccessControl opaAccessControl)
+        {
             try {
                 this.callable.accept(opaAccessControl);
                 return true;
-            } catch (AccessDeniedException e) {
+            }
+            catch (AccessDeniedException e) {
                 if (!e.getMessage().contains("Access Denied")) {
                     throw new AssertionError("Expected AccessDenied exception to contain 'Access Denied' in the message");
                 }
@@ -134,15 +141,19 @@ public final class TestHelpers
         }
     }
 
-    public static class ReturningMethodWrapper extends MethodWrapper {
+    public static class ReturningMethodWrapper
+            extends MethodWrapper
+    {
         private final Function<OpaAccessControl, Boolean> callable;
 
-        public ReturningMethodWrapper(Function<OpaAccessControl, Boolean> callable) {
+        public ReturningMethodWrapper(Function<OpaAccessControl, Boolean> callable)
+        {
             this.callable = callable;
         }
 
         @Override
-        public boolean isAccessAllowed(OpaAccessControl opaAccessControl) {
+        public boolean isAccessAllowed(OpaAccessControl opaAccessControl)
+        {
             return this.callable.apply(opaAccessControl);
         }
     }
@@ -194,13 +205,15 @@ public final class TestHelpers
                     convertPropertyToString(attribute.getGetter().invoke(config)).ifPresent(
                             propertyValue -> opaConfigBuilder.put(attribute.getInjectionPoint().getProperty(), propertyValue));
                 }
-            } catch (InvocationTargetException|IllegalAccessException e) {
+            }
+            catch (InvocationTargetException | IllegalAccessException e) {
                 throw new AssertionError("Failed to build config map", e);
             }
             return opaConfigBuilder.buildOrThrow();
         }
 
-        private static Optional<String> convertPropertyToString(Object value) {
+        private static Optional<String> convertPropertyToString(Object value)
+        {
             if (value instanceof Optional<?> optionalValue) {
                 return optionalValue.map(Object::toString);
             }
@@ -209,7 +222,7 @@ public final class TestHelpers
     }
 
     static final class TestingSystemAccessControlContext
-        implements SystemAccessControlFactory.SystemAccessControlContext
+            implements SystemAccessControlFactory.SystemAccessControlContext
     {
         private final String trinoVersion;
 

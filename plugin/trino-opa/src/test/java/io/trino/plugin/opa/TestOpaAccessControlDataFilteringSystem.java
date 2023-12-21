@@ -101,7 +101,6 @@ public class TestOpaAccessControlDataFilteringSystem
 
     private DistributedQueryRunnerHelper runner;
 
-
     @AfterEach
     public void teardown()
     {

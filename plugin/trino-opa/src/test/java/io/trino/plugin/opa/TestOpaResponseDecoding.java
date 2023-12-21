@@ -216,9 +216,9 @@ public class TestOpaResponseDecoding
     public void testRowFilteringResponseIllegalResponseThrows()
     {
         testIllegalResponseDecodingThrows("""
-            {
-                "result": ["foo"]
-            }""", rowFilteringResponseCodec);
+               {
+                   "result": ["foo"]
+               }""", rowFilteringResponseCodec);
     }
 
     @Test
@@ -280,9 +280,9 @@ public class TestOpaResponseDecoding
     public void testColumnMaskingResponseIllegalResponseThrows()
     {
         testIllegalResponseDecodingThrows("""
-            {
-                "result": {"foo": "bar"}
-            }""", columnMaskingResponseCodec);
+               {
+                   "result": {"foo": "bar"}
+               }""", columnMaskingResponseCodec);
     }
 
     private <T> void testIllegalResponseDecodingThrows(String rawResponse, JsonCodec<T> codec)

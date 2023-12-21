@@ -261,7 +261,7 @@ public class TestOpaBatchAccessControlFiltering
                         requestingIdentity,
                         parsedRequest -> {
                             String tableName = parsedRequest.at("/input/action/filterResources/0/table/tableName").asText();
-                            String responseContents = switch(tableName) {
+                            String responseContents = switch (tableName) {
                                 case "table_one" -> "{\"result\": [0, 1]}";
                                 case "table_two" -> "{\"result\": [1]}";
                                 default -> "{\"result\": []}";
