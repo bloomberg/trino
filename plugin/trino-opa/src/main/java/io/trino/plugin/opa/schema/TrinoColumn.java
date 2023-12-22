@@ -19,6 +19,23 @@ import jakarta.validation.constraints.NotNull;
 
 import static java.util.Objects.requireNonNull;
 
+/**
+ * This class is used to represent information about a column for the purposes of column masking.
+ * It is (perhaps counterintuitively) only used for column masking and not for operations like
+ * FilterColumns. This is for 3 reasons:
+ * - API stability between the batch & non-batch modes: sending an array of TrinoColumn objects would be wasteful for
+ *   the batch authorizer mode (as it would repeat the catalog, schema and table names once per column). As such, this
+ *   object is not used for FilterColumns even if batch mode is disabled
+ * - This object contains in-depth information about the column (e.g. its type), and it may be modified to include
+ *   additional fields in the future. This level of information is not provided to operations like FilterColumns
+ * - Backwards compatibility
+ *
+ * @param catalogName The name of the catalog this column's table belongs to
+ * @param schemaName The name of the schema this column's table belongs to
+ * @param tableName The name of the table this column is in
+ * @param columnName Column name
+ * @param columnType String representation of the column type
+ */
 public record TrinoColumn(
         @NotNull String catalogName,
         @NotNull String schemaName,
