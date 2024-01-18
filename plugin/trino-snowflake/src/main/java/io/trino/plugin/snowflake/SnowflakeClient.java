@@ -310,7 +310,7 @@ public class SnowflakeClient
 
     private static SliceReadFunction variantReadFunction()
     {
-        return (resultSet, columnIndex) -> utf8Slice(resultSet.getString(columnIndex).replaceAll("^\"|\"$", ""));
+        return (resultSet, columnIndex) -> Slices.utf8Slice(resultSet.getString(columnIndex).replaceAll("^\"|\"$", ""));
     }
 
     private static ColumnMapping columnMappingPushdown(ColumnMapping mapping)
