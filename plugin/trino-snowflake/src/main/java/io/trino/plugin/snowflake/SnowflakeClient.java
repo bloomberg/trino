@@ -94,8 +94,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
-import static io.trino.spi.type.TimestampWithTimeZoneType.MAX_SHORT_PRECISION;
-import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.Timestamps.MILLISECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
@@ -359,27 +357,6 @@ public class SnowflakeClient
                 statement.setString(index, SNOWFLAKE_TIME_FORMATTER.format(localTime));
             }
         };
-    }
-
-    private static ColumnMapping timestampTzColumnMapping(JdbcTypeHandle typeHandle)
-    {
-        int precision = typeHandle.getRequiredDecimalDigits();
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
-                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-        int type = typeHandle.getJdbcType();
-        if (precision <= MAX_SHORT_PRECISION) {
-            return ColumnMapping.longMapping(
-                    createTimestampWithTimeZoneType(precision),
-                    (resultSet, columnIndex) -> {
-                        ZonedDateTime timestamp = SNOWFLAKE_DATETIME_FORMATTER.parse(resultSet.getString(columnIndex), ZonedDateTime::from);
-                        return DateTimeEncoding.packDateTimeWithZone(timestamp.toInstant().toEpochMilli(), timestamp.getZone().getId());
-                    },
-                    timestampWithTimezoneWriteFunction(),
-                    PredicatePushdownController.FULL_PUSHDOWN);
-        }
-        else {
-            return ColumnMapping.objectMapping(createTimestampWithTimeZoneType(precision), longTimestampWithTimezoneReadFunction(), longTimestampWithTzWriteFunction());
-        }
     }
 
     private static ColumnMapping varcharColumnMapping(int varcharLength)

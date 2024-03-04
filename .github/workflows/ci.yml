@@ -656,22 +656,22 @@ jobs:
           $MAVEN test ${MAVEN_TEST} -pl :trino-bigquery -Pcloud-tests-case-insensitive-mapping -Dbigquery.credentials-key="${BIGQUERY_CASE_INSENSITIVE_CREDENTIALS_KEY}"
       - name: Cloud Snowflake Tests
         env:
-          SNOWFLAKE_TEST_SERVER_URL: ${{ secrets.SNOWFLAKE_TEST_SERVER_URL }}
-          SNOWFLAKE_TEST_SERVER_USER: ${{ secrets.SNOWFLAKE_TEST_SERVER_USER }}
-          SNOWFLAKE_TEST_SERVER_PASSWORD: ${{ secrets.SNOWFLAKE_TEST_SERVER_PASSWORD }}
-          SNOWFLAKE_TEST_SERVER_DATABASE: ${{ secrets.SNOWFLAKE_TEST_SERVER_DATABASE }}
-          SNOWFLAKE_TEST_SERVER_ROLE: ${{ secrets.SNOWFLAKE_TEST_SERVER_ROLE }}
-          SNOWFLAKE_TEST_SERVER_WAREHOUSE: ${{ secrets.SNOWFLAKE_TEST_SERVER_WAREHOUSE }}
-        if: matrix.modules == 'plugin/trino-snowflake' && !contains(matrix.profile, 'cloud-tests') && (env.SNOWFLAKE_TEST_SERVER_URL != '' && env.SNOWFLAKE_TEST_SERVER_USER != '' && env.SNOWFLAKE_TEST_SERVER_PASSWORD != '')
+          SNOWFLAKE_URL: ${{ secrets.SNOWFLAKE_URL }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+        if: matrix.modules == 'plugin/trino-snowflake' && !contains(matrix.profile, 'cloud-tests') && (env.SNOWFLAKE_URL != '' && env.SNOWFLAKE_USER != '' && env.SNOWFLAKE_PASSWORD != '')
         run: |
           $MAVEN test ${MAVEN_TEST} -pl :trino-snowflake -Pcloud-tests \
             -Dconnector.name="snowflake" \
-            -Dsnowflake.test.server.url="${SNOWFLAKE_TEST_SERVER_URL}" \
-            -Dsnowflake.test.server.user="${SNOWFLAKE_TEST_SERVER_USER}" \
-            -Dsnowflake.test.server.password="${SNOWFLAKE_TEST_SERVER_PASSWORD}" \
-            -Dsnowflake.test.server.database="${SNOWFLAKE_TEST_SERVER_DATABASE}" \
-            -Dsnowflake.test.server.role="${SNOWFLAKE_TEST_SERVER_ROLE}" \
-            -Dsnowflake.test.server.warehouse="${SNOWFLAKE_TEST_SERVER_WAREHOUSE}"
+            -Dsnowflake.test.server.url="${SNOWFLAKE_URL}" \
+            -Dsnowflake.test.server.user="${SNOWFLAKE_USER}" \
+            -Dsnowflake.test.server.password="${SNOWFLAKE_PASSWORD}" \
+            -Dsnowflake.test.server.database="${SNOWFLAKE_DATABASE}" \
+            -Dsnowflake.test.server.role="${SNOWFLAKE_ROLE}" \
+            -Dsnowflake.test.server.warehouse="${SNOWFLAKE_WAREHOUSE}"
       - name: Iceberg Cloud Tests
         id: tests-iceberg
         env:
