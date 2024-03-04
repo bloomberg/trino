@@ -72,6 +72,5 @@ public class TestingSnowflakeServer
     public void close()
             throws Exception
     {
-        execute("DROP SCHEMA IF EXISTS tpch");
     }
 }
