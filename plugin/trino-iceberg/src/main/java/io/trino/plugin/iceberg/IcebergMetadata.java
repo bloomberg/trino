@@ -263,8 +263,10 @@ import static io.trino.plugin.iceberg.IcebergTableName.isDataTable;
 import static io.trino.plugin.iceberg.IcebergTableName.isIcebergTableName;
 import static io.trino.plugin.iceberg.IcebergTableName.isMaterializedViewStorage;
 import static io.trino.plugin.iceberg.IcebergTableName.tableNameFrom;
+import static io.trino.plugin.iceberg.IcebergTableProperties.EXTRA_PROPERTIES;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.ILLEGAL_EXTRA_PROPERTIES;
 import static io.trino.plugin.iceberg.IcebergTableProperties.PARTITIONING_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.SORTED_BY_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableProperties.getPartitioning;
@@ -364,7 +366,7 @@ public class IcebergMetadata
     private static final int CLEANING_UP_PROCEDURES_MAX_SUPPORTED_TABLE_VERSION = 2;
     private static final String RETENTION_THRESHOLD = "retention_threshold";
     private static final String UNKNOWN_SNAPSHOT_TOKEN = "UNKNOWN";
-    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.of(FILE_FORMAT_PROPERTY, FORMAT_VERSION_PROPERTY, PARTITIONING_PROPERTY, SORTED_BY_PROPERTY);
+    public static final Set<String> UPDATABLE_TABLE_PROPERTIES = ImmutableSet.of(FILE_FORMAT_PROPERTY, FORMAT_VERSION_PROPERTY, PARTITIONING_PROPERTY, SORTED_BY_PROPERTY, EXTRA_PROPERTIES);
 
     public static final String NUMBER_OF_DISTINCT_VALUES_NAME = "NUMBER_OF_DISTINCT_VALUES";
     private static final FunctionName NUMBER_OF_DISTINCT_VALUES_FUNCTION = new FunctionName(IcebergThetaSketchForStats.NAME);
@@ -2125,6 +2127,18 @@ public class IcebergMetadata
             }
         }
 
+        if (properties.containsKey(EXTRA_PROPERTIES)) {
+            Map<String, String> extraProperties = (Map<String, String>) properties.get(EXTRA_PROPERTIES)
+                    .orElseThrow(() -> new IllegalArgumentException("extra_properties property cannot be empty"));
+
+            Set<String> illegalExtraProperties = Sets.intersection(ILLEGAL_EXTRA_PROPERTIES, extraProperties.keySet());
+            if (!illegalExtraProperties.isEmpty()) {
+                throw new TrinoException(
+                        INVALID_TABLE_PROPERTY,
+                        "Illegal keys in extra_properties: " + illegalExtraProperties);
+            }
+            extraProperties.forEach(updateProperties::set);
+        }
         commitTransaction(transaction, "set table properties");
     }
 

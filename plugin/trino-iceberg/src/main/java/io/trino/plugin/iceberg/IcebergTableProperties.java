@@ -14,15 +14,19 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.trino.plugin.hive.orc.OrcWriterConfig;
 import io.trino.spi.TrinoException;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.MapType;
+import io.trino.spi.type.TypeManager;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.iceberg.IcebergConfig.FORMAT_VERSION_SUPPORT_MAX;
@@ -46,13 +50,23 @@ public class IcebergTableProperties
     public static final String ORC_BLOOM_FILTER_COLUMNS_PROPERTY = "orc_bloom_filter_columns";
     public static final String ORC_BLOOM_FILTER_FPP_PROPERTY = "orc_bloom_filter_fpp";
     public static final String PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY = "parquet_bloom_filter_columns";
+    public static final String EXTRA_PROPERTIES = "extra_properties";
+    public static final Set<String> ILLEGAL_EXTRA_PROPERTIES = ImmutableSet.of(
+            FILE_FORMAT_PROPERTY,
+            PARTITIONING_PROPERTY,
+            SORTED_BY_PROPERTY,
+            LOCATION_PROPERTY,
+            FORMAT_VERSION_PROPERTY,
+            ORC_BLOOM_FILTER_COLUMNS,
+            ORC_BLOOM_FILTER_FPP);
 
     private final List<PropertyMetadata<?>> tableProperties;
 
     @Inject
     public IcebergTableProperties(
             IcebergConfig icebergConfig,
-            OrcWriterConfig orcWriterConfig)
+            OrcWriterConfig orcWriterConfig,
+            TypeManager typeManager)
     {
         tableProperties = ImmutableList.<PropertyMetadata<?>>builder()
                 .add(enumProperty(
@@ -119,6 +133,24 @@ public class IcebergTableProperties
                                 .map(String.class::cast)
                                 .map(name -> name.toLowerCase(ENGLISH))
                                 .collect(toImmutableList()),
+                        value -> value))
+                 .add(new PropertyMetadata<>(
+                        EXTRA_PROPERTIES,
+                        "Extra table properties",
+                        new MapType(VARCHAR, VARCHAR, typeManager.getTypeOperators()),
+                        Map.class,
+                        null,
+                        true,  // These properties are not listed in SHOW CREATE TABLE
+                        value -> {
+                            Map<String, String> extraProperties = (Map<String, String>) value;
+                            if (extraProperties.containsValue(null)) {
+                                throw new TrinoException(INVALID_TABLE_PROPERTY, format("Extra table property value cannot be null '%s'", extraProperties));
+                            }
+                            if (extraProperties.containsKey(null)) {
+                                throw new TrinoException(INVALID_TABLE_PROPERTY, format("Extra table property key cannot be null '%s'", extraProperties));
+                            }
+                            return extraProperties;
+                        },
                         value -> value))
                 .build();
     }
@@ -187,5 +219,10 @@ public class IcebergTableProperties
     {
         List<String> parquetBloomFilterColumns = (List<String>) tableProperties.get(PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY);
         return parquetBloomFilterColumns == null ? ImmutableList.of() : ImmutableList.copyOf(parquetBloomFilterColumns);
+    }
+  
+    public static Optional<Map<String, String>> getExtraProperties(Map<String, Object> tableProperties)
+    {
+        return Optional.ofNullable((Map<String, String>) tableProperties.get(EXTRA_PROPERTIES));
     }
 }

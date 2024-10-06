@@ -48,6 +48,7 @@ import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
+import io.trino.testing.QueryFailedException;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingConnectorBehavior;
@@ -62,6 +63,7 @@ import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.TableMetadataParser;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.util.JsonUtil;
+import org.assertj.core.api.Condition;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -8576,5 +8578,106 @@ public abstract class BaseIcebergConnectorTest
     {
         assertThat(getFieldFromLatestSnapshotSummary(tableName, TRINO_QUERY_ID_NAME))
                 .isEqualTo(queryId.toString());
+    }
+
+    @Test
+    public void testExtraProperties()
+    {
+        String tableName = format("%s.%s.create_table_with_multiple_extra_properties_%s", getSession().getCatalog().get(), getSession().getSchema().get(), randomNameSuffix());
+        assertUpdate("CREATE TABLE %s (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property.one', 'extra.property.two'], ARRAY['one', 'two']))".formatted(tableName));
+
+        assertQuery(
+                "SELECT \"extra.property.one\", \"extra.property.two\" FROM \"%s$properties\"".formatted(tableName),
+                "SELECT 'one', 'two'");
+
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
+
+        assertUpdate("DROP TABLE %s".formatted(tableName));
+    }
+
+    @Test
+    public void testExtraPropertiesWithCtas()
+    {
+        String tableName = format("%s.%s.create_table_ctas_with_multiple_extra_properties_%s", getSession().getCatalog().get(), getSession().getSchema().get(), randomNameSuffix());
+        assertUpdate("CREATE TABLE %s (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property.one', 'extra.property.two'], ARRAY['one', 'two']))".formatted(tableName));
+
+        assertQuery(
+                "SELECT \"extra.property.one\", \"extra.property.two\" FROM \"%s$properties\"".formatted(tableName),
+                "SELECT 'one', 'two'");
+
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE %s".formatted(tableName)).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
+
+        assertUpdate("DROP TABLE %s".formatted(tableName));
+    }
+
+    @Test
+    public void testShowCreateWithExtraProperties()
+    {
+        String tableName = format("%s.%s.show_create_table_with_extra_properties_%s", getSession().getCatalog().get(), getSession().getSchema().get(), randomNameSuffix());
+        assertUpdate("CREATE TABLE %s (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property.one', 'extra.property.two'], ARRAY['one', 'two']))".formatted(tableName));
+
+        // Assert that SHOW CREATE TABLE does not contain extra_properties
+        assertThat((String) computeActual("SHOW CREATE TABLE " + tableName).getOnlyValue())
+                .satisfies(new Condition<>(
+                        queryResult -> queryResult.contains("extra_properties"), "noExtraProperties"
+                ));
+
+        assertUpdate("DROP TABLE %s".formatted(tableName));
+    }
+
+    @Test
+    public void testDuplicateExtraProperties()
+    {
+        assertQueryFails(
+                "CREATE TABLE create_table_with_duplicate_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property', 'extra.property'], ARRAY['true', 'false']))",
+                "Invalid value for catalog 'iceberg' table property 'extra_properties': Cannot convert.*");
+        assertQueryFails(
+                "CREATE TABLE create_table_select_as_with_duplicate_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['extra.property', 'extra.property'], ARRAY['true', 'false']))",
+                "Invalid value for catalog 'iceberg' table property 'extra_properties': Cannot convert.*");
+    }
+
+    @Test
+    public void testOverwriteExistingPropertyWithExtraProperties()
+    {
+        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_with_overwrite_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['write.format.default'], ARRAY['foobar']))"))
+                .isInstanceOf(QueryFailedException.class)
+                .hasMessage("Illegal keys in extra_properties: [write.format.default]");
+
+        assertThatThrownBy(() -> assertUpdate("CREATE TABLE create_table_as_select_with_extra_properties WITH (extra_properties = MAP(ARRAY['format-version'], ARRAY['10'])) AS SELECT 1 as c1"))
+                .isInstanceOf(QueryFailedException.class)
+                .hasMessage("Illegal keys in extra_properties: [format-version]");
+    }
+
+    @Test
+    public void testNullExtraProperty()
+    {
+        assertQueryFails(
+                "CREATE TABLE create_table_with_duplicate_extra_properties (c1 integer) WITH (extra_properties = MAP(ARRAY['null.property'], ARRAY[null]))",
+                ".*Extra table property value cannot be null '\\{null.property=null}'.*");
+        assertQueryFails(
+                "CREATE TABLE create_table_as_select_with_extra_properties WITH (extra_properties = MAP(ARRAY['null.property'], ARRAY[null])) AS SELECT 1 as c1",
+                ".*Extra table property value cannot be null '\\{null.property=null}'.*");
+    }
+
+    @Test
+    public void testCollidingMixedCaseProperty()
+    {
+        String tableName = "create_table_with_mixed_case_extra_properties" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE %s (c1 integer) WITH (extra_properties = MAP(ARRAY['one', 'ONE'], ARRAY['one', 'ONE']))".formatted(tableName));
+        // TODO: (https://github.com/trinodb/trino/issues/17) This should run successfully
+        assertThatThrownBy(() -> query("SELECT * FROM \"%s$properties\"".formatted(tableName)))
+                .isInstanceOf(QueryFailedException.class)
+                .hasMessageContaining("Multiple entries with same key: one=one and one=one");
+
+        assertUpdate("DROP TABLE %s".formatted(tableName));
     }
 }
