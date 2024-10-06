@@ -21,7 +21,7 @@ import io.trino.decoder.DecoderColumnHandle;
 import io.trino.decoder.FieldValueProvider;
 import io.trino.decoder.RowDecoder;
 import io.trino.spi.block.ArrayBlockBuilder;
-import io.trino.spi.block.Block;
+import io.trino.spi.block.SqlMap;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.RecordCursor;
@@ -122,7 +122,7 @@ public class KafkaRecordSet
             topicPartition = new TopicPartition(split.getTopicName(), split.getPartitionId());
             kafkaConsumer = consumerFactory.create(connectorSession);
             kafkaConsumer.assign(ImmutableList.of(topicPartition));
-            kafkaConsumer.seek(topicPartition, split.getMessagesRange().getBegin());
+            kafkaConsumer.seek(topicPartition, split.getMessagesRange().begin());
         }
 
         @Override
@@ -150,7 +150,7 @@ public class KafkaRecordSet
             if (records.hasNext()) {
                 return nextRow(records.next());
             }
-            if (kafkaConsumer.position(topicPartition) >= split.getMessagesRange().getEnd()) {
+            if (kafkaConsumer.position(topicPartition) >= split.getMessagesRange().end()) {
                 return false;
             }
             records = kafkaConsumer.poll(Duration.ofMillis(CONSUMER_POLL_TIMEOUT)).iterator();
@@ -161,7 +161,7 @@ public class KafkaRecordSet
         {
             requireNonNull(message, "message is null");
 
-            if (message.offset() >= split.getMessagesRange().getEnd()) {
+            if (message.offset() >= split.getMessagesRange().end()) {
                 return false;
             }
 
@@ -233,7 +233,7 @@ public class KafkaRecordSet
         @Override
         public Object getObject(int field)
         {
-            return getFieldValueProvider(field, Block.class).getBlock();
+            return getFieldValueProvider(field, Object.class).getObject();
         }
 
         @Override
@@ -253,7 +253,7 @@ public class KafkaRecordSet
         private void checkFieldType(int field, Class<?> expected)
         {
             Class<?> actual = getType(field).getJavaType();
-            checkArgument(actual == expected, "Expected field %s to be type %s but is %s", field, expected, actual);
+            checkArgument(expected.isAssignableFrom(actual), "Expected field %s to be type %s but is %s", field, expected, actual);
         }
 
         @Override
@@ -275,7 +275,7 @@ public class KafkaRecordSet
             headerMap.put(header.key(), header.value());
         }
 
-        Block map = buildMapValue(
+        SqlMap map = buildMapValue(
                 varcharMapType,
                 headerMap.size(),
                 (keyBuilder, valueBuilder) -> {
@@ -298,7 +298,7 @@ public class KafkaRecordSet
             }
 
             @Override
-            public Block getBlock()
+            public SqlMap getObject()
             {
                 return map;
             }

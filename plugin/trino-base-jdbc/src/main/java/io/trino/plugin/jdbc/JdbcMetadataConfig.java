@@ -15,6 +15,7 @@ package io.trino.plugin.jdbc;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.ConfigHidden;
 import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
 import jakarta.validation.constraints.Min;
@@ -30,16 +31,19 @@ public class JdbcMetadataConfig
      * in terms of performance and money due to an increased network traffic.
      */
     private boolean joinPushdownEnabled;
+    private boolean complexJoinPushdownEnabled = true;
     private boolean aggregationPushdownEnabled = true;
 
     private boolean topNPushdownEnabled = true;
 
+    private boolean bulkListColumns; // default overridden in connectors that support other modes
+
     // Pushed domains are transformed into SQL IN lists
     // (or sequence of range predicates) in JDBC connectors.
     // Too large IN lists cause significant performance regression.
-    // Use 32 as compaction threshold as it provides reasonable balance
+    // Use 256 as compaction threshold as it provides reasonable balance
     // between performance and pushdown capabilities
-    private int domainCompactionThreshold = 32;
+    private int domainCompactionThreshold = 256;
 
     public boolean isComplexExpressionPushdownEnabled()
     {
@@ -64,6 +68,19 @@ public class JdbcMetadataConfig
     public JdbcMetadataConfig setJoinPushdownEnabled(boolean joinPushdownEnabled)
     {
         this.joinPushdownEnabled = joinPushdownEnabled;
+        return this;
+    }
+
+    public boolean isComplexJoinPushdownEnabled()
+    {
+        return complexJoinPushdownEnabled;
+    }
+
+    @Config("join-pushdown.with-expressions")
+    @ConfigDescription("Enable join pushdown with complex expressions")
+    public JdbcMetadataConfig setComplexJoinPushdownEnabled(boolean complexJoinPushdownEnabled)
+    {
+        this.complexJoinPushdownEnabled = complexJoinPushdownEnabled;
         return this;
     }
 
@@ -92,6 +109,19 @@ public class JdbcMetadataConfig
     public Boolean isTopNPushdownEnabled()
     {
         return this.topNPushdownEnabled;
+    }
+
+    public boolean isBulkListColumns()
+    {
+        return bulkListColumns;
+    }
+
+    @Config("jdbc.bulk-list-columns.enabled")
+    @ConfigHidden // just a kill switch
+    public JdbcMetadataConfig setBulkListColumns(boolean bulkListColumns)
+    {
+        this.bulkListColumns = bulkListColumns;
+        return this;
     }
 
     @Min(1)

@@ -174,16 +174,21 @@ public final class FlatHash
         return getIndex(blocks, position, hash) >= 0;
     }
 
-    public int putIfAbsent(Block[] blocks, int position)
+    public void computeHashes(Block[] blocks, long[] hashes, int offset, int length)
     {
-        long hash;
         if (hasPrecomputedHash) {
-            hash = BIGINT.getLong(blocks[blocks.length - 1], position);
+            Block hashBlock = blocks[blocks.length - 1];
+            for (int i = 0; i < length; i++) {
+                hashes[i] = BIGINT.getLong(hashBlock, offset + i);
+            }
         }
         else {
-            hash = flatHashStrategy.hash(blocks, position);
+            flatHashStrategy.hashBlocksBatched(blocks, hashes, offset, length);
         }
+    }
 
+    public int putIfAbsent(Block[] blocks, int position, long hash)
+    {
         int index = getIndex(blocks, position, hash);
         if (index >= 0) {
             return (int) INT_HANDLE.get(getRecords(index), getRecordOffset(index) + recordGroupIdOffset);
@@ -195,6 +200,19 @@ public final class FlatHash
             rehash(0);
         }
         return groupId;
+    }
+
+    public int putIfAbsent(Block[] blocks, int position)
+    {
+        long hash;
+        if (hasPrecomputedHash) {
+            hash = BIGINT.getLong(blocks[blocks.length - 1], position);
+        }
+        else {
+            hash = flatHashStrategy.hash(blocks, position);
+        }
+
+        return putIfAbsent(blocks, position, hash);
     }
 
     private int getIndex(Block[] blocks, int position, long hash)
@@ -228,7 +246,7 @@ public final class FlatHash
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int index = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (valueNotDistinctFrom(index, blocks, position, hash)) {
+            if (valueIdentical(index, blocks, position, hash)) {
                 return index;
             }
 
@@ -324,7 +342,7 @@ public final class FlatHash
 
         // we incrementally allocate the record groups to smooth out memory allocation
         if (capacity <= RECORDS_PER_GROUP) {
-            recordGroups = new byte[][]{new byte[multiplyExact(capacity, recordSize)]};
+            recordGroups = new byte[][] {new byte[multiplyExact(capacity, recordSize)]};
         }
         else {
             recordGroups = new byte[(capacity + 1) >> RECORDS_PER_GROUP_SHIFT][];
@@ -443,7 +461,7 @@ public final class FlatHash
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftIndex, Block[] rightBlocks, int rightPosition, long rightHash)
+    private boolean valueIdentical(int leftIndex, Block[] rightBlocks, int rightPosition, long rightHash)
     {
         byte[] leftRecords = getRecords(leftIndex);
         int leftRecordOffset = getRecordOffset(leftIndex);
@@ -460,7 +478,7 @@ public final class FlatHash
             leftVariableWidthChunk = variableWidthData.getChunk(leftRecords, leftRecordOffset);
         }
 
-        return flatHashStrategy.valueNotDistinctFrom(
+        return flatHashStrategy.valueIdentical(
                 leftRecords,
                 leftRecordOffset + recordValueOffset,
                 leftVariableWidthChunk,

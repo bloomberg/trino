@@ -16,18 +16,17 @@ package io.trino.plugin.kudu;
 import io.trino.testing.BaseConnectorSmokeTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
-import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunnerTpch;
 import static io.trino.plugin.kudu.TestKuduConnectorTest.REGION_COLUMNS;
 import static io.trino.plugin.kudu.TestKuduConnectorTest.createKuduTableForWrites;
 import static io.trino.plugin.kudu.TestingKuduServer.EARLIEST_TAG;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public abstract class BaseKuduConnectorSmokeTest
         extends BaseConnectorSmokeTest
@@ -40,9 +39,10 @@ public abstract class BaseKuduConnectorSmokeTest
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createKuduQueryRunnerTpch(
-                closeAfterClass(new TestingKuduServer(getKuduServerVersion())),
-                getKuduSchemaEmulationPrefix(), REQUIRED_TPCH_TABLES);
+        return KuduQueryRunnerFactory.builder(closeAfterClass(new TestingKuduServer(getKuduServerVersion())))
+                .setKuduSchemaEmulationPrefix(getKuduSchemaEmulationPrefix())
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -50,16 +50,16 @@ public abstract class BaseKuduConnectorSmokeTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ARRAY,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_CREATE_VIEW,
-                    SUPPORTS_NEGATIVE_DATE,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_TRUNCATE -> false;
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_NEGATIVE_DATE,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -71,14 +71,15 @@ public abstract class BaseKuduConnectorSmokeTest
                 "WITH (partition_by_hash_columns = ARRAY['a'], partition_by_hash_buckets = 2)";
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
         assertThat((String) computeScalar("SHOW CREATE TABLE region"))
                 .isEqualTo("CREATE TABLE kudu." + getSession().getSchema().orElseThrow() + ".region (\n" +
-                        "   regionkey bigint COMMENT '' WITH ( nullable = true ),\n" +
-                        "   name varchar COMMENT '' WITH ( nullable = true ),\n" +
-                        "   comment varchar COMMENT '' WITH ( nullable = true )\n" +
+                        "   regionkey bigint COMMENT '' WITH (nullable = true),\n" +
+                        "   name varchar COMMENT '' WITH (nullable = true),\n" +
+                        "   comment varchar COMMENT '' WITH (nullable = true)\n" +
                         ")\n" +
                         "WITH (\n" +
                         "   number_of_replicas = 1,\n" +
@@ -136,6 +137,7 @@ public abstract class BaseKuduConnectorSmokeTest
     }
 
     @Override
+    @Test
     public void testUpdate()
     {
         String tableName = "test_update_" + randomNameSuffix();
@@ -173,7 +175,7 @@ public abstract class BaseKuduConnectorSmokeTest
             if (getKuduSchemaEmulationPrefix().isEmpty()) {
                 assertThatThrownBy(() -> assertUpdate("CREATE SCHEMA " + schemaName))
                         .hasMessageContaining("Creating schema in Kudu connector not allowed if schema emulation is disabled.");
-                throw new SkipException("Cannot test when schema emulation is disabled");
+                abort("Cannot test when schema emulation is disabled");
             }
             assertUpdate("CREATE SCHEMA " + schemaName);
             assertUpdate("CREATE TABLE " + schemaName + "." + tableName + " AS SELECT 1 a", 1);

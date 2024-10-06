@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.lang.invoke.MethodHandle;
 
@@ -28,8 +29,8 @@ import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.ADD;
 import static io.trino.spi.function.OperatorType.DIVIDE;
 import static io.trino.spi.function.OperatorType.EQUAL;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.MODULUS;
@@ -45,10 +46,10 @@ import static java.lang.Float.intBitsToFloat;
 import static java.lang.Float.isNaN;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestRealOperators
 {
     private QueryAssertions assertions;
@@ -739,31 +740,31 @@ public class TestRealOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS REAL)", "CAST(NULL AS REAL)"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS REAL)", "CAST(NULL AS REAL)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "REAL '37.7'", "REAL '37.7'"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "REAL '37.7'", "REAL '37.8'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "REAL '37.7'", "REAL '37.7'"))
+        assertThat(assertions.operator(IDENTICAL, "NULL", "REAL '37.7'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "REAL '37.7'", "REAL '37.8'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "REAL '37.7'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "REAL '37.7'", "NULL"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(nan() AS REAL)", "CAST(nan() AS REAL)"))
+        assertThat(assertions.operator(IDENTICAL, "REAL '37.7'", "NULL"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "REAL 'NaN'", "REAL '37.8'"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(nan() AS REAL)", "CAST(nan() AS REAL)"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "REAL '37.8'", "REAL 'NaN'"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "REAL 'NaN'", "REAL '37.8'"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "REAL '37.8'", "REAL 'NaN'"))
+                .isEqualTo(false);
     }
 
     @Test
@@ -791,9 +792,9 @@ public class TestRealOperators
     {
         int[] nanRepresentations = {floatToIntBits(Float.NaN), 0xffc00000, 0x7fc00000, 0x7fc01234, 0xffc01234};
         for (int nanRepresentation : nanRepresentations) {
-            assertTrue(isNaN(intBitsToFloat(nanRepresentation)));
-            assertEquals(executeHashOperator(nanRepresentation), executeHashOperator(nanRepresentations[0]));
-            assertEquals(executeXxHas64hOperator(nanRepresentation), executeXxHas64hOperator(nanRepresentations[0]));
+            assertThat(isNaN(intBitsToFloat(nanRepresentation))).isTrue();
+            assertThat(executeHashOperator(nanRepresentation)).isEqualTo(executeHashOperator(nanRepresentations[0]));
+            assertThat(executeXxHas64hOperator(nanRepresentation)).isEqualTo(executeXxHas64hOperator(nanRepresentations[0]));
         }
     }
 
@@ -804,9 +805,9 @@ public class TestRealOperators
         int[] zeroes = {floatToIntBits(0.0f), floatToIntBits(-0.0f)};
         for (int zero : zeroes) {
             //noinspection SimplifiedTestNGAssertion
-            assertTrue(intBitsToFloat(zero) == 0f);
-            assertEquals(executeHashOperator(zero), executeHashOperator(zeroes[0]));
-            assertEquals(executeXxHas64hOperator(zero), executeXxHas64hOperator(zeroes[0]));
+            assertThat(intBitsToFloat(zero)).isEqualTo(0f);
+            assertThat(executeHashOperator(zero)).isEqualTo(executeHashOperator(zeroes[0]));
+            assertThat(executeXxHas64hOperator(zero)).isEqualTo(executeXxHas64hOperator(zeroes[0]));
         }
     }
 
@@ -814,6 +815,7 @@ public class TestRealOperators
             throws Throwable
     {
         MethodHandle hashCodeOperator = assertions.getQueryRunner()
+                .getPlannerContext()
                 .getTypeManager()
                 .getTypeOperators()
                 .getHashCodeOperator(REAL, simpleConvention(FAIL_ON_NULL, NEVER_NULL));
@@ -825,6 +827,7 @@ public class TestRealOperators
             throws Throwable
     {
         MethodHandle xxHash64Operator = assertions.getQueryRunner()
+                .getPlannerContext()
                 .getTypeManager()
                 .getTypeOperators()
                 .getXxHash64Operator(REAL, simpleConvention(FAIL_ON_NULL, NEVER_NULL));

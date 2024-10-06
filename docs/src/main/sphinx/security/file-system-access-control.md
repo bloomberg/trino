@@ -13,7 +13,6 @@ There are two types of file-based access control:
   authorization.
 
 (system-file-based-access-control)=
-
 ## System-level access control files
 
 The access control plugin allows you to specify authorization rules for the
@@ -72,14 +71,27 @@ any specific schema or table permissions. The table and schema rules are used to
 specify who can create, drop, alter, select, insert, delete, etc. for schemas
 and tables.
 
+For each rule set, permission is based on the first matching rule, read from the
+top to the bottom of the configuration file. If no rule matches, access is
+denied.
+
+If no rules are provided at all, then access is granted. You can remove
+access grant by adding a section with an empty set of rules at that particular
+level, for example:
+
+```json
+{
+  "schemas": []
+}
+```
+
+At the catalog level you have to add a single "dummy" rule for each accessible
+catalog.
+
 :::{note}
 These rules do not apply to system-defined tables in the
 `information_schema` schema.
 :::
-
-For each rule set, permission is based on the first matching rule read from top
-to bottom.  If no rule matches, access is denied. If no rules are provided at
-all, then access is granted.
 
 The following table summarizes the permissions required for each SQL command:
 
@@ -106,7 +118,7 @@ The following table summarizes the permissions required for each SQL command:
 | ALTER TABLE ... ADD COLUMN         | all       |         | owner                |                                                                   |
 | ALTER TABLE ... DROP COLUMN        | all       |         | owner                |                                                                   |
 | ALTER TABLE ... RENAME COLUMN      | all       |         | owner                |                                                                   |
-| SHOW COLUMNS                       | all       |         | any                  |                                                                   |
+| SHOW COLUMNS                       | read-only |         | any                  |                                                                   |
 | SELECT FROM table                  | read-only |         | select               |                                                                   |
 | SELECT FROM view                   | read-only |         | select, grant_select |                                                                   |
 | INSERT INTO                        | all       |         | insert               |                                                                   |
@@ -115,27 +127,29 @@ The following table summarizes the permissions required for each SQL command:
 
 Permissions required for executing functions:
 
-```{eval-rst}
-.. list-table::
-   :widths: 30, 10, 15, 30
-   :header-rows: 1
+:::{list-table}
+:widths: 30, 10, 20, 40
+:header-rows: 1
 
-   * - SQL command
-     - Catalog
-     - Function permission
-     - Note
-   * - ``SELECT function()``
-     - ``read-only``
-     - ``execute``, ``grant_execute*``
-     - ``grant_execute`` is required when the function is used in a SECURITY DEFINER view.
-   * - ``SELECT FROM TABLE(table_function())``
-     - ``read-only``
-     - ``execute``, ``grant_execute*``
-     - ``grant_execute`` is required when the function is used in a SECURITY DEFINER view.
-```
+* - SQL command
+  - Catalog
+  - Function permission
+  - Note
+* - `SELECT function()`
+  -
+  - `execute`, `grant_execute*`
+  - `grant_execute` is required when the function is used in a `SECURITY DEFINER` view.
+* - `CREATE FUNCTION`
+  - `all`
+  - `ownership`
+  -  Not all connectors support [catalog routines](routine-catalog).
+* - `DROP FUNCTION`
+  - `all`
+  - `ownership`
+  -  Not all connectors support [catalog routines](routine-catalog).
+:::
 
 (system-file-auth-visibility)=
-
 #### Visibility
 
 For a catalog, schema, or table to be visible in a `SHOW` command, the user
@@ -354,14 +368,18 @@ The example below defines the following table access policy:
 ```
 
 (system-file-function-rules)=
-
 #### Function rules
 
-These rules control the user's ability to execute functions.
+These rules control the ability of a user to create, drop, and execute functions.
+
+When these rules are present, the authorization is based on the first matching
+rule, processed from top to bottom. If no rules match, the authorization is
+denied. If function rules are not present, only functions in`system.builtin` can
+be executed.
 
 :::{note}
-By default, all users have access to functions in the `system.builtin` schema.
-You can override this behavior by adding a rule, but this will break most queries.
+Users always have access to functions in the `system.builtin` schema, and
+you cannot override this behavior by adding a rule.
 :::
 
 Each function rule is composed of the following fields:
@@ -378,49 +396,92 @@ Each function rule is composed of the following fields:
   Defaults to `.*`.
 - `function` (optional): regular expression to match against function names.
   Defaults to `.*`.
-- `privileges` (required): zero or more of `EXECUTE`, `GRANT_EXECUTE`.
+- `privileges` (required): zero or more of `EXECUTE`, `GRANT_EXECUTE`, `OWNERSHIP`.
 
-To explicitly allow the system builtin functions in queries (and SECURITY 
-DEFINER views), you can use the following rule:
+Care should be taken when granting permission to the `system` schema of a
+catalog, as this is the schema Trino uses for table function such as `query`.
+These table functions can be used to access or modify the underlying data of
+the catalog.
+
+The following example allows the `admin` user to execute `system.query` table function in
+any catalog, and allows all users to create, drop, and execute functions (including
+`SECURITY DEFINER` views) in the `hive.function` schema:
 
 ```json
 {
   "functions": [
     {
-      "catalog": "system",
-      "schema": "builtin",
+      "user": "admin",
+      "schema": "system",
+      "function": "query",
       "privileges": [
-        "EXECUTE",
-        "GRANT_EXECUTE"
+        "EXECUTE"
+      ]
+    },
+    {
+      "catalog": "hive",
+      "schema": "function",
+      "privileges": [
+        "EXECUTE", "GRANT_EXECUTE", "OWNERSHIP"
       ]
     }
   ]
 }
 ```
 
-Care should be taken when granting permission to the `system` schema of any 
-catalog, as this is the schema Trino uses for table function such as `query`.
-These table functions can be used to access or modify the underlying data of
-the catalog.
+(system-file-procedure-rules)=
+#### Procedure rules
 
-The following example allows the `admin` user to execute `query` table
-function from any catalog:
+These rules control the ability of a user to execute procedures.
+
+Procedures are used for administrative operations on a specific catalog, such as
+registering external tables or flushing the connector's cache. Available
+procedures are detailed in the connector documentation pages.
+
+When procedure rules are present, the authorization is based on the first
+matching rule, processed from top to bottom. If no rules match, the
+authorization is denied. If procedure rules are not present, only procedures in
+`system.builtin` can be executed.
+
+Each procedure rule is composed of the following fields:
+
+- `user` (optional): regular expression to match against user name.
+  Defaults to `.*`.
+- `role` (optional): regular expression to match against role names.
+  Defaults to `.*`.
+- `group` (optional): regular expression to match against group names.
+  Defaults to `.*`.
+- `catalog` (optional): regular expression to match against catalog name.
+  Defaults to `.*`.
+- `schema` (optional): regular expression to match against schema name.
+  Defaults to `.*`.
+- `procedure` (optional): regular expression to match against procedure names.
+  Defaults to `.*`.
+- `privileges` (required): zero or more of `EXECUTE`, `GRANT_EXECUTE`.
+
+The following example allows the `admin` user to execute and grant execution
+rights to call `register_table` and `unregister_table` in the `system` schema of
+a catalog called  `delta`, that uses the [Delta Lake
+connector](/connector/delta-lake). It allows all users to execute the
+`delta.sytem.vacuum` procedure.
 
 ```json
 {
-  "functions": [
+  "procedures": [
     {
-      "catalog": "system",
-      "schema": "builtin",
+      "user": "admin",
+      "catalog": "delta",
+      "schema": "system",
+      "procedure": "register_table|unregister_table",
       "privileges": [
         "EXECUTE",
         "GRANT_EXECUTE"
       ]
     },
     {
-      "user": "admin",
+      "catalog": "delta",
       "schema": "system",
-      "function": "query",
+      "procedure": "vacuum",
       "privileges": [
         "EXECUTE"
       ]
@@ -430,7 +491,6 @@ function from any catalog:
 ```
 
 (verify-rules)=
-
 #### Verify configuration
 
 To verify the system-access control file is configured properly, set the
@@ -458,7 +518,6 @@ Query 20200824_183358_00000_c62aw failed: Access Denied: Cannot access catalog s
 Remove these rules and restart the Trino cluster.
 
 (system-file-auth-session-property)=
-
 ### Session property rules
 
 These rules control the ability of a user to set system and catalog session
@@ -492,7 +551,6 @@ The example below defines the following table access policy:
 ```
 
 (query-rules)=
-
 ### Query rules
 
 These rules control the ability of a user to execute, view, or kill a query. The
@@ -527,7 +585,6 @@ rules:
 ```
 
 (system-file-auth-impersonation-rules)=
-
 ### Impersonation rules
 
 These rules control the ability of a user to impersonate another user. In
@@ -571,7 +628,6 @@ allows a user in the form `team_backend` to impersonate the
 ```
 
 (system-file-auth-principal-rules)=
-
 ### Principal rules
 
 :::{warning}
@@ -643,17 +699,22 @@ as `group@example.net`, you can use the following rules.
 ```
 
 (system-file-auth-system-information)=
-
 ### System information rules
 
 These rules specify which users can access the system information management
 interface. System information access includes the following aspects:
 
-- Read access to details such as Trino version, uptime of the node, and others
-  from the `/v1/info` and `/v1/status` REST endpoints.
+- Read access to sensitive information from REST endpoints, such as `/v1/node`
+  and `/v1/thread`.
 - Read access with the {doc}`system information functions </functions/system>`.
 - Read access with the {doc}`/connector/system`.
 - Write access to trigger {doc}`/admin/graceful-shutdown`.
+
+The following REST endpoints are always public and not affected by these rules:
+
+- `GET /v1/info`
+- `GET /v1/info/state`
+- `GET /v1/status`
 
 The user is granted or denied access based on the first matching
 rule read from top to bottom. If no rules are specified, all access to system
@@ -687,7 +748,6 @@ user over HTTPS, set the `management.user.https-enabled` configuration
 property.
 
 (system-file-auth-authorization)=
-
 ### Authorization rules
 
 These rules control the ability of how owner of schema, table or view can
@@ -728,10 +788,7 @@ to any user, except to\`\`bob\`\`.
 :language: json
 ```
 
-(system-file-auth-system-information-1)=
-
 (catalog-file-based-access-control)=
-
 ## Catalog-level access control files
 
 You can create JSON files for individual catalogs that define authorization
@@ -815,7 +872,11 @@ These rules apply to `filter_environment` and `mask_environment`.
 
 #### Function rules
 
-Each function rule is composed of the following fields:
+These rules control the ability of a user to create, drop, and execute functions.
+
+When these rules are present, the authorization is based on the first matching
+rule, processed from top to bottom. If no rules match, the authorization is
+denied. If function rules are not present, access is not allowed.
 
 - `user` (optional): regular expression to match against user name.
   Defaults to `.*`.
@@ -825,7 +886,37 @@ Each function rule is composed of the following fields:
   Defaults to `.*`.
 - `function` (optional): regular expression to match against function names.
   Defaults to `.*`.
-- `privileges` (required): zero or more of `EXECUTE`, `GRANT_EXECUTE`.
+- `privileges` (required): zero or more of `EXECUTE`, `GRANT_EXECUTE`, `OWNERSHIP`.
+
+Care should be taken when granting permission to the `system` schema of a
+catalog, as this is the schema Trino uses for table function such as `query`.
+These table functions can be used to access or modify the underlying data of
+the catalog.
+
+The following example allows the `admin` user to execute `system.query` table function from
+any catalog, and all users to create, drop, and execute functions (including from views)
+in the `function` schema of this catalog:
+
+```json
+{
+  "functions": [
+    {
+      "user": "admin",
+      "schema": "system",
+      "function": "query",
+      "privileges": [
+        "EXECUTE"
+      ]
+    },
+    {
+      "schema": "function",
+      "privileges": [
+        "EXECUTE", "GRANT_EXECUTE", "OWNERSHIP"
+      ]
+    }
+  ]
+}
+```
 
 #### Session property rules
 

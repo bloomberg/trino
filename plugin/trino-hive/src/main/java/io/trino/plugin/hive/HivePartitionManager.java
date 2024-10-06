@@ -17,8 +17,8 @@ import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
 import com.google.inject.Inject;
+import io.trino.metastore.HivePartition;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
 import io.trino.plugin.hive.util.HiveBucketing.HiveBucketFilter;
 import io.trino.spi.connector.ColumnHandle;
@@ -38,11 +38,11 @@ import java.util.function.Predicate;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.metastore.Partition.unescapePathName;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.computePartitionKeyFilter;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.toPartitionName;
 import static io.trino.plugin.hive.util.HiveBucketing.getHiveBucketFilter;
 import static io.trino.plugin.hive.util.HiveUtil.parsePartitionValue;
-import static io.trino.plugin.hive.util.HiveUtil.unescapePathName;
 
 public class HivePartitionManager
 {
@@ -169,7 +169,12 @@ public class HivePartitionManager
                 partitions.getBucketHandle(),
                 partitions.getBucketFilter(),
                 handle.getAnalyzePartitionValues(),
-                Sets.union(handle.getConstraintColumns(), constraint.getPredicateColumns().orElseGet(ImmutableSet::of)),
+                ImmutableSet.<HiveColumnHandle>builder()
+                        .addAll(handle.getConstraintColumns())
+                        .addAll(constraint.getPredicateColumns().orElseGet(ImmutableSet::of).stream()
+                                .map(HiveColumnHandle.class::cast)
+                                .collect(toImmutableList()))
+                        .build(),
                 handle.getProjectedColumns(),
                 handle.getTransaction(),
                 handle.isRecordScannedFiles(),

@@ -13,7 +13,6 @@
  */
 package io.trino.metadata;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
@@ -21,7 +20,6 @@ import io.trino.spi.security.Identity;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
@@ -34,7 +32,6 @@ public class MaterializedViewDefinition
 {
     private final Optional<Duration> gracePeriod;
     private final Optional<CatalogSchemaTableName> storageTable;
-    private final Map<String, Object> properties;
 
     public MaterializedViewDefinition(
             String originalSql,
@@ -45,14 +42,12 @@ public class MaterializedViewDefinition
             Optional<String> comment,
             Identity owner,
             List<CatalogSchemaName> path,
-            Optional<CatalogSchemaTableName> storageTable,
-            Map<String, Object> properties)
+            Optional<CatalogSchemaTableName> storageTable)
     {
         super(originalSql, catalog, schema, columns, comment, Optional.of(owner), path);
+        this.gracePeriod = requireNonNull(gracePeriod, "gracePeriod is null");
         checkArgument(gracePeriod.isEmpty() || !gracePeriod.get().isNegative(), "gracePeriod cannot be negative: %s", gracePeriod);
-        this.gracePeriod = gracePeriod;
         this.storageTable = requireNonNull(storageTable, "storageTable is null");
-        this.properties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
     }
 
     public Optional<Duration> getGracePeriod()
@@ -65,11 +60,6 @@ public class MaterializedViewDefinition
         return storageTable;
     }
 
-    public Map<String, Object> getProperties()
-    {
-        return properties;
-    }
-
     public ConnectorMaterializedViewDefinition toConnectorMaterializedViewDefinition()
     {
         return new ConnectorMaterializedViewDefinition(
@@ -78,13 +68,12 @@ public class MaterializedViewDefinition
                 getCatalog(),
                 getSchema(),
                 getColumns().stream()
-                        .map(column -> new ConnectorMaterializedViewDefinition.Column(column.getName(), column.getType(), column.getComment()))
+                        .map(column -> new ConnectorMaterializedViewDefinition.Column(column.name(), column.type(), column.comment()))
                         .collect(toImmutableList()),
                 getGracePeriod(),
                 getComment(),
                 getRunAsIdentity().map(Identity::getUser),
-                getPath(),
-                properties);
+                getPath());
     }
 
     @Override
@@ -100,7 +89,6 @@ public class MaterializedViewDefinition
                 .add("runAsIdentity", getRunAsIdentity())
                 .add("path", getPath())
                 .add("storageTable", storageTable.orElse(null))
-                .add("properties", properties)
                 .toString();
     }
 }

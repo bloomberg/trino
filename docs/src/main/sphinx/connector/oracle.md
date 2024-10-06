@@ -1,7 +1,7 @@
 ---
 myst:
   substitutions:
-    default_domain_compaction_threshold: '`32`'
+    default_domain_compaction_threshold: '`256`'
 ---
 
 # Oracle connector
@@ -18,7 +18,7 @@ like Oracle and Hive, or different Oracle database instances.
 
 To connect to Oracle, you need:
 
-- Oracle 12 or higher.
+- Oracle 19 or higher.
 - Network access from the Trino coordinator and workers to Oracle.
   Port 1521 is the default port.
 
@@ -43,7 +43,7 @@ to the JDBC driver. The Oracle connector uses the Oracle JDBC Thin driver,
 and the syntax of the URL may be different depending on your Oracle
 configuration. For example, the connection URL is different if you are
 connecting to an Oracle SID or an Oracle service name. See the [Oracle
-Database JDBC driver documentation](https://docs.oracle.com/en/database/oracle/oracle-database/21/jjdbc/data-sources-and-URLs.html#GUID-088B1600-C6C2-4F19-A020-2DAF8FE1F1C3)
+Database JDBC driver documentation](https://docs.oracle.com/en/database/oracle/oracle-database/19/jjdbc/data-sources-and-URLs.html)
 for more information.
 
 The `connection-user` and `connection-password` are typically required and
@@ -54,7 +54,7 @@ properties files.
 :::{note}
 Oracle does not expose metadata comment via `REMARKS` column by default
 in JDBC driver. You can enable it using `oracle.remarks-reporting.enabled`
-config option. See [Additional Oracle Performance Extensions](https://docs.oracle.com/en/database/oracle/oracle-database/19/jjdbc/performance-extensions.html#GUID-96A38C6D-A288-4E0B-9F03-E711C146632B)
+config option. See [Additional Oracle Performance Extensions](https://docs.oracle.com/en/database/oracle/oracle-database/19/jjdbc/performance-extensions.html)
 for more details.
 :::
 
@@ -95,14 +95,17 @@ you name the property file `sales.properties`, Trino creates a catalog named
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
 ```
 
 ```{include} non-transactional-insert.fragment
 ```
+
+(oracle-fte-support)=
+### Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
 
 ## Querying Oracle
 
@@ -147,7 +150,6 @@ SELECT * FROM example.web.clicks;
 ```
 
 (oracle-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Oracle each support types that the other does not, this
@@ -161,66 +163,65 @@ each direction.
 Trino supports selecting Oracle database types. This table shows the Oracle to
 Trino data type mapping:
 
-```{eval-rst}
-.. list-table:: Oracle to Trino type mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} Oracle to Trino type mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - Oracle database type
-    - Trino type
-    - Notes
-  * - ``NUMBER(p, s)``
-    - ``DECIMAL(p, s)``
-    -  See :ref:`oracle-number-mapping`
-  * - ``NUMBER(p)``
-    - ``DECIMAL(p, 0)``
-    - See :ref:`oracle-number-mapping`
-  * - ``FLOAT[(p)]``
-    - ``DOUBLE``
-    -
-  * - ``BINARY_FLOAT``
-    - ``REAL``
-    -
-  * - ``BINARY_DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``VARCHAR2(n CHAR)``
-    - ``VARCHAR(n)``
-    -
-  * - ``VARCHAR2(n BYTE)``
-    - ``VARCHAR(n)``
-    -
-  * - ``NVARCHAR2(n)``
-    - ``VARCHAR(n)``
-    -
-  * - ``CHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``NCHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``CLOB``
-    - ``VARCHAR``
-    -
-  * - ``NCLOB``
-    - ``VARCHAR``
-    -
-  * - ``RAW(n)``
-    - ``VARBINARY``
-    -
-  * - ``BLOB``
-    - ``VARBINARY``
-    -
-  * - ``DATE``
-    - ``TIMESTAMP(0)``
-    - See :ref:`oracle-datetime-mapping`
-  * - ``TIMESTAMP(p)``
-    - ``TIMESTAMP(p)``
-    - See :ref:`oracle-datetime-mapping`
-  * - ``TIMESTAMP(p) WITH TIME ZONE``
-    - ``TIMESTAMP WITH TIME ZONE``
-    - See :ref:`oracle-datetime-mapping`
-```
+* - Oracle database type
+  - Trino type
+  - Notes
+* - `NUMBER(p, s)`
+  - `DECIMAL(p, s)`
+  -  See [](oracle-number-mapping)
+* - `NUMBER(p)`
+  - `DECIMAL(p, 0)`
+  - See [](oracle-number-mapping)
+* - `FLOAT[(p)]`
+  - `DOUBLE`
+  -
+* - `BINARY_FLOAT`
+  - `REAL`
+  -
+* - `BINARY_DOUBLE`
+  - `DOUBLE`
+  -
+* - `VARCHAR2(n CHAR)`
+  - `VARCHAR(n)`
+  -
+* - `VARCHAR2(n BYTE)`
+  - `VARCHAR(n)`
+  -
+* - `NVARCHAR2(n)`
+  - `VARCHAR(n)`
+  -
+* - `CHAR(n)`
+  - `CHAR(n)`
+  -
+* - `NCHAR(n)`
+  - `CHAR(n)`
+  -
+* - `CLOB`
+  - `VARCHAR`
+  -
+* - `NCLOB`
+  - `VARCHAR`
+  -
+* - `RAW(n)`
+  - `VARBINARY`
+  -
+* - `BLOB`
+  - `VARBINARY`
+  -
+* - `DATE`
+  - `TIMESTAMP(0)`
+  - See [](oracle-datetime-mapping)
+* - `TIMESTAMP(p)`
+  - `TIMESTAMP(p)`
+  - See [](oracle-datetime-mapping)
+* - `TIMESTAMP(p) WITH TIME ZONE`
+  - `TIMESTAMP WITH TIME ZONE`
+  - See [](oracle-datetime-mapping)
+:::
 
 No other types are supported.
 
@@ -235,57 +236,56 @@ TABLE <table> AS SELECT` operations. When data is inserted into existing
 tables, `Oracle to Trino` type mapping is used.
 :::
 
-```{eval-rst}
-.. list-table:: Trino to Oracle Type Mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} Trino to Oracle Type Mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - Trino type
-    - Oracle database type
-    - Notes
-  * - ``TINYINT``
-    - ``NUMBER(3)``
-    -
-  * - ``SMALLINT``
-    - ``NUMBER(5)``
-    -
-  * - ``INTEGER``
-    - ``NUMBER(10)``
-    -
-  * - ``BIGINT``
-    - ``NUMBER(19)``
-    -
-  * - ``DECIMAL(p, s)``
-    - ``NUMBER(p, s)``
-    -
-  * - ``REAL``
-    - ``BINARY_FLOAT``
-    -
-  * - ``DOUBLE``
-    - ``BINARY_DOUBLE``
-    -
-  * - ``VARCHAR``
-    - ``NCLOB``
-    -
-  * - ``VARCHAR(n)``
-    - ``VARCHAR2(n CHAR)`` or ``NCLOB``
-    - See :ref:`oracle-character-mapping`
-  * - ``CHAR(n)``
-    - ``CHAR(n CHAR)`` or ``NCLOB``
-    - See :ref:`oracle-character-mapping`
-  * - ``VARBINARY``
-    - ``BLOB``
-    -
-  * - ``DATE``
-    - ``DATE``
-    - See :ref:`oracle-datetime-mapping`
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP(3)``
-    - See :ref:`oracle-datetime-mapping`
-  * - ``TIMESTAMP WITH TIME ZONE``
-    - ``TIMESTAMP(3) WITH TIME ZONE``
-    - See :ref:`oracle-datetime-mapping`
-```
+* - Trino type
+  - Oracle database type
+  - Notes
+* - `TINYINT`
+  - `NUMBER(3)`
+  -
+* - `SMALLINT`
+  - `NUMBER(5)`
+  -
+* - `INTEGER`
+  - `NUMBER(10)`
+  -
+* - `BIGINT`
+  - `NUMBER(19)`
+  -
+* - `DECIMAL(p, s)`
+  - `NUMBER(p, s)`
+  -
+* - `REAL`
+  - `BINARY_FLOAT`
+  -
+* - `DOUBLE`
+  - `BINARY_DOUBLE`
+  -
+* - `VARCHAR`
+  - `NCLOB`
+  -
+* - `VARCHAR(n)`
+  - `VARCHAR2(n CHAR)` or `NCLOB`
+  - See [](oracle-character-mapping)
+* - `CHAR(n)`
+  - `CHAR(n CHAR)` or `NCLOB`
+  - See [](oracle-character-mapping)
+* - `VARBINARY`
+  - `BLOB`
+  -
+* - `DATE`
+  - `DATE`
+  - See [](oracle-datetime-mapping)
+* - `TIMESTAMP`
+  - `TIMESTAMP(3)`
+  - See [](oracle-datetime-mapping)
+* - `TIMESTAMP WITH TIME ZONE`
+  - `TIMESTAMP(3) WITH TIME ZONE`
+  - See [](oracle-datetime-mapping)
+:::
 
 No other types are supported.
 
@@ -359,52 +359,49 @@ fails. This is also true for the equivalent `VARCHAR` types.
 
 ### Number to decimal configuration properties
 
-```{eval-rst}
-.. list-table::
-  :widths: 20, 20, 50, 10
-  :header-rows: 1
+:::{list-table}
+:widths: 20, 20, 50, 10
+:header-rows: 1
 
-  * - Configuration property name
-    - Session property name
-    - Description
-    - Default
-  * - ``oracle.number.default-scale``
-    - ``number_default_scale``
-    - Default Trino ``DECIMAL`` scale for Oracle ``NUMBER`` (without precision
-      and scale) date type. When not set then such column is treated as not
-      supported.
-    - not set
-  * - ``oracle.number.rounding-mode``
-    - ``number_rounding_mode``
-    - Rounding mode for the Oracle ``NUMBER`` data type. This is useful when
-      Oracle ``NUMBER`` data type specifies higher scale than is supported in
-      Trino. Possible values are:
+* - Configuration property name
+  - Session property name
+  - Description
+  - Default
+* - `oracle.number.default-scale`
+  - `number_default_scale`
+  - Default Trino `DECIMAL` scale for Oracle `NUMBER` (without precision and
+    scale) date type. When not set then such column is treated as not supported.
+  - not set
+* - `oracle.number.rounding-mode`
+  - `number_rounding_mode`
+  - Rounding mode for the Oracle `NUMBER` data type. This is useful when Oracle
+    `NUMBER` data type specifies higher scale than is supported in Trino.
+    Possible values are:
 
-      - ``UNNECESSARY`` - Rounding mode to assert that the
-        requested operation has an exact result,
-        hence no rounding is necessary.
-      - ``CEILING`` - Rounding mode to round towards
-        positive infinity.
-      - ``FLOOR`` - Rounding mode to round towards negative
-        infinity.
-      - ``HALF_DOWN`` - Rounding mode to round towards
-        ``nearest neighbor`` unless both neighbors are
-        equidistant, in which case rounding down is used.
-      - ``HALF_EVEN`` - Rounding mode to round towards the
-        ``nearest neighbor`` unless both neighbors are equidistant,
-        in which case rounding towards the even neighbor is
-        performed.
-      - ``HALF_UP`` - Rounding mode to round towards
-        ``nearest neighbor`` unless both neighbors are
-        equidistant, in which case rounding up is used
-      - ``UP`` - Rounding mode to round towards zero.
-      - ``DOWN`` - Rounding mode to round towards zero.
+    - `UNNECESSARY` - Rounding mode to assert that the
+            requested operation has an exact result,
+            hence no rounding is necessary.
+    - `CEILING` - Rounding mode to round towards
+            positive infinity.
+    - `FLOOR` - Rounding mode to round towards negative
+            infinity.
+    - `HALF_DOWN` - Rounding mode to round towards
+            `nearest neighbor` unless both neighbors are
+            equidistant, in which case rounding down is used.
+    - `HALF_EVEN` - Rounding mode to round towards the
+            `nearest neighbor` unless both neighbors are equidistant,
+            in which case rounding towards the even neighbor is
+            performed.
+    - `HALF_UP` - Rounding mode to round towards
+            `nearest neighbor` unless both neighbors are
+            equidistant, in which case rounding up is used
+    - `UP` - Rounding mode to round towards zero.
+    - `DOWN` - Rounding mode to round towards zero.
 
-    - ``UNNECESSARY``
-```
+  - `UNNECESSARY`
+:::
 
 (oracle-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in
@@ -422,27 +419,29 @@ supports the following statements:
 - {doc}`/sql/alter-table`
 - {doc}`/sql/comment`
 
+```{include} sql-update-limitation.fragment
+```
+
 ```{include} sql-delete-limitation.fragment
 ```
 
 ```{include} alter-table-limitation.fragment
 ```
 
-(oracle-fte-support)=
+### Procedures
 
-## Fault-tolerant execution support
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
-
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Oracle.
 
 (oracle-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to Oracle, because the full query is pushed down and
@@ -521,7 +520,6 @@ oracle.synonyms.enabled=true
 ```
 
 (oracle-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:
@@ -561,7 +559,6 @@ with the following functions:
 ```
 
 (oracle-predicate-pushdown)=
-
 #### Predicate pushdown support
 
 The connector does not support pushdown of any predicates on columns that use

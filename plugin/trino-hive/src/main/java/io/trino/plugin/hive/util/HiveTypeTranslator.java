@@ -15,17 +15,18 @@ package io.trino.plugin.hive.util;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Streams;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.type.CharTypeInfo;
+import io.trino.metastore.type.DecimalTypeInfo;
+import io.trino.metastore.type.ListTypeInfo;
+import io.trino.metastore.type.MapTypeInfo;
+import io.trino.metastore.type.PrimitiveTypeInfo;
+import io.trino.metastore.type.StructTypeInfo;
+import io.trino.metastore.type.TypeInfo;
+import io.trino.metastore.type.UnionTypeInfo;
+import io.trino.metastore.type.VarcharTypeInfo;
 import io.trino.plugin.hive.HiveErrorCode;
 import io.trino.plugin.hive.HiveTimestampPrecision;
-import io.trino.plugin.hive.type.CharTypeInfo;
-import io.trino.plugin.hive.type.DecimalTypeInfo;
-import io.trino.plugin.hive.type.ListTypeInfo;
-import io.trino.plugin.hive.type.MapTypeInfo;
-import io.trino.plugin.hive.type.PrimitiveTypeInfo;
-import io.trino.plugin.hive.type.StructTypeInfo;
-import io.trino.plugin.hive.type.TypeInfo;
-import io.trino.plugin.hive.type.UnionTypeInfo;
-import io.trino.plugin.hive.type.VarcharTypeInfo;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
@@ -45,25 +46,25 @@ import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.hive.formats.UnionToRowCoercionUtils.rowTypeSignatureForUnionOfTypes;
+import static io.trino.metastore.HiveType.HIVE_BINARY;
+import static io.trino.metastore.HiveType.HIVE_BOOLEAN;
+import static io.trino.metastore.HiveType.HIVE_BYTE;
+import static io.trino.metastore.HiveType.HIVE_DATE;
+import static io.trino.metastore.HiveType.HIVE_DOUBLE;
+import static io.trino.metastore.HiveType.HIVE_FLOAT;
+import static io.trino.metastore.HiveType.HIVE_INT;
+import static io.trino.metastore.HiveType.HIVE_LONG;
+import static io.trino.metastore.HiveType.HIVE_SHORT;
+import static io.trino.metastore.HiveType.HIVE_STRING;
+import static io.trino.metastore.HiveType.HIVE_TIMESTAMP;
+import static io.trino.metastore.type.CharTypeInfo.MAX_CHAR_LENGTH;
+import static io.trino.metastore.type.TypeInfoFactory.getCharTypeInfo;
+import static io.trino.metastore.type.TypeInfoFactory.getListTypeInfo;
+import static io.trino.metastore.type.TypeInfoFactory.getMapTypeInfo;
+import static io.trino.metastore.type.TypeInfoFactory.getStructTypeInfo;
+import static io.trino.metastore.type.TypeInfoFactory.getVarcharTypeInfo;
+import static io.trino.metastore.type.VarcharTypeInfo.MAX_VARCHAR_LENGTH;
 import static io.trino.plugin.hive.HiveTimestampPrecision.DEFAULT_PRECISION;
-import static io.trino.plugin.hive.HiveType.HIVE_BINARY;
-import static io.trino.plugin.hive.HiveType.HIVE_BOOLEAN;
-import static io.trino.plugin.hive.HiveType.HIVE_BYTE;
-import static io.trino.plugin.hive.HiveType.HIVE_DATE;
-import static io.trino.plugin.hive.HiveType.HIVE_DOUBLE;
-import static io.trino.plugin.hive.HiveType.HIVE_FLOAT;
-import static io.trino.plugin.hive.HiveType.HIVE_INT;
-import static io.trino.plugin.hive.HiveType.HIVE_LONG;
-import static io.trino.plugin.hive.HiveType.HIVE_SHORT;
-import static io.trino.plugin.hive.HiveType.HIVE_STRING;
-import static io.trino.plugin.hive.HiveType.HIVE_TIMESTAMP;
-import static io.trino.plugin.hive.type.CharTypeInfo.MAX_CHAR_LENGTH;
-import static io.trino.plugin.hive.type.TypeInfoFactory.getCharTypeInfo;
-import static io.trino.plugin.hive.type.TypeInfoFactory.getListTypeInfo;
-import static io.trino.plugin.hive.type.TypeInfoFactory.getMapTypeInfo;
-import static io.trino.plugin.hive.type.TypeInfoFactory.getStructTypeInfo;
-import static io.trino.plugin.hive.type.TypeInfoFactory.getVarcharTypeInfo;
-import static io.trino.plugin.hive.type.VarcharTypeInfo.MAX_VARCHAR_LENGTH;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -91,7 +92,12 @@ public final class HiveTypeTranslator
 {
     private HiveTypeTranslator() {}
 
-    public static TypeInfo toTypeInfo(Type type)
+    public static HiveType toHiveType(Type type)
+    {
+        return HiveType.fromTypeInfo(toTypeInfo(type));
+    }
+
+    private static TypeInfo toTypeInfo(Type type)
     {
         requireNonNull(type, "type is null");
         if (BOOLEAN.equals(type)) {
@@ -228,40 +234,26 @@ public final class HiveTypeTranslator
     @Nullable
     private static Type fromPrimitiveType(PrimitiveTypeInfo typeInfo, HiveTimestampPrecision timestampPrecision)
     {
-        switch (typeInfo.getPrimitiveCategory()) {
-            case BOOLEAN:
-                return BOOLEAN;
-            case BYTE:
-                return TINYINT;
-            case SHORT:
-                return SMALLINT;
-            case INT:
-                return INTEGER;
-            case LONG:
-                return BIGINT;
-            case FLOAT:
-                return REAL;
-            case DOUBLE:
-                return DOUBLE;
-            case STRING:
-                return createUnboundedVarcharType();
-            case VARCHAR:
-                return createVarcharType(((VarcharTypeInfo) typeInfo).getLength());
-            case CHAR:
-                return createCharType(((CharTypeInfo) typeInfo).getLength());
-            case DATE:
-                return DATE;
-            case TIMESTAMP:
-                return createTimestampType(timestampPrecision.getPrecision());
-            case TIMESTAMPLOCALTZ:
-                return createTimestampWithTimeZoneType(timestampPrecision.getPrecision());
-            case BINARY:
-                return VARBINARY;
-            case DECIMAL:
+        return switch (typeInfo.getPrimitiveCategory()) {
+            case BOOLEAN -> BOOLEAN;
+            case BYTE -> TINYINT;
+            case SHORT -> SMALLINT;
+            case INT -> INTEGER;
+            case LONG -> BIGINT;
+            case FLOAT -> REAL;
+            case DOUBLE -> DOUBLE;
+            case STRING -> createUnboundedVarcharType();
+            case VARCHAR -> createVarcharType(((VarcharTypeInfo) typeInfo).getLength());
+            case CHAR -> createCharType(((CharTypeInfo) typeInfo).getLength());
+            case DATE -> DATE;
+            case TIMESTAMP -> createTimestampType(timestampPrecision.getPrecision());
+            case TIMESTAMPLOCALTZ -> createTimestampWithTimeZoneType(timestampPrecision.getPrecision());
+            case BINARY -> VARBINARY;
+            case DECIMAL -> {
                 DecimalTypeInfo decimalTypeInfo = (DecimalTypeInfo) typeInfo;
-                return createDecimalType(decimalTypeInfo.precision(), decimalTypeInfo.scale());
-            default:
-                return null;
-        }
+                yield createDecimalType(decimalTypeInfo.precision(), decimalTypeInfo.scale());
+            }
+            default -> null;
+        };
     }
 }

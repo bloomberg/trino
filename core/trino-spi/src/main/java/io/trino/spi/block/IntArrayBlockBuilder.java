@@ -19,7 +19,9 @@ import java.util.Arrays;
 
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
+import static io.trino.spi.block.BlockUtil.calculateNewArraySize;
 import static java.lang.Math.max;
+import static java.util.Objects.checkIndex;
 
 public class IntArrayBlockBuilder
         implements BlockBuilder
@@ -47,14 +49,12 @@ public class IntArrayBlockBuilder
         this.blockBuilderStatus = blockBuilderStatus;
         this.initialEntryCount = max(expectedEntries, 1);
 
-        updateDataSize();
+        updateRetainedSize();
     }
 
     public BlockBuilder writeInt(int value)
     {
-        if (values.length <= positionCount) {
-            growCapacity();
-        }
+        ensureCapacity(positionCount + 1);
 
         values[positionCount] = value;
 
@@ -67,11 +67,145 @@ public class IntArrayBlockBuilder
     }
 
     @Override
+    public void append(ValueBlock block, int position)
+    {
+        ensureCapacity(positionCount + 1);
+
+        IntArrayBlock intArrayBlock = (IntArrayBlock) block;
+        if (intArrayBlock.isNull(position)) {
+            valueIsNull[positionCount] = true;
+            hasNullValue = true;
+        }
+        else {
+            values[positionCount] = intArrayBlock.getInt(position);
+            hasNonNullValue = true;
+        }
+        positionCount++;
+
+        if (blockBuilderStatus != null) {
+            blockBuilderStatus.addBytes(IntArrayBlock.SIZE_IN_BYTES_PER_POSITION);
+        }
+    }
+
+    @Override
+    public void appendRepeated(ValueBlock block, int position, int count)
+    {
+        if (count == 0) {
+            return;
+        }
+        if (count == 1) {
+            append(block, position);
+            return;
+        }
+
+        ensureCapacity(positionCount + count);
+
+        IntArrayBlock intArrayBlock = (IntArrayBlock) block;
+        if (intArrayBlock.isNull(position)) {
+            Arrays.fill(valueIsNull, positionCount, positionCount + count, true);
+            hasNullValue = true;
+        }
+        else {
+            int value = intArrayBlock.getInt(position);
+            Arrays.fill(values, positionCount, positionCount + count, value);
+            hasNonNullValue = true;
+        }
+        positionCount += count;
+
+        if (blockBuilderStatus != null) {
+            blockBuilderStatus.addBytes(count * IntArrayBlock.SIZE_IN_BYTES_PER_POSITION);
+        }
+    }
+
+    @Override
+    public void appendRange(ValueBlock block, int offset, int length)
+    {
+        if (length == 0) {
+            return;
+        }
+        if (length == 1) {
+            append(block, offset);
+            return;
+        }
+
+        ensureCapacity(positionCount + length);
+
+        IntArrayBlock intArrayBlock = (IntArrayBlock) block;
+        int rawOffset = intArrayBlock.getRawValuesOffset();
+
+        int[] rawValues = intArrayBlock.getRawValues();
+        System.arraycopy(rawValues, rawOffset + offset, values, positionCount, length);
+
+        boolean[] rawValueIsNull = intArrayBlock.getRawValueIsNull();
+        if (rawValueIsNull != null) {
+            for (int i = 0; i < length; i++) {
+                if (rawValueIsNull[rawOffset + offset + i]) {
+                    valueIsNull[positionCount + i] = true;
+                    hasNullValue = true;
+                }
+                else {
+                    hasNonNullValue = true;
+                }
+            }
+        }
+        else {
+            hasNonNullValue = true;
+        }
+        positionCount += length;
+
+        if (blockBuilderStatus != null) {
+            blockBuilderStatus.addBytes(length * IntArrayBlock.SIZE_IN_BYTES_PER_POSITION);
+        }
+    }
+
+    @Override
+    public void appendPositions(ValueBlock block, int[] positions, int offset, int length)
+    {
+        if (length == 0) {
+            return;
+        }
+        if (length == 1) {
+            append(block, positions[offset]);
+            return;
+        }
+
+        ensureCapacity(positionCount + length);
+
+        IntArrayBlock intArrayBlock = (IntArrayBlock) block;
+        int rawOffset = intArrayBlock.getRawValuesOffset();
+        int[] rawValues = intArrayBlock.getRawValues();
+        boolean[] rawValueIsNull = intArrayBlock.getRawValueIsNull();
+        if (rawValueIsNull != null) {
+            for (int i = 0; i < length; i++) {
+                int rawPosition = positions[offset + i] + rawOffset;
+                if (rawValueIsNull[rawPosition]) {
+                    valueIsNull[positionCount + i] = true;
+                    hasNullValue = true;
+                }
+                else {
+                    values[positionCount + i] = rawValues[rawPosition];
+                    hasNonNullValue = true;
+                }
+            }
+        }
+        else {
+            for (int i = 0; i < length; i++) {
+                int rawPosition = positions[offset + i] + rawOffset;
+                values[positionCount + i] = rawValues[rawPosition];
+            }
+            hasNonNullValue = true;
+        }
+        positionCount += length;
+
+        if (blockBuilderStatus != null) {
+            blockBuilderStatus.addBytes(length * IntArrayBlock.SIZE_IN_BYTES_PER_POSITION);
+        }
+    }
+
+    @Override
     public BlockBuilder appendNull()
     {
-        if (values.length <= positionCount) {
-            growCapacity();
-        }
+        ensureCapacity(positionCount + 1);
 
         valueIsNull[positionCount] = true;
 
@@ -84,11 +218,24 @@ public class IntArrayBlockBuilder
     }
 
     @Override
+    public void resetTo(int position)
+    {
+        checkIndex(position, positionCount + 1);
+        positionCount = position;
+    }
+
+    @Override
     public Block build()
     {
         if (!hasNonNullValue) {
             return RunLengthEncodedBlock.create(NULL_VALUE_BLOCK, positionCount);
         }
+        return buildValueBlock();
+    }
+
+    @Override
+    public IntArrayBlock buildValueBlock()
+    {
         return new IntArrayBlock(0, positionCount, hasNullValue ? valueIsNull : null, values);
     }
 
@@ -98,23 +245,28 @@ public class IntArrayBlockBuilder
         return new IntArrayBlockBuilder(blockBuilderStatus, expectedEntries);
     }
 
-    private void growCapacity()
+    private void ensureCapacity(int capacity)
     {
+        if (values.length >= capacity) {
+            return;
+        }
+
         int newSize;
         if (initialized) {
-            newSize = BlockUtil.calculateNewArraySize(values.length);
+            newSize = calculateNewArraySize(capacity);
         }
         else {
             newSize = initialEntryCount;
             initialized = true;
         }
+        newSize = max(newSize, capacity);
 
         valueIsNull = Arrays.copyOf(valueIsNull, newSize);
         values = Arrays.copyOf(values, newSize);
-        updateDataSize();
+        updateRetainedSize();
     }
 
-    private void updateDataSize()
+    private void updateRetainedSize()
     {
         retainedSizeInBytes = INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values);
         if (blockBuilderStatus != null) {
@@ -147,10 +299,5 @@ public class IntArrayBlockBuilder
         sb.append("positionCount=").append(getPositionCount());
         sb.append('}');
         return sb.toString();
-    }
-
-    int[] getRawValues()
-    {
-        return values;
     }
 }

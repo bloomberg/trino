@@ -22,6 +22,7 @@ import io.trino.spi.type.StandardTypes;
 
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.function.OperatorType.CAST;
+import static io.trino.type.Reals.toReal;
 import static java.lang.String.format;
 
 public final class VarcharOperators
@@ -62,7 +63,7 @@ public final class VarcharOperators
 
     private static byte toUpperCase(byte b)
     {
-        return isLowerCase(b) ? ((byte) (b - 32)) : b;
+        return isLowerCase(b) ? (byte) (b - 32) : b;
     }
 
     private static boolean isLowerCase(byte b)
@@ -76,7 +77,7 @@ public final class VarcharOperators
     public static double castToDouble(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Double.parseDouble(slice.toStringUtf8());
+            return Double.parseDouble(slice.toStringUtf8().trim());
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to DOUBLE", slice.toStringUtf8()));
@@ -89,7 +90,7 @@ public final class VarcharOperators
     public static long castToFloat(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Float.floatToIntBits(Float.parseFloat(slice.toStringUtf8()));
+            return toReal(Float.parseFloat(slice.toStringUtf8().trim()));
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to REAL", slice.toStringUtf8()));
@@ -102,7 +103,7 @@ public final class VarcharOperators
     public static long castToBigint(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Long.parseLong(slice.toStringUtf8());
+            return Long.parseLong(slice.toStringUtf8().trim());
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to BIGINT", slice.toStringUtf8()));
@@ -115,7 +116,7 @@ public final class VarcharOperators
     public static long castToInteger(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Integer.parseInt(slice.toStringUtf8());
+            return Integer.parseInt(slice.toStringUtf8().trim());
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to INT", slice.toStringUtf8()));
@@ -128,7 +129,7 @@ public final class VarcharOperators
     public static long castToSmallint(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Short.parseShort(slice.toStringUtf8());
+            return Short.parseShort(slice.toStringUtf8().trim());
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to SMALLINT", slice.toStringUtf8()));
@@ -141,7 +142,7 @@ public final class VarcharOperators
     public static long castToTinyint(@SqlType("varchar(x)") Slice slice)
     {
         try {
-            return Byte.parseByte(slice.toStringUtf8());
+            return Byte.parseByte(slice.toStringUtf8().trim());
         }
         catch (Exception e) {
             throw new TrinoException(INVALID_CAST_ARGUMENT, format("Cannot cast '%s' to TINYINT", slice.toStringUtf8()));

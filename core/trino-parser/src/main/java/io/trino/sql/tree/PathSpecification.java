@@ -13,28 +13,20 @@
  */
 package io.trino.sql.tree;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
 public final class PathSpecification
         extends Node
 {
-    private List<PathElement> path;
+    private final List<PathElement> path;
 
     public PathSpecification(NodeLocation location, List<PathElement> path)
-    {
-        this(Optional.of(location), path);
-    }
-
-    @VisibleForTesting
-    public PathSpecification(Optional<NodeLocation> location, List<PathElement> path)
     {
         super(location);
         this.path = ImmutableList.copyOf(requireNonNull(path, "path is null"));

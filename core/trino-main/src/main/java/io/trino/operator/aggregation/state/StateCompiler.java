@@ -38,10 +38,14 @@ import io.trino.array.IntBigArray;
 import io.trino.array.LongBigArray;
 import io.trino.array.ObjectBigArray;
 import io.trino.array.SliceBigArray;
+import io.trino.array.SqlMapBigArray;
+import io.trino.array.SqlRowBigArray;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RowBlockBuilder;
 import io.trino.spi.block.RowValueBuilder;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.function.AccumulatorState;
 import io.trino.spi.function.AccumulatorStateFactory;
 import io.trino.spi.function.AccumulatorStateMetadata;
@@ -138,7 +142,48 @@ public final class StateCompiler
         if (type.equals(Block.class)) {
             return BlockBigArray.class;
         }
+        if (type.equals(SqlMap.class)) {
+            return SqlMapBigArray.class;
+        }
+        if (type.equals(SqlRow.class)) {
+            return SqlRowBigArray.class;
+        }
         return ObjectBigArray.class;
+    }
+
+    private static Class<?> bigArrayElementType(Class<?> bigArrayType)
+    {
+        if (bigArrayType.equals(LongBigArray.class)) {
+            return long.class;
+        }
+        if (bigArrayType.equals(ByteBigArray.class)) {
+            return byte.class;
+        }
+        if (bigArrayType.equals(DoubleBigArray.class)) {
+            return double.class;
+        }
+        if (bigArrayType.equals(BooleanBigArray.class)) {
+            return boolean.class;
+        }
+        if (bigArrayType.equals(IntBigArray.class)) {
+            return int.class;
+        }
+        if (bigArrayType.equals(SliceBigArray.class)) {
+            return Slice.class;
+        }
+        if (bigArrayType.equals(BlockBigArray.class)) {
+            return Block.class;
+        }
+        if (bigArrayType.equals(SqlMapBigArray.class)) {
+            return SqlMap.class;
+        }
+        if (bigArrayType.equals(SqlRowBigArray.class)) {
+            return SqlRow.class;
+        }
+        if (bigArrayType.equals(ObjectBigArray.class)) {
+            return Object.class;
+        }
+        throw new IllegalArgumentException("Unsupported bigArrayType: " + bigArrayType.getName());
     }
 
     public static <T extends AccumulatorState> AccumulatorStateSerializer<T> generateStateSerializer(Class<T> clazz)
@@ -254,23 +299,26 @@ public final class StateCompiler
             }
         }
         else if (fields.size() > 1) {
-            Variable row = scope.declareVariable(Block.class, "row");
-            deserializerBody.append(row.set(block.invoke("getObject", Object.class, index, constantClass(Block.class)).cast(Block.class)));
+            Variable row = scope.declareVariable("row", deserializerBody, constantType(binder, getSerializedType(fields)).cast(RowType.class).invoke("getObject", SqlRow.class, block, index));
+            Variable rawIndex = scope.declareVariable("rawIndex", deserializerBody, row.invoke("getRawIndex", int.class));
+            Variable fieldBlock = scope.declareVariable(Block.class, "fieldBlock");
+
             int position = 0;
             for (StateField field : fields) {
                 Method setter = getSetter(clazz, field);
+                deserializerBody.append(fieldBlock.set(row.invoke("getRawFieldBlock", Block.class, constantInt(position))));
                 if (!field.isPrimitiveType()) {
                     deserializerBody.append(new IfStatement()
-                            .condition(row.invoke("isNull", boolean.class, constantInt(position)))
+                            .condition(fieldBlock.invoke("isNull", boolean.class, rawIndex))
                             .ifTrue(state.cast(setter.getDeclaringClass()).invoke(setter, constantNull(field.getType())))
-                            .ifFalse(state.cast(setter.getDeclaringClass()).invoke(setter, constantType(binder, field.getSqlType()).getValue(row, constantInt(position)))));
+                            .ifFalse(state.cast(setter.getDeclaringClass()).invoke(setter, constantType(binder, field.getSqlType()).getValue(fieldBlock, rawIndex))));
                 }
                 else {
                     // For primitive type, we need to cast here because we serialize byte fields with TINYINT/INTEGER (whose java type is long).
                     deserializerBody.append(
                             state.cast(setter.getDeclaringClass()).invoke(
                                     setter,
-                                    constantType(binder, field.getSqlType()).getValue(row, constantInt(position)).cast(field.getType())));
+                                    constantType(binder, field.getSqlType()).getValue(fieldBlock, rawIndex).cast(field.getType())));
                 }
                 position++;
             }
@@ -325,14 +373,14 @@ public final class StateCompiler
         Scope scope = method.getScope();
         BytecodeBlock body = method.getBody();
 
-        Variable fieldBuilder = scope.createTempVariable(BlockBuilder.class);
+        Variable fieldBuilder = scope.getOrCreateTempVariable(BlockBuilder.class);
         for (int i = 0; i < fields.size(); i++) {
             StateField field = fields.get(i);
             Method getter = getGetter(clazz, field);
 
             SqlTypeBytecodeExpression sqlType = constantType(binder, field.getSqlType());
 
-            Variable fieldValue = scope.createTempVariable(getter.getReturnType());
+            Variable fieldValue = scope.getOrCreateTempVariable(getter.getReturnType());
             body.append(fieldValue.set(state.cast(getter.getDeclaringClass()).invoke(getter)));
 
             body.append(fieldBuilder.set(fieldBuilders.invoke("get", Object.class, constantInt(i)).cast(BlockBuilder.class)));
@@ -346,7 +394,9 @@ public final class StateCompiler
                 // For primitive type, we need to cast here because we serialize byte fields with TINYINT/INTEGER (whose java type is long).
                 body.append(sqlType.writeValue(fieldBuilder, fieldValue.cast(field.getSqlType().getJavaType())));
             }
+            scope.releaseTempVariableForReuse(fieldValue);
         }
+        scope.releaseTempVariableForReuse(fieldBuilder);
         body.ret();
         return method;
     }
@@ -453,26 +503,28 @@ public final class StateCompiler
                 type(GroupedAccumulatorState.class),
                 type(InternalDataAccessor.class));
 
-        estimatedSize(definition);
-
         MethodDefinition constructor = definition.declareConstructor(a(PUBLIC));
         constructor.getBody()
                 .append(constructor.getThis())
                 .invokeConstructor(Object.class);
 
-        FieldDefinition groupIdField = definition.declareField(a(PRIVATE), "groupId", long.class);
-
-        Class<?> valueElementType = inOutGetterReturnType(type);
-        FieldDefinition valueField = definition.declareField(a(PRIVATE, FINAL), "value", getBigArrayType(valueElementType));
+        ImmutableList.Builder<FieldDefinition> fieldDefinitions = ImmutableList.builder();
+        FieldDefinition groupIdField = definition.declareField(a(PRIVATE), "groupId", int.class);
+        Class<?> bigArrayType = getBigArrayType(type.getJavaType());
+        Class<?> valueElementType = bigArrayElementType(bigArrayType);
+        FieldDefinition valueField = definition.declareField(a(PRIVATE, FINAL), "value", bigArrayType);
+        fieldDefinitions.add(valueField);
         constructor.getBody().append(constructor.getThis().setField(valueField, newInstance(valueField.getType())));
-        Function<Scope, BytecodeExpression> valueGetter = scope -> scope.getThis().getField(valueField).invoke("get", valueElementType, scope.getThis().getField(groupIdField));
+        Function<Scope, BytecodeExpression> valueGetter = scope -> scope.getThis().getField(valueField).invoke("get", valueElementType, scope.getThis().getField(groupIdField).cast(long.class));
 
         Optional<FieldDefinition> nullField;
         Function<Scope, BytecodeExpression> nullGetter;
         if (type.getJavaType().isPrimitive()) {
-            nullField = Optional.of(definition.declareField(a(PRIVATE, FINAL), "valueIdNull", BooleanBigArray.class));
+            FieldDefinition valueIdNullDefinition = definition.declareField(a(PRIVATE, FINAL), "valueIdNull", BooleanBigArray.class);
+            nullField = Optional.of(valueIdNullDefinition);
+            fieldDefinitions.add(valueIdNullDefinition);
             constructor.getBody().append(constructor.getThis().setField(nullField.get(), newInstance(BooleanBigArray.class, constantTrue())));
-            nullGetter = scope -> scope.getThis().getField(nullField.get()).invoke("get", boolean.class, scope.getThis().getField(groupIdField));
+            nullGetter = scope -> scope.getThis().getField(nullField.get()).invoke("get", boolean.class, scope.getThis().getField(groupIdField).cast(long.class));
         }
         else {
             nullField = Optional.empty();
@@ -482,6 +534,9 @@ public final class StateCompiler
         constructor.getBody()
                 .ret();
 
+        // Generate getEstimatedSize
+        estimatedSize(definition, fieldDefinitions.build());
+
         inOutGroupedSetGroupId(definition, groupIdField);
         inOutGroupedEnsureCapacity(definition, valueField, nullField);
         inOutGroupedCopy(definition, valueField, nullField);
@@ -489,15 +544,15 @@ public final class StateCompiler
         Function<Scope, BytecodeNode> setNullGenerator = scope -> {
             Variable thisVariable = scope.getThis();
             BytecodeBlock bytecodeBlock = new BytecodeBlock();
-            nullField.ifPresent(field -> bytecodeBlock.append(thisVariable.getField(field).invoke("set", void.class, thisVariable.getField(groupIdField), constantTrue())));
-            bytecodeBlock.append(thisVariable.getField(valueField).invoke("set", void.class, thisVariable.getField(groupIdField), defaultValue(valueElementType)));
+            nullField.ifPresent(field -> bytecodeBlock.append(thisVariable.getField(field).invoke("set", void.class, thisVariable.getField(groupIdField).cast(long.class), constantTrue())));
+            bytecodeBlock.append(thisVariable.getField(valueField).invoke("set", void.class, thisVariable.getField(groupIdField).cast(long.class), defaultValue(valueElementType)));
             return bytecodeBlock;
         };
         BiFunction<Scope, BytecodeExpression, BytecodeNode> setValueGenerator = (scope, value) -> {
             Variable thisVariable = scope.getThis();
             BytecodeBlock bytecodeBlock = new BytecodeBlock();
-            nullField.ifPresent(field -> bytecodeBlock.append(thisVariable.getField(field).invoke("set", void.class, thisVariable.getField(groupIdField), constantFalse())));
-            bytecodeBlock.append(thisVariable.getField(valueField).invoke("set", void.class, thisVariable.getField(groupIdField), value.cast(valueElementType)));
+            nullField.ifPresent(field -> bytecodeBlock.append(thisVariable.getField(field).invoke("set", void.class, thisVariable.getField(groupIdField).cast(long.class), constantFalse())));
+            bytecodeBlock.append(thisVariable.getField(valueField).invoke("set", void.class, thisVariable.getField(groupIdField).cast(long.class), value.cast(valueElementType)));
             return bytecodeBlock;
         };
 
@@ -535,6 +590,23 @@ public final class StateCompiler
                 .retLong();
     }
 
+    private static void estimatedSize(ClassDefinition definition, List<FieldDefinition> fieldDefinitions)
+    {
+        FieldDefinition instanceSize = generateInstanceSize(definition);
+
+        MethodDefinition getEstimatedSize = definition.declareMethod(a(PUBLIC), "getEstimatedSize", type(long.class));
+        BytecodeBlock body = getEstimatedSize.getBody();
+        Variable size = getEstimatedSize.getScope().declareVariable("size", body, getStatic(instanceSize));
+
+        // add field to size
+        for (FieldDefinition field : fieldDefinitions) {
+            body.append(size.set(add(size, getEstimatedSize.getThis().getField(field).invoke("sizeOf", long.class))));
+        }
+
+        // return size
+        body.append(size.ret());
+    }
+
     private static void inOutSingleCopy(ClassDefinition definition, FieldDefinition valueField, Optional<FieldDefinition> nullField)
     {
         MethodDefinition copy = definition.declareMethod(a(PUBLIC), "copy", type(AccumulatorState.class));
@@ -550,7 +622,7 @@ public final class StateCompiler
 
     private static void inOutGroupedSetGroupId(ClassDefinition definition, FieldDefinition groupIdField)
     {
-        Parameter groupIdArg = arg("groupId", long.class);
+        Parameter groupIdArg = arg("groupId", int.class);
         MethodDefinition method = definition.declareMethod(a(PUBLIC), "setGroupId", type(void.class), groupIdArg);
         method.getBody()
                 .append(method.getThis().setField(groupIdField, groupIdArg))
@@ -559,13 +631,13 @@ public final class StateCompiler
 
     private static void inOutGroupedEnsureCapacity(ClassDefinition definition, FieldDefinition valueField, Optional<FieldDefinition> nullField)
     {
-        Parameter size = arg("size", long.class);
+        Parameter size = arg("size", int.class);
         MethodDefinition method = definition.declareMethod(a(PUBLIC), "ensureCapacity", type(void.class), size);
         Variable thisVariable = method.getThis();
         BytecodeBlock body = method.getBody();
 
-        body.append(thisVariable.getField(valueField).invoke("ensureCapacity", void.class, size));
-        nullField.ifPresent(field -> body.append(thisVariable.getField(field).invoke("ensureCapacity", void.class, size)));
+        body.append(thisVariable.getField(valueField).invoke("ensureCapacity", void.class, size.cast(long.class)));
+        nullField.ifPresent(field -> body.append(thisVariable.getField(field).invoke("ensureCapacity", void.class, size.cast(long.class))));
         body.ret();
     }
 
@@ -870,8 +942,6 @@ public final class StateCompiler
                 type(AbstractGroupedAccumulatorState.class),
                 type(clazz));
 
-        FieldDefinition instanceSize = generateInstanceSize(definition);
-
         List<StateField> fields = enumerateFields(clazz, fieldTypes);
 
         // Create constructor
@@ -881,7 +951,7 @@ public final class StateCompiler
                 .invokeConstructor(AbstractGroupedAccumulatorState.class);
 
         // Create ensureCapacity
-        MethodDefinition ensureCapacity = definition.declareMethod(a(PUBLIC), "ensureCapacity", type(void.class), arg("size", long.class));
+        MethodDefinition ensureCapacity = definition.declareMethod(a(PUBLIC), "ensureCapacity", type(void.class), arg("size", int.class));
 
         // Generate fields, constructor, and ensureCapacity
         List<FieldDefinition> fieldDefinitions = new ArrayList<>();
@@ -893,21 +963,7 @@ public final class StateCompiler
         ensureCapacity.getBody().ret();
 
         // Generate getEstimatedSize
-        MethodDefinition getEstimatedSize = definition.declareMethod(a(PUBLIC), "getEstimatedSize", type(long.class));
-        BytecodeBlock body = getEstimatedSize.getBody();
-
-        Variable size = getEstimatedSize.getScope().declareVariable(long.class, "size");
-
-        // initialize size to the size of the instance
-        body.append(size.set(getStatic(instanceSize)));
-
-        // add field to size
-        for (FieldDefinition field : fieldDefinitions) {
-            body.append(size.set(add(size, getEstimatedSize.getThis().getField(field).invoke("sizeOf", long.class))));
-        }
-
-        // return size
-        body.append(size.ret());
+        estimatedSize(definition, fieldDefinitions);
 
         return defineClass(definition, clazz, classLoader);
     }
@@ -945,7 +1001,7 @@ public final class StateCompiler
                 .append(getter.getThis().getField(field).invoke(
                         "get",
                         stateField.getType(),
-                        getter.getThis().invoke("getGroupId", long.class))
+                        getter.getThis().invoke("getGroupId", int.class).cast(long.class))
                         .ret());
 
         // Generate setter
@@ -955,13 +1011,13 @@ public final class StateCompiler
                 .append(setter.getThis().getField(field).invoke(
                         "set",
                         void.class,
-                        setter.getThis().invoke("getGroupId", long.class),
+                        setter.getThis().invoke("getGroupId", int.class).cast(long.class),
                         value))
                 .ret();
 
         Scope ensureCapacityScope = ensureCapacity.getScope();
         ensureCapacity.getBody()
-                .append(ensureCapacity.getThis().getField(field).invoke("ensureCapacity", void.class, ensureCapacityScope.getVariable("size")));
+                .append(ensureCapacity.getThis().getField(field).invoke("ensureCapacity", void.class, ensureCapacityScope.getVariable("size").cast(long.class)));
 
         // Initialize field in constructor
         constructor.getBody()

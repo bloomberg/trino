@@ -5,15 +5,12 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>429-SNAPSHOT</version>
+        <version>461-SNAPSHOT</version>
     </parent>
 
     <artifactId>trino-docs</artifactId>
     <packaging>pom</packaging>
-
-    <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-    </properties>
+    <description>Trino - Documentation</description>
 
     <build>
         <pluginManagement>

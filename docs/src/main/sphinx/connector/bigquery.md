@@ -82,24 +82,14 @@ one for the sales and one for analytics, you can create two properties files in
 having `connector.name=bigquery` but with different `project-id`. This will
 create the two catalogs, `sales` and `analytics` respectively.
 
-### Configuring partitioning
-
-By default the connector creates one partition per 400MB in the table being
-read (before filtering). This should roughly correspond to the maximum number
-of readers supported by the BigQuery Storage API. This can be configured
-explicitly with the `bigquery.parallelism` property. BigQuery may limit the
-number of partitions based on server constraints.
-
 (bigquery-arrow-serialization-support)=
 ### Arrow serialization support
 
-This is an experimental feature which introduces support for using Apache Arrow
+This is a feature which introduces support for using Apache Arrow
 as the serialization format when reading from BigQuery.  Please note there are
 a few caveats:
 
-- Using Apache Arrow serialization is disabled by default. In order to enable
-  it, set the `bigquery.experimental.arrow-serialization.enabled`
-  configuration property to `true` and add
+- Using Apache Arrow serialization is enabled by default. Add
   `--add-opens=java.base/java.nio=ALL-UNNAMED` to the Trino
   {ref}`jvm-config`.
 
@@ -123,35 +113,106 @@ a few caveats:
 
 ### Configuration properties
 
-| Property                                            | Description                                                                                                                                                     | Default                                              |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `bigquery.project-id`                               | The Google Cloud Project ID where the data reside                                                                                                               | Taken from the service account                       |
-| `bigquery.parent-project-id`                        | The project ID Google Cloud Project to bill for the export                                                                                                      | Taken from the service account                       |
-| `bigquery.parallelism`                              | The number of partitions to split the data into                                                                                                                 | The number of executors                              |
-| `bigquery.views-enabled`                            | Enables the connector to read from views and not only tables. Please read [this section](bigquery-reading-from-views) before enabling this feature.                     | `false`                                              |
-| `bigquery.view-expire-duration`                     | Expire duration for the materialized view.                                                                                                                      | `24h`                                                |
-| `bigquery.view-materialization-project`             | The project where the materialized view is going to be created                                                                                                  | The view's project                                   |
-| `bigquery.view-materialization-dataset`             | The dataset where the materialized view is going to be created                                                                                                  | The view's dataset                                   |
-| `bigquery.skip-view-materialization`                | Use REST API to access views instead of Storage API. BigQuery `BIGNUMERIC` and `TIMESTAMP` types are unsupported.                                               | `false`                                              |
-| `bigquery.views-cache-ttl`                          | Duration for which the materialization of a view will be cached and reused. Set to `0ms` to disable the cache.                                                  | `15m`                                                |
-| `bigquery.metadata.cache-ttl`                       | Duration for which metadata retrieved from BigQuery is cached and reused. Set to `0ms` to disable the cache.                                                    | `0ms`                                                |
-| `bigquery.max-read-rows-retries`                    | The number of retries in case of retryable server issues                                                                                                        | `3`                                                  |
-| `bigquery.credentials-key`                          | The base64 encoded credentials key                                                                                                                              | None. See the [requirements](bigquery-requirements) section. |
-| `bigquery.credentials-file`                         | The path to the JSON credentials file                                                                                                                           | None. See the [requirements](bigquery-requirements) section. |
-| `bigquery.case-insensitive-name-matching`           | Match dataset and table names case-insensitively                                                                                                                | `false`                                              |
-| `bigquery.query-results-cache.enabled`              | Enable [query results cache](https://cloud.google.com/bigquery/docs/cached-results)                                                                             | `false`                                              |
-| `bigquery.experimental.arrow-serialization.enabled` | Enable using Apache Arrow serialization when reading data from BigQuery. Please read this [section](bigquery-arrow-serialization-support) before enabling this feature. | `false`                                              |
-| `bigquery.rpc-proxy.enabled`                        | Use a proxy for communication with BigQuery.                                                                                                                    | `false`                                              |
-| `bigquery.rpc-proxy.uri`                            | Proxy URI to use if connecting through a proxy.                                                                                                                 |                                                      |
-| `bigquery.rpc-proxy.username`                       | Proxy user name to use if connecting through a proxy.                                                                                                           |                                                      |
-| `bigquery.rpc-proxy.password`                       | Proxy password to use if connecting through a proxy.                                                                                                            |                                                      |
-| `bigquery.rpc-proxy.keystore-path`                  | Keystore containing client certificates to present to proxy if connecting through a proxy. Only required if proxy uses mutual TLS.                              |                                                      |
-| `bigquery.rpc-proxy.keystore-password`              | Password of the keystore specified by `bigquery.rpc-proxy.keystore-path`.                                                                                       |                                                      |
-| `bigquery.rpc-proxy.truststore-path`                | Truststore containing certificates of the proxy server if connecting through a proxy.                                                                           |                                                      |
-| `bigquery.rpc-proxy.truststore-password`            | Password of the truststore specified by `bigquery.rpc-proxy.truststore-path`.                                                                                   |                                                      |
+:::{list-table} BigQuery configuration properties
+:widths: 30, 55, 15
+:header-rows: 1
+
+* - Property name
+  - Description
+  - Default
+* - `bigquery.project-id`
+  - The Google Cloud Project ID where the data reside.
+  - Taken from the service account
+* - `bigquery.parent-project-id`
+  - The project ID Google Cloud Project to bill for the export.
+  - Taken from the service account
+* - `bigquery.views-enabled`
+  - Enables the connector to read from views and not only tables. Please read
+    [this section](bigquery-reading-from-views) before enabling this feature.
+  - `false`
+* - `bigquery.view-expire-duration`
+  - Expire duration for the materialized view.
+  - `24h`
+* - `bigquery.view-materialization-project`
+  - The project where the materialized view is going to be created.
+  - The view's project
+* - `bigquery.view-materialization-dataset`
+  - The dataset where the materialized view is going to be created.
+  - The view's project
+* - `bigquery.skip-view-materialization`
+  - Use REST API to access views instead of Storage API. BigQuery `BIGNUMERIC`
+    and `TIMESTAMP` types are unsupported.
+  - `false`
+* - `bigquery.view-materialization-with-filter`
+  - Use filter conditions when materializing views.
+  - `false`
+* - `bigquery.views-cache-ttl`
+  - Duration for which the materialization of a view will be cached and reused.
+    Set to `0ms` to disable the cache.
+  - `15m`
+* - `bigquery.metadata.cache-ttl`
+  - Duration for which metadata retrieved from BigQuery is cached and reused.
+    Set to `0ms` to disable the cache.
+  - `0ms`
+* - `bigquery.max-read-rows-retries`
+  - The number of retries in case of retryable server issues.
+  - `3`
+* - `bigquery.credentials-key`
+  - The base64 encoded credentials key.
+  - None. See the [requirements](bigquery-requirements) section
+* - `bigquery.credentials-file`
+  - The path to the JSON credentials file.
+  - None. See the [requirements](bigquery-requirements) section
+* - `bigquery.case-insensitive-name-matching`
+  - Match dataset and table names case-insensitively.
+  - `false`
+* - `bigquery.case-insensitive-name-matching.cache-ttl`
+  - [Duration](prop-type-duration) for which case insensitive schema and table
+    names are cached. Set to `0ms` to disable the cache.
+  - `0ms`
+* - `bigquery.query-results-cache.enabled`
+  - Enable [query results cache](https://cloud.google.com/bigquery/docs/cached-results).
+  - `false`
+* - `bigquery.arrow-serialization.enabled`
+  - Enable using Apache Arrow serialization when reading data from BigQuery.
+    Please read this [section](bigquery-arrow-serialization-support) before using this feature.
+  - `true`
+* - `bigquery.rpc-proxy.enabled`
+  - Use a proxy for communication with BigQuery.
+  - `false`
+* - `bigquery.rpc-proxy.uri`
+  - Proxy URI to use if connecting through a proxy.
+  -
+* - `bigquery.rpc-proxy.username`
+  - Proxy user name to use if connecting through a proxy.
+  -
+* - `bigquery.rpc-proxy.password`
+  - Proxy password to use if connecting through a proxy.
+  -
+* - `bigquery.rpc-proxy.keystore-path`
+  - Keystore containing client certificates to present to proxy if connecting
+    through a proxy. Only required if proxy uses mutual TLS.
+  -
+* - `bigquery.rpc-proxy.keystore-password`
+  - Password of the keystore specified by `bigquery.rpc-proxy.keystore-path`.
+  -
+* - `bigquery.rpc-proxy.truststore-path`
+  - Truststore containing certificates of the proxy server if connecting
+    through a proxy.
+  -
+* - `bigquery.rpc-proxy.truststore-password`
+  - Password of the truststore specified by `bigquery.rpc-proxy.truststore-path`.
+  -
+:::
+
+(bigquery-fte-support)=
+### Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
+
 
 (bigquery-type-mapping)=
-
 ## Type mapping
 
 Because Trino and BigQuery each support types that the other does not, this
@@ -165,59 +226,63 @@ each direction.
 The connector maps BigQuery types to the corresponding Trino types according
 to the following table:
 
-```{eval-rst}
-.. list-table:: BigQuery type to Trino type mapping
-  :widths: 30, 30, 50
-  :header-rows: 1
+:::{list-table} BigQuery type to Trino type mapping
+:widths: 30, 30, 50
+:header-rows: 1
 
-  * - BigQuery type
-    - Trino type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``INT64``
-    - ``BIGINT``
-    - ``INT``, ``SMALLINT``, ``INTEGER``, ``BIGINT``, ``TINYINT``, and
-      ``BYTEINT`` are aliases for ``INT64`` in BigQuery.
-  * - ``FLOAT64``
-    - ``DOUBLE``
-    -
-  * - ``NUMERIC``
-    - ``DECIMAL(P,S)``
-    - The default precision and scale of ``NUMERIC`` is ``(38, 9)``.
-  * - ``BIGNUMERIC``
-    - ``DECIMAL(P,S)``
-    - Precision > 38 is not supported. The default precision and scale of
-      ``BIGNUMERIC`` is ``(77, 38)``.
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``DATETIME``
-    - ``TIMESTAMP(6)``
-    -
-  * - ``STRING``
-    - ``VARCHAR``
-    -
-  * - ``BYTES``
-    - ``VARBINARY``
-    -
-  * - ``TIME``
-    - ``TIME(6)``
-    -
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP(6) WITH TIME ZONE``
-    - Time zone is UTC
-  * - ``GEOGRAPHY``
-    - ``VARCHAR``
-    - In `Well-known text (WKT) <https://wikipedia.org/wiki/Well-known_text_representation_of_geometry>`_ format
-  * - ``ARRAY``
-    - ``ARRAY``
-    -
-  * - ``RECORD``
-    - ``ROW``
-    -
-```
+* - BigQuery type
+  - Trino type
+  - Notes
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `INT64`
+  - `BIGINT`
+  - `INT`, `SMALLINT`, `INTEGER`, `BIGINT`, `TINYINT`, and `BYTEINT` are aliases
+    for `INT64` in BigQuery.
+* - `FLOAT64`
+  - `DOUBLE`
+  -
+* - `NUMERIC`
+  - `DECIMAL(P,S)`
+  - The default precision and scale of `NUMERIC` is `(38, 9)`.
+* - `BIGNUMERIC`
+  - `DECIMAL(P,S)`
+  - Precision > 38 is not supported. The default precision and scale of
+    `BIGNUMERIC` is `(77, 38)`.
+* - `DATE`
+  - `DATE`
+  -
+* - `DATETIME`
+  - `TIMESTAMP(6)`
+  -
+* - `STRING`
+  - `VARCHAR`
+  -
+* - `BYTES`
+  - `VARBINARY`
+  -
+* - `TIME`
+  - `TIME(6)`
+  -
+* - `TIMESTAMP`
+  - `TIMESTAMP(6) WITH TIME ZONE`
+  - Time zone is UTC
+* - `GEOGRAPHY`
+  - `VARCHAR`
+  - In [Well-known text
+    (WKT)](https://wikipedia.org/wiki/Well-known_text_representation_of_geometry)
+    format
+* - `JSON`
+  - `JSON`
+  -
+* - `ARRAY`
+  - `ARRAY`
+  -
+* - `RECORD`
+  - `ROW`
+  -
+:::
 
 No other types are supported.
 
@@ -226,40 +291,39 @@ No other types are supported.
 The connector maps Trino types to the corresponding BigQuery types according
 to the following table:
 
-```{eval-rst}
-.. list-table:: Trino type to BigQuery type mapping
-  :widths: 30, 30, 50
-  :header-rows: 1
+:::{list-table} Trino type to BigQuery type mapping
+:widths: 30, 30, 50
+:header-rows: 1
 
-  * - Trino type
-    - BigQuery type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``VARBINARY``
-    - ``BYTES``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``DOUBLE``
-    - ``FLOAT``
-    -
-  * - ``BIGINT``
-    - ``INT64``
-    - ``INT``, ``SMALLINT``, ``INTEGER``, ``BIGINT``, ``TINYINT``, and
-      ``BYTEINT`` are aliases for ``INT64`` in BigQuery.
-  * - ``DECIMAL(P,S)``
-    - ``NUMERIC``
-    - The default precision and scale of ``NUMERIC`` is ``(38, 9)``.
-  * - ``VARCHAR``
-    - ``STRING``
-    -
-  * - ``TIMESTAMP(6)``
-    - ``DATETIME``
-    -
-```
+* - Trino type
+  - BigQuery type
+  - Notes
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `VARBINARY`
+  - `BYTES`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `DOUBLE`
+  - `FLOAT`
+  -
+* - `BIGINT`
+  - `INT64`
+  - `INT`, `SMALLINT`, `INTEGER`, `BIGINT`, `TINYINT`, and
+    `BYTEINT` are aliases for `INT64` in BigQuery.
+* - `DECIMAL(P,S)`
+  - `NUMERIC`
+  - The default precision and scale of `NUMERIC` is `(38, 9)`.
+* - `VARCHAR`
+  - `STRING`
+  -
+* - `TIMESTAMP(6)`
+  - `DATETIME`
+  -
+:::
 
 No other types are supported.
 
@@ -271,7 +335,6 @@ you can send query `SELECT * example_view$view_definition` to see the SQL
 which defines view in BigQuery.
 
 (bigquery-special-columns)=
-
 ## Special columns
 
 In addition to the defined columns, the BigQuery connector exposes
@@ -302,7 +365,6 @@ Two special partitions `__NULL__` and `__UNPARTITIONED__` are not supported.
 :::
 
 (bigquery-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in the
@@ -312,6 +374,7 @@ BigQuery database. In addition to the
 the following features:
 
 - {doc}`/sql/insert`
+- {doc}`/sql/delete`
 - {doc}`/sql/truncate`
 - {doc}`/sql/create-table`
 - {doc}`/sql/create-table-as`
@@ -320,21 +383,21 @@ the following features:
 - {doc}`/sql/drop-schema`
 - {doc}`/sql/comment`
 
-(bigquery-fte-support)=
+```{include} sql-delete-limitation.fragment
+```
 
-## Fault-tolerant execution support
+### Procedures
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
+```{include} procedures-execute.fragment
+```
 
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access BigQuery.
 
 (bigquery-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying BigQuery directly. It
 requires syntax native to BigQuery, because the full query is pushed down and

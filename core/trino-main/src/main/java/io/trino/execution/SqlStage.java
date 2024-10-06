@@ -13,7 +13,6 @@
  */
 package io.trino.execution;
 
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
@@ -40,9 +39,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.SystemSessionProperties.isEnableCoordinatorDynamicFiltersDistribution;
 import static io.trino.server.DynamicFilterService.getOutboundDynamicFilters;
 import static java.util.Objects.requireNonNull;
 
@@ -84,6 +83,7 @@ public final class SqlStage
             NodeTaskMap nodeTaskMap,
             Executor stateMachineExecutor,
             Tracer tracer,
+            Span schedulerSpan,
             SplitSchedulerStats schedulerStats)
     {
         requireNonNull(stageId, "stageId is null");
@@ -103,7 +103,7 @@ public final class SqlStage
                 tables,
                 stateMachineExecutor,
                 tracer,
-                session.getQuerySpan(),
+                schedulerSpan,
                 schedulerStats);
 
         SqlStage sqlStage = new SqlStage(
@@ -129,12 +129,7 @@ public final class SqlStage
         this.nodeTaskMap = requireNonNull(nodeTaskMap, "nodeTaskMap is null");
         this.summarizeTaskInfo = summarizeTaskInfo;
 
-        if (isEnableCoordinatorDynamicFiltersDistribution(session)) {
-            this.outboundDynamicFilterIds = getOutboundDynamicFilters(stateMachine.getFragment());
-        }
-        else {
-            this.outboundDynamicFilterIds = ImmutableSet.of();
-        }
+        this.outboundDynamicFilterIds = getOutboundDynamicFilters(stateMachine.getFragment());
     }
 
     // this is a separate method to ensure that the `this` reference is not leaked during construction
@@ -215,7 +210,7 @@ public final class SqlStage
     public Duration getTotalCpuTime()
     {
         long millis = tasks.values().stream()
-                .mapToLong(task -> task.getTaskInfo().getStats().getTotalCpuTime().toMillis())
+                .mapToLong(task -> task.getTaskInfo().stats().getTotalCpuTime().toMillis())
                 .sum();
         return new Duration(millis, TimeUnit.MILLISECONDS);
     }
@@ -228,6 +223,11 @@ public final class SqlStage
     public StageInfo getStageInfo()
     {
         return stateMachine.getStageInfo(this::getAllTaskInfo);
+    }
+
+    public BasicStageInfo getBasicStageInfo()
+    {
+        return stateMachine.getBasicStageInfo(this::getAllTaskInfo);
     }
 
     private Iterable<TaskInfo> getAllTaskInfo()
@@ -309,7 +309,7 @@ public final class SqlStage
 
     private synchronized void updateFinalTaskInfo(TaskInfo finalTaskInfo)
     {
-        tasksWithFinalInfo.add(finalTaskInfo.getTaskStatus().getTaskId());
+        tasksWithFinalInfo.add(finalTaskInfo.taskStatus().getTaskId());
         checkAllTaskFinal();
     }
 
@@ -329,9 +329,18 @@ public final class SqlStage
     }
 
     @Override
-    public String toString()
+    // for debugging
+    public synchronized String toString()
     {
-        return stateMachine.toString();
+        return toStringHelper(this)
+                .add("stateMachine", stateMachine)
+                .add("summarizeTaskInfo", summarizeTaskInfo)
+                .add("outboundDynamicFilterIds", outboundDynamicFilterIds)
+                .add("tasks", tasks)
+                .add("allTasks", allTasks)
+                .add("finishedTasks", finishedTasks)
+                .add("tasksWithFinalInfo", tasksWithFinalInfo)
+                .toString();
     }
 
     private class MemoryUsageListener

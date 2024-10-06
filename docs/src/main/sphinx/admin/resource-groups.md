@@ -56,39 +56,37 @@ Trino clusters to be stored in the same database if required.
 The configuration is reloaded from the database every second, and the changes
 are reflected automatically for incoming queries.
 
-```{eval-rst}
-.. list-table:: Database resource group manager properties
-   :widths: 40, 50, 10
-   :header-rows: 1
+:::{list-table} Database resource group manager properties
+:widths: 40, 50, 10
+:header-rows: 1
 
-   * - Property name
-     - Description
-     - Default value
-   * - ``resource-groups.config-db-url``
-     - Database URL to load configuration from.
-     - ``none``
-   * - ``resource-groups.config-db-user``
-     - Database user to connect with.
-     - ``none``
-   * - ``resource-groups.config-db-password``
-     - Password for database user to connect with.
-     - ``none``
-   * - ``resource-groups.max-refresh-interval``
-     - The maximum time period for which the cluster will continue to accept
-       queries after refresh failures, causing configuration to become stale.
-     - ``1h``
-   * - ``resource-groups.refresh-interval``
-     -  How often the cluster reloads from the database
-     - ``1s``
-   * - ``resource-groups.exact-match-selector-enabled``
-     - Setting this flag enables usage of an additional
-       ``exact_match_source_selectors`` table to configure resource group
-       selection rules defined exact name based matches for source, environment
-       and query type. By default, the rules are only loaded from the
-       ``selectors`` table, with a regex-based filter for ``source``, among
-       other filters.
-     - ``false``
-```
+* - Property name
+  - Description
+  - Default value
+* - `resource-groups.config-db-url`
+  - Database URL to load configuration from.
+  - `none`
+* - `resource-groups.config-db-user`
+  - Database user to connect with.
+  - `none`
+* - `resource-groups.config-db-password`
+  - Password for database user to connect with.
+  - `none`
+* - `resource-groups.max-refresh-interval`
+  - The maximum time period for which the cluster will continue to accept
+    queries after refresh failures, causing configuration to become stale.
+  - `1h`
+* - `resource-groups.refresh-interval`
+  -  How often the cluster reloads from the database
+  - `1s`
+* - `resource-groups.exact-match-selector-enabled`
+  - Setting this flag enables usage of an additional
+    `exact_match_source_selectors` table to configure resource group selection
+    rules defined exact name based matches for source, environment and query
+    type. By default, the rules are only loaded from the `selectors` table, with
+    a regex-based filter for `source`, among other filters.
+  - `false`
+:::
 
 ## Resource group properties
 
@@ -139,7 +137,6 @@ are reflected automatically for incoming queries.
 - `subGroups` (optional): list of sub-groups.
 
 (scheduleweight-example)=
-
 ### Scheduling weight example
 
 Schedule weighting is a method of assigning a priority to a resource. Sub-groups
@@ -161,28 +158,46 @@ evenly and each receive 50% of the queries in a given timeframe.
 
 ## Selector rules
 
-- `user` (optional): regex to match against user name.
+The selector rules for pattern matching use Java's regular expression
+capabilities. Java implements regular expressions through the `java.util.regex`
+package. For more information, see the [Java
+documentation](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/util/regex/Pattern.html).
 
-- `userGroup` (optional): regex to match against every user group the user belongs to.
+- `user` (optional): Java regex to match against user name.
 
-- `source` (optional): regex to match against source string.
+- `userGroup` (optional): Java regex to match against every user group the user belongs to.
+
+- `source` (optional): Java regex to match against source string.
 
 - `queryType` (optional): string to match against the type of the query submitted:
 
-  - `SELECT`: `SELECT` queries.
-  - `EXPLAIN`: `EXPLAIN` queries (but not `EXPLAIN ANALYZE`).
-  - `DESCRIBE`: `DESCRIBE`, `DESCRIBE INPUT`, `DESCRIBE OUTPUT`, and `SHOW` queries.
-  - `INSERT`: `INSERT`, `CREATE TABLE AS`, and `REFRESH MATERIALIZED VIEW` queries.
-  - `UPDATE`: `UPDATE` queries.
-  - `DELETE`: `DELETE` queries.
-  - `ANALYZE`: `ANALYZE` queries.
-  - `DATA_DEFINITION`: Queries that alter/create/drop the metadata of schemas/tables/views,
-    and that manage prepared statements, privileges, sessions, and transactions.
+  - `SELECT`: [SELECT](/sql/select) queries.
+  - `EXPLAIN`: [EXPLAIN](/sql/explain) queries, but not [EXPLAIN
+    ANALYZE](/sql/explain-analyze) queries.
+  - `DESCRIBE`: [DESCRIBE](/sql/describe), [DESCRIBE
+    INPUT](/sql/describe-input), [DESCRIBE OUTPUT](/sql/describe-output), and
+    `SHOW` queries such as [SHOW CATALOGS](/sql/show-catalogs), [SHOW
+    SCHEMAS](/sql/show-schemas), and [SHOW TABLES](/sql/show-tables).
+  - `INSERT`: [INSERT](/sql/insert), [CREATE TABLE AS](/sql/create-table-as),
+    and [REFRESH MATERIALIZED VIEW](/sql/refresh-materialized-view) queries.
+  - `UPDATE`: [UPDATE](/sql/update) queries.
+  - `MERGE`: [MERGE](/sql/merge) queries.
+  - `DELETE`: [DELETE](/sql/delete) queries.
+  - `ANALYZE`: [ANALYZE](/sql/analyze) queries.
+  - `DATA_DEFINITION`: Queries that affect the data definition. These include
+    `CREATE`, `ALTER`, and `DROP` statements for schemas, tables, views, and
+    materialized views, as well as statements that manage prepared statements,
+    privileges, sessions, and transactions.
+  - `ALTER_TABLE_EXECUTE`: Queries that execute table procedures with [ALTER
+    TABLE EXECUTE](alter-table-execute).
 
 - `clientTags` (optional): list of tags. To match, every tag in this list must be in the list of
   client-provided tags associated with the query.
 
 - `group` (required): the group these queries will run in.
+
+All rules within a single selector are combined using a logical `AND`. Therefore
+all rules must match for a selector to be applied.
 
 Selectors are processed sequentially and the first one that matches will be used.
 

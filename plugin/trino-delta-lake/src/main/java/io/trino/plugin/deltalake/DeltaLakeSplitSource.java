@@ -16,12 +16,14 @@ package io.trino.plugin.deltalake;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.io.Closer;
 import com.google.common.util.concurrent.Futures;
 import io.airlift.concurrent.MoreFutures;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.util.AsyncQueue;
 import io.trino.plugin.hive.util.ThrottledAsyncQueue;
+import io.trino.spi.ErrorCodeSupplier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
@@ -30,6 +32,8 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,6 +42,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Throwables.getCausalChain;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.util.concurrent.Futures.immediateFailedFuture;
@@ -57,10 +62,12 @@ public class DeltaLakeSplitSource
     private final SchemaTableName tableName;
     private final AsyncQueue<ConnectorSplit> queue;
     private final boolean recordScannedFiles;
-    private final ImmutableSet.Builder<String> scannedFilePaths = ImmutableSet.builder();
+    private final ImmutableSet.Builder<DeltaLakeScannedDataFile> scannedFilePaths = ImmutableSet.builder();
     private final DynamicFilter dynamicFilter;
     private final long dynamicFilteringWaitTimeoutMillis;
     private final Stopwatch dynamicFilterWaitStopwatch;
+    private final Closer closer = Closer.create();
+
     private volatile TrinoException trinoException;
 
     public DeltaLakeSplitSource(
@@ -75,15 +82,17 @@ public class DeltaLakeSplitSource
     {
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.queue = new ThrottledAsyncQueue<>(maxSplitsPerSecond, maxOutstandingSplits, executor);
+        closer.register(queue::finish);
         this.recordScannedFiles = recordScannedFiles;
         this.dynamicFilter = requireNonNull(dynamicFilter, "dynamicFilter is null");
         this.dynamicFilteringWaitTimeoutMillis = dynamicFilteringWaitTimeout.toMillis();
         this.dynamicFilterWaitStopwatch = Stopwatch.createStarted();
+        closer.register(splits::close);
         queueSplits(splits, queue, executor)
                 .exceptionally(throwable -> {
                     // set trinoException before finishing the queue to ensure failure is observed instead of successful completion
                     // (the field is declared as volatile to make sure that the change is visible right away to other threads)
-                    trinoException = new TrinoException(GENERIC_INTERNAL_ERROR, "Failed to generate splits for " + this.tableName, throwable);
+                    trinoException = new TrinoException(findErrorCode(throwable), "Failed to generate splits for " + this.tableName, throwable);
                     try {
                         // Finish the queue to wake up threads from queue.getBatchAsync()
                         queue.finish();
@@ -96,13 +105,23 @@ public class DeltaLakeSplitSource
                 });
     }
 
+    private ErrorCodeSupplier findErrorCode(Throwable throwable)
+    {
+        return getCausalChain(throwable).stream()
+                .filter(TrinoException.class::isInstance)
+                .map(TrinoException.class::cast)
+                .findFirst()
+                .map(t -> (ErrorCodeSupplier) t::getErrorCode)
+                .orElse(GENERIC_INTERNAL_ERROR);
+    }
+
     @Override
     public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
     {
         long timeLeft = dynamicFilteringWaitTimeoutMillis - dynamicFilterWaitStopwatch.elapsed(MILLISECONDS);
         if (dynamicFilter.isAwaitable() && timeLeft > 0) {
             return dynamicFilter.isBlocked()
-                    .thenApply(ignored -> EMPTY_BATCH)
+                    .thenApply(_ -> EMPTY_BATCH)
                     .completeOnTimeout(EMPTY_BATCH, timeLeft, MILLISECONDS);
         }
 
@@ -119,15 +138,15 @@ public class DeltaLakeSplitSource
                         return new ConnectorSplitBatch(ImmutableList.of(), noMoreSplits);
                     }
                     Map<DeltaLakeColumnHandle, Domain> partitionColumnDomains = dynamicFilterPredicate.getDomains().orElseThrow().entrySet().stream()
-                            .filter(entry -> entry.getKey().getColumnType() == DeltaLakeColumnType.PARTITION_KEY)
+                            .filter(entry -> entry.getKey().columnType() == DeltaLakeColumnType.PARTITION_KEY)
                             .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
                     List<ConnectorSplit> filteredSplits = splits.stream()
                             .map(DeltaLakeSplit.class::cast)
-                            .filter(split -> split.getStatisticsPredicate().overlaps(dynamicFilterPredicate) &&
-                                    partitionMatchesPredicate(split.getPartitionKeys(), partitionColumnDomains))
+                            .filter(split -> partitionMatchesPredicate(split.getPartitionKeys(), partitionColumnDomains) &&
+                                    split.getStatisticsPredicate().overlaps(dynamicFilterPredicate))
                             .collect(toImmutableList());
                     if (recordScannedFiles) {
-                        filteredSplits.forEach(split -> scannedFilePaths.add(((DeltaLakeSplit) split).getPath()));
+                        filteredSplits.forEach(split -> scannedFilePaths.add(new DeltaLakeScannedDataFile(((DeltaLakeSplit) split).getPath(), ((DeltaLakeSplit) split).getPartitionKeys())));
                     }
                     return new ConnectorSplitBatch(filteredSplits, noMoreSplits);
                 },
@@ -147,7 +166,12 @@ public class DeltaLakeSplitSource
     @Override
     public void close()
     {
-        queue.finish();
+        try {
+            closer.close();
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @Override

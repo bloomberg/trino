@@ -17,8 +17,10 @@ import io.airlift.slice.Slice;
 import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
+import java.util.Optional;
 
 import static java.lang.Math.ceil;
+import static java.lang.Math.clamp;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -28,7 +30,8 @@ final class BlockUtil
 
     private static final int DEFAULT_CAPACITY = 64;
     // See java.util.ArrayList for an explanation
-    static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
+    // Two additional positions are reserved for a spare null position and offset position
+    static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8 - 2;
 
     private BlockUtil()
     {
@@ -78,19 +81,25 @@ final class BlockUtil
 
     static int calculateNewArraySize(int currentSize)
     {
-        // grow array by 50%
+        return calculateNewArraySize(currentSize, DEFAULT_CAPACITY);
+    }
+
+    static int calculateNewArraySize(int currentSize, int minimumSize)
+    {
+        if (currentSize < 0 || currentSize > MAX_ARRAY_SIZE || minimumSize < 0 || minimumSize > MAX_ARRAY_SIZE) {
+            throw new IllegalArgumentException("Invalid currentSize or minimumSize");
+        }
+        if (currentSize == MAX_ARRAY_SIZE) {
+            throw new IllegalArgumentException("Cannot grow array beyond size " + MAX_ARRAY_SIZE);
+        }
+
+        minimumSize = Math.max(minimumSize, DEFAULT_CAPACITY);
+
+        // grow the array by 50% if possible
         long newSize = (long) currentSize + (currentSize >> 1);
 
-        // verify new size is within reasonable bounds
-        if (newSize < DEFAULT_CAPACITY) {
-            newSize = DEFAULT_CAPACITY;
-        }
-        else if (newSize > MAX_ARRAY_SIZE) {
-            newSize = MAX_ARRAY_SIZE;
-            if (newSize == currentSize) {
-                throw new IllegalArgumentException(format("Cannot grow array beyond '%s'", MAX_ARRAY_SIZE));
-            }
-        }
+        // ensure new size is within bounds
+        newSize = clamp(newSize, minimumSize, MAX_ARRAY_SIZE);
         return (int) newSize;
     }
 
@@ -349,5 +358,37 @@ final class BlockUtil
         }
 
         return buffer;
+    }
+
+    static void appendRawBlockRange(Block rawBlock, int offset, int length, BlockBuilder blockBuilder)
+    {
+        rawBlock = rawBlock.getLoadedBlock();
+        switch (rawBlock) {
+            case RunLengthEncodedBlock rleBlock -> blockBuilder.appendRepeated(rleBlock.getValue(), 0, length);
+            case DictionaryBlock dictionaryBlock -> blockBuilder.appendPositions(dictionaryBlock.getDictionary(), dictionaryBlock.getRawIds(), offset, length);
+            case ValueBlock valueBlock -> blockBuilder.appendRange(valueBlock, offset, length);
+            case LazyBlock _ -> throw new IllegalStateException("Did not expect LazyBlock after loading " + rawBlock.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Ideally, the underlying nulls array in Block implementations should be a byte array instead of a boolean array.
+     * This method is used to perform that conversion until the Block implementations are changed.
+     */
+    static Optional<ByteArrayBlock> getNulls(@Nullable boolean[] valueIsNull, int arrayOffset, int positionCount)
+    {
+        if (valueIsNull == null) {
+            return Optional.empty();
+        }
+        byte[] booleansAsBytes = new byte[positionCount];
+        boolean foundAnyNull = false;
+        for (int i = 0; i < positionCount; i++) {
+            booleansAsBytes[i] = (byte) (valueIsNull[arrayOffset + i] ? 1 : 0);
+            foundAnyNull = foundAnyNull || valueIsNull[arrayOffset + i];
+        }
+        if (!foundAnyNull) {
+            return Optional.empty();
+        }
+        return Optional.of(new ByteArrayBlock(booleansAsBytes.length, Optional.empty(), booleansAsBytes));
     }
 }

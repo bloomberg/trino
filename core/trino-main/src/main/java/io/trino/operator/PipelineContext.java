@@ -28,6 +28,7 @@ import io.trino.execution.TaskId;
 import io.trino.memory.QueryContextVisitor;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.memory.context.MemoryTrackingContext;
+import io.trino.spi.metrics.Metrics;
 import org.joda.time.DateTime;
 
 import java.util.Iterator;
@@ -55,6 +56,7 @@ public class PipelineContext
     private final TaskContext taskContext;
     private final Executor notificationExecutor;
     private final ScheduledExecutorService yieldExecutor;
+    private final ScheduledExecutorService timeoutExecutor;
     private final int pipelineId;
 
     private final boolean inputPipeline;
@@ -102,10 +104,12 @@ public class PipelineContext
     private final AtomicLong physicalWrittenDataSize = new AtomicLong();
 
     private final ConcurrentMap<Integer, OperatorStats> operatorSummaries = new ConcurrentHashMap<>();
+    // pre-merged metrics which are shared among instances of given operator within pipeline
+    private final ConcurrentMap<Integer, Metrics> pipelineOperatorMetrics = new ConcurrentHashMap<>();
 
     private final MemoryTrackingContext pipelineMemoryContext;
 
-    public PipelineContext(int pipelineId, TaskContext taskContext, Executor notificationExecutor, ScheduledExecutorService yieldExecutor, MemoryTrackingContext pipelineMemoryContext, boolean inputPipeline, boolean outputPipeline, boolean partitioned)
+    public PipelineContext(int pipelineId, TaskContext taskContext, Executor notificationExecutor, ScheduledExecutorService yieldExecutor, ScheduledExecutorService timeoutExecutor, MemoryTrackingContext pipelineMemoryContext, boolean inputPipeline, boolean outputPipeline, boolean partitioned)
     {
         this.pipelineId = pipelineId;
         this.inputPipeline = inputPipeline;
@@ -114,6 +118,7 @@ public class PipelineContext
         this.taskContext = requireNonNull(taskContext, "taskContext is null");
         this.notificationExecutor = requireNonNull(notificationExecutor, "notificationExecutor is null");
         this.yieldExecutor = requireNonNull(yieldExecutor, "yieldExecutor is null");
+        this.timeoutExecutor = requireNonNull(timeoutExecutor, "timeoutExecutor is null");
         this.pipelineMemoryContext = requireNonNull(pipelineMemoryContext, "pipelineMemoryContext is null");
         // Initialize the local memory contexts with the ExchangeOperator tag as ExchangeOperator will do the local memory allocations
         pipelineMemoryContext.initializeLocalMemoryContexts(ExchangeOperator.class.getSimpleName());
@@ -156,6 +161,7 @@ public class PipelineContext
                 this,
                 notificationExecutor,
                 yieldExecutor,
+                timeoutExecutor,
                 pipelineMemoryContext.newMemoryTrackingContext(),
                 splitWeight);
         drivers.add(driverContext);
@@ -174,6 +180,11 @@ public class PipelineContext
         if (partitioned && weightSum != 0) {
             totalSplitsWeight.addAndGet(weightSum);
         }
+    }
+
+    public void setPipelineOperatorMetrics(int operatorId, Metrics metrics)
+    {
+        pipelineOperatorMetrics.put(operatorId, metrics);
     }
 
     public void driverFinished(DriverContext driverContext)
@@ -205,7 +216,8 @@ public class PipelineContext
         // merge the operator stats into the operator summary
         List<OperatorStats> operators = driverStats.getOperatorStats();
         for (OperatorStats operator : operators) {
-            operatorSummaries.merge(operator.getOperatorId(), operator, OperatorStats::add);
+            Metrics pipelineLevelMetrics = pipelineOperatorMetrics.getOrDefault(operator.getOperatorId(), Metrics.EMPTY);
+            operatorSummaries.merge(operator.getOperatorId(), operator, (first, second) -> first.addFillingPipelineMetrics(second, pipelineLevelMetrics));
         }
 
         physicalInputDataSize.update(driverStats.getPhysicalInputDataSize().toBytes());
@@ -455,13 +467,17 @@ public class PipelineContext
             if (runningStats.isEmpty()) {
                 return current;
             }
+            Metrics pipelineLevelMetrics = pipelineOperatorMetrics.getOrDefault(operatorId, Metrics.EMPTY);
             if (current != null) {
-                return current.add(runningStats);
+                return current.addFillingPipelineMetrics(runningStats, pipelineLevelMetrics);
             }
             else {
                 OperatorStats combined = runningStats.get(0);
                 if (runningStats.size() > 1) {
-                    combined = combined.add(runningStats.subList(1, runningStats.size()));
+                    combined = combined.addFillingPipelineMetrics(runningStats.subList(1, runningStats.size()), pipelineLevelMetrics);
+                }
+                else if (pipelineLevelMetrics != Metrics.EMPTY) {
+                    combined = combined.withPipelineMetrics(pipelineLevelMetrics);
                 }
                 return combined;
             }

@@ -128,7 +128,7 @@ public class CassandraTokenSplitManager
         }
         List<SizeEstimate> estimates = session.getSizeEstimates(keyspace, table);
         return estimates.stream()
-                .mapToLong(SizeEstimate::getPartitionsCount)
+                .mapToLong(SizeEstimate::partitionsCount)
                 .sum();
     }
 
@@ -151,8 +151,8 @@ public class CassandraTokenSplitManager
 
     public static class TokenSplit
     {
-        private TokenRange tokenRange;
-        private List<String> hosts;
+        private final TokenRange tokenRange;
+        private final List<String> hosts;
 
         public TokenSplit(TokenRange tokenRange, List<String> hosts)
         {

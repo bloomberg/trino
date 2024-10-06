@@ -19,8 +19,8 @@ import static java.lang.String.format;
 
 public class ChunkKey
 {
-    private int column;
-    private int rowGroup;
+    private final int column;
+    private final int rowGroup;
 
     public ChunkKey(int column, int rowGroup)
     {
@@ -44,8 +44,8 @@ public class ChunkKey
             return false;
         }
         ChunkKey other = (ChunkKey) obj;
-        return Objects.equals(this.column, other.column)
-                && Objects.equals(this.rowGroup, other.rowGroup);
+        return this.column == other.column &&
+               this.rowGroup == other.rowGroup;
     }
 
     @Override

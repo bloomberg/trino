@@ -14,17 +14,20 @@
 package io.trino.plugin.hive.security;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
-import io.trino.plugin.base.CatalogName;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
+import io.trino.metastore.Database;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaRoutineName;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.ConnectorIdentity;
@@ -36,19 +39,21 @@ import io.trino.spi.type.Type;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.plugin.hive.metastore.Database.DEFAULT_DATABASE_NAME;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.DELETE;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.INSERT;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.SELECT;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.HivePrivilege.UPDATE;
-import static io.trino.plugin.hive.metastore.HivePrivilegeInfo.toHivePrivilege;
+import static io.trino.metastore.Database.DEFAULT_DATABASE_NAME;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.DELETE;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.INSERT;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.OWNERSHIP;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.SELECT;
+import static io.trino.metastore.HivePrivilegeInfo.HivePrivilege.UPDATE;
+import static io.trino.metastore.HivePrivilegeInfo.toHivePrivilege;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isRoleApplicable;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isRoleEnabled;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.listApplicableRoles;
@@ -59,6 +64,7 @@ import static io.trino.spi.security.AccessDeniedException.denyAlterColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
 import static io.trino.spi.security.AccessDeniedException.denyCommentView;
+import static io.trino.spi.security.AccessDeniedException.denyCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyCreateMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateRole;
 import static io.trino.spi.security.AccessDeniedException.denyCreateSchema;
@@ -67,6 +73,7 @@ import static io.trino.spi.security.AccessDeniedException.denyCreateView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateViewWithSelect;
 import static io.trino.spi.security.AccessDeniedException.denyDeleteTable;
 import static io.trino.spi.security.AccessDeniedException.denyDropColumn;
+import static io.trino.spi.security.AccessDeniedException.denyDropFunction;
 import static io.trino.spi.security.AccessDeniedException.denyDropMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyDropRole;
 import static io.trino.spi.security.AccessDeniedException.denyDropSchema;
@@ -93,6 +100,7 @@ import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorizat
 import static io.trino.spi.security.AccessDeniedException.denySetTableProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowRoles;
@@ -258,19 +266,20 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
+    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
+    {
+        return tableColumns.entrySet().stream()
+                .collect(toImmutableMap(
+                        Entry::getKey,
+                        entry -> filterColumns(context, entry.getKey(), entry.getValue())));
+    }
+
+    private Set<String> filterColumns(ConnectorSecurityContext context, SchemaTableName tableName, Set<String> columns)
     {
         if (!hasAnyTablePermission(context, tableName)) {
             return ImmutableSet.of();
         }
         return columns;
-    }
-
-    @Override
-    public Map<SchemaTableName, Set<String>> filterColumns(ConnectorSecurityContext context, Map<SchemaTableName, Set<String>> tableColumns)
-    {
-        // Default implementation is good enough. Explicit implementation is expected by the test though.
-        return ConnectorAccessControl.super.filterColumns(context, tableColumns);
     }
 
     @Override
@@ -608,6 +617,30 @@ public class SqlStandardAccessControl
     }
 
     @Override
+    public void checkCanCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        if (!isDatabaseOwner(context, function.getSchemaName())) {
+            denyCreateFunction(function.toString());
+        }
+    }
+
+    @Override
+    public void checkCanDropFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        if (!isDatabaseOwner(context, function.getSchemaName())) {
+            denyDropFunction(function.toString());
+        }
+    }
+
+    @Override
+    public void checkCanShowCreateFunction(ConnectorSecurityContext context, SchemaRoutineName function)
+    {
+        if (!isDatabaseOwner(context, function.getSchemaName())) {
+            denyShowCreateFunction(function.toString());
+        }
+    }
+
+    @Override
     public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         return ImmutableList.of();
@@ -617,6 +650,12 @@ public class SqlStandardAccessControl
     public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return ImmutableMap.of();
     }
 
     private boolean isAdmin(ConnectorSecurityContext context)
@@ -753,11 +792,17 @@ public class SqlStandardAccessControl
             return true;
         }
 
-        Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
-                .map(HivePrivilegeInfo::getGrantee)
-                .collect(toImmutableSet());
+        try {
+            Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
+                    .map(HivePrivilegeInfo::getGrantee)
+                    .collect(toImmutableSet());
 
-        return listEnabledPrincipals(context.getIdentity(), hivePrincipal -> metastore.listRoleGrants(context, hivePrincipal))
-                .anyMatch(allowedPrincipals::contains);
+            return listEnabledPrincipals(context.getIdentity(), hivePrincipal -> metastore.listRoleGrants(context, hivePrincipal))
+                    .anyMatch(allowedPrincipals::contains);
+        }
+        catch (TableNotFoundException e) {
+            // Table could have been deleted concurrently
+            return false;
+        }
     }
 }

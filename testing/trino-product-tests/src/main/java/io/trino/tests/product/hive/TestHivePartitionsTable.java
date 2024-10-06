@@ -40,7 +40,6 @@ import static io.trino.tempto.fulfillment.table.TableRequirements.mutableTable;
 import static io.trino.tempto.fulfillment.table.hive.InlineDataSource.createResourceDataSource;
 import static io.trino.tempto.fulfillment.table.hive.InlineDataSource.createStringDataSource;
 import static io.trino.tempto.fulfillment.table.hive.tpch.TpchTableDefinitions.NATION;
-import static io.trino.tests.product.TestGroups.HIVE_PARTITIONING;
 import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_ISSUES;
 import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_MATCH;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
@@ -49,7 +48,6 @@ import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestHivePartitionsTable
         extends ProductTest
@@ -101,7 +99,7 @@ public class TestHivePartitionsTable
                 .build();
     }
 
-    @Test(groups = HIVE_PARTITIONING)
+    @Test
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testShowPartitionsFromHiveTable()
     {
@@ -124,15 +122,15 @@ public class TestHivePartitionsTable
                 .hasMessageContaining("Column 'col' cannot be resolved");
     }
 
-    @Test(groups = HIVE_PARTITIONING)
+    @Test
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testShowPartitionsFromUnpartitionedTable()
     {
         assertQueryFailure(() -> onTrino().executeQuery("SELECT * FROM \"nation$partitions\""))
-                .hasMessageMatching(".*Table 'hive.default.nation\\$partitions' does not exist");
+                .hasMessageMatching(".*Table 'hive.default.\"nation\\$partitions\"' does not exist");
     }
 
-    @Test(groups = HIVE_PARTITIONING)
+    @Test
     @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testShowPartitionsFromHiveTableWithTooManyPartitions()
     {
@@ -186,8 +184,10 @@ public class TestHivePartitionsTable
     private static void assertColumnNames(QueryResult queryResult, String... columnNames)
     {
         for (int i = 0; i < columnNames.length; i++) {
-            assertEquals(queryResult.tryFindColumnIndex(columnNames[i]), Optional.of(i + 1), "Index of column " + columnNames[i]);
+            assertThat(queryResult.tryFindColumnIndex(columnNames[i]))
+                    .as("Index of column " + columnNames[i])
+                    .isEqualTo(Optional.of(i + 1));
         }
-        assertEquals(queryResult.getColumnsCount(), columnNames.length);
+        assertThat(queryResult.getColumnsCount()).isEqualTo(columnNames.length);
     }
 }

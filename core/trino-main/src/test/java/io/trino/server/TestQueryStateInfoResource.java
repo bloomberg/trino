@@ -19,18 +19,23 @@ import io.airlift.http.client.Request;
 import io.airlift.http.client.UnexpectedResponseException;
 import io.airlift.http.client.jetty.JettyHttpClient;
 import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
 import io.airlift.units.Duration;
 import io.trino.client.QueryResults;
 import io.trino.plugin.tpch.TpchPlugin;
+import io.trino.server.protocol.spooling.QueryDataJacksonModule;
 import io.trino.server.testing.TestingTrinoServer;
 import io.trino.spi.ErrorCode;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
@@ -48,18 +53,20 @@ import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.
 import static io.trino.testing.TestingAccessControlManager.privilege;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Fail.fail;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestQueryStateInfoResource
 {
     private static final String LONG_LASTING_QUERY = "SELECT * FROM tpch.sf1.lineitem";
-    private static final JsonCodec<QueryResults> QUERY_RESULTS_JSON_CODEC = jsonCodec(QueryResults.class);
+    private static final JsonCodec<QueryResults> QUERY_RESULTS_JSON_CODEC = new JsonCodecFactory(new ObjectMapperProvider()
+            .withModules(Set.of(new QueryDataJacksonModule())))
+            .jsonCodec(QueryResults.class);
 
     private TestingTrinoServer server;
     private HttpClient client;
@@ -86,7 +93,7 @@ public class TestQueryStateInfoResource
                 .setBodyGenerator(createStaticBodyGenerator(LONG_LASTING_QUERY, UTF_8))
                 .setHeader(TRINO_HEADERS.requestUser(), "user2")
                 .build();
-        QueryResults queryResults2 = client.execute(request2, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+        QueryResults queryResults2 = client.execute(request2, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         client.execute(prepareGet().setUri(queryResults2.getNextUri()).build(), createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
 
         // queries are started in the background, so they may not all be immediately visible
@@ -136,7 +143,7 @@ public class TestQueryStateInfoResource
                         .build(),
                 createJsonResponseHandler(listJsonCodec(QueryStateInfo.class)));
 
-        assertEquals(infos.size(), 2);
+        assertThat(infos.size()).isEqualTo(2);
     }
 
     @Test
@@ -149,7 +156,7 @@ public class TestQueryStateInfoResource
                         .build(),
                 createJsonResponseHandler(listJsonCodec(QueryStateInfo.class)));
 
-        assertEquals(infos.size(), 1);
+        assertThat(infos.size()).isEqualTo(1);
     }
 
     @Test
@@ -162,7 +169,7 @@ public class TestQueryStateInfoResource
                         .build(),
                 createJsonResponseHandler(listJsonCodec(QueryStateInfo.class)));
 
-        assertTrue(infos.isEmpty());
+        assertThat(infos).isEmpty();
     }
 
     @Test
@@ -175,7 +182,7 @@ public class TestQueryStateInfoResource
                         .build(),
                 createJsonResponseHandler(jsonCodec(QueryStateInfo.class)));
 
-        assertNotNull(info);
+        assertThat(info).isNotNull();
     }
 
     @Test
@@ -187,7 +194,7 @@ public class TestQueryStateInfoResource
                         .setHeader(TRINO_HEADERS.requestUser(), "any-other-user")
                         .build(),
                 createJsonResponseHandler(listJsonCodec(QueryStateInfo.class)));
-        assertEquals(infos.size(), 2);
+        assertThat(infos.size()).isEqualTo(2);
 
         testGetAllQueryStateInfosDenied("user1", 1);
         testGetAllQueryStateInfosDenied("any-other-user", 0);
@@ -204,7 +211,7 @@ public class TestQueryStateInfoResource
                             .build(),
                     createJsonResponseHandler(listJsonCodec(QueryStateInfo.class)));
 
-            assertEquals(infos.size(), expectedCount);
+            assertThat(infos.size()).isEqualTo(expectedCount);
         }
         finally {
             server.getAccessControl().reset();

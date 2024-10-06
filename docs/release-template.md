@@ -1,4 +1,4 @@
-# Release xyz (dd MMM 2023)
+# Release xyz (dd MMM 2024)
 
 ## General
 
@@ -16,8 +16,6 @@
 
 ## Accumulo connector
 
-## Atop connector
-
 ## BigQuery connector
 
 ## Blackhole connector
@@ -31,6 +29,8 @@
 ## Druid connector
 
 ## Elasticsearch connector
+
+## Exasol connector
 
 ## Google Sheets connector
 
@@ -50,8 +50,6 @@
 
 ## Kudu connector
 
-## Local file connector
-
 ## MariaDB connector
 
 ## Memory connector
@@ -59,6 +57,8 @@
 ## MongoDB connector
 
 ## MySQL connector
+
+## OpenSearch connector
 
 ## Oracle connector
 
@@ -70,13 +70,13 @@
 
 ## Prometheus connector
 
-## Raptor connector
-
 ## Redis connector
 
 ## Redshift connector
 
 ## SingleStore connector
+
+## Snowflake connector
 
 ## SQL Server connector
 

@@ -20,11 +20,13 @@ import io.airlift.jaxrs.testing.GuavaMultivaluedMap;
 import io.trino.client.ProtocolHeaders;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.server.protocol.PreparedStatementEncoder;
+import io.trino.server.protocol.spooling.QueryDataEncoder;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.SelectedRole;
 import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.MultivaluedHashMap;
 import jakarta.ws.rs.core.MultivaluedMap;
+import org.assertj.core.api.AbstractThrowableAssert;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
@@ -35,17 +37,11 @@ import static io.trino.SystemSessionProperties.QUERY_MAX_MEMORY;
 import static io.trino.client.ProtocolHeaders.TRINO_HEADERS;
 import static io.trino.client.ProtocolHeaders.createProtocolHeaders;
 import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestHttpRequestSessionContextFactory
 {
-    private static final HttpRequestSessionContextFactory SESSION_CONTEXT_FACTORY = new HttpRequestSessionContextFactory(
-            new PreparedStatementEncoder(new ProtocolConfig()),
-            createTestMetadataManager(),
-            ImmutableSet::of,
-            new AllowAllAccessControl());
-
     @Test
     public void testSessionContext()
     {
@@ -65,6 +61,8 @@ public class TestHttpRequestSessionContextFactory
                 .put(protocolHeaders.requestTimeZone(), "Asia/Taipei")
                 .put(protocolHeaders.requestClientInfo(), "client-info")
                 .put(protocolHeaders.requestSession(), QUERY_MAX_MEMORY + "=1GB")
+                .put(protocolHeaders.requestSession(), "catalog.some_session_property=1GB")
+                .put(protocolHeaders.requestSession(), "catalog.with.a.dot.some_session_property=1GB")
                 .put(protocolHeaders.requestSession(), JOIN_DISTRIBUTION_TYPE + "=partitioned," + MAX_HASH_PARTITION_COUNT + " = 43")
                 .put(protocolHeaders.requestSession(), "some_session_property=some value with %2C comma")
                 .put(protocolHeaders.requestPreparedStatement(), "query1=select * from foo,query2=select * from bar")
@@ -76,16 +74,15 @@ public class TestHttpRequestSessionContextFactory
                 .put(protocolHeaders.requestExtraCredential(), "test.token.abc=xyz")
                 .build());
 
-        SessionContext context = SESSION_CONTEXT_FACTORY.createSessionContext(
+        SessionContext context = sessionContextFactory(protocolHeaders).createSessionContext(
                 headers,
-                Optional.of(protocolHeaders.getProtocolName()),
                 Optional.of("testRemote"),
                 Optional.empty());
-        assertEquals(context.getSource().orElse(null), "testSource");
-        assertEquals(context.getCatalog().orElse(null), "testCatalog");
-        assertEquals(context.getSchema().orElse(null), "testSchema");
-        assertEquals(context.getPath().orElse(null), "testPath");
-        assertEquals(context.getIdentity(), Identity.forUser("testUser")
+        assertThat(context.getSource().orElse(null)).isEqualTo("testSource");
+        assertThat(context.getCatalog().orElse(null)).isEqualTo("testCatalog");
+        assertThat(context.getSchema().orElse(null)).isEqualTo("testSchema");
+        assertThat(context.getPath().orElse(null)).isEqualTo("testPath");
+        assertThat(context.getIdentity()).isEqualTo(Identity.forUser("testUser")
                 .withGroups(ImmutableSet.of("testUser"))
                 .withConnectorRoles(ImmutableMap.of(
                         "foo_connector", new SelectedRole(SelectedRole.Type.ALL, Optional.empty()),
@@ -93,17 +90,20 @@ public class TestHttpRequestSessionContextFactory
                         "foobar_connector", new SelectedRole(SelectedRole.Type.ROLE, Optional.of("catalog-role"))))
                 .withEnabledRoles(ImmutableSet.of("system-role"))
                 .build());
-        assertEquals(context.getClientInfo().orElse(null), "client-info");
-        assertEquals(context.getLanguage().orElse(null), "zh-TW");
-        assertEquals(context.getTimeZoneId().orElse(null), "Asia/Taipei");
-        assertEquals(context.getSystemProperties(), ImmutableMap.of(
+        assertThat(context.getClientInfo().orElse(null)).isEqualTo("client-info");
+        assertThat(context.getLanguage().orElse(null)).isEqualTo("zh-TW");
+        assertThat(context.getTimeZoneId().orElse(null)).isEqualTo("Asia/Taipei");
+        assertThat(context.getCatalogSessionProperties()).isEqualTo(ImmutableMap.of(
+                "catalog", ImmutableMap.of("some_session_property", "1GB"),
+                "catalog.with.a.dot", ImmutableMap.of("some_session_property", "1GB")));
+        assertThat(context.getSystemProperties()).isEqualTo(ImmutableMap.of(
                 QUERY_MAX_MEMORY, "1GB",
                 JOIN_DISTRIBUTION_TYPE, "partitioned",
                 MAX_HASH_PARTITION_COUNT, "43",
                 "some_session_property", "some value with , comma"));
-        assertEquals(context.getPreparedStatements(), ImmutableMap.of("query1", "select * from foo", "query2", "select * from bar"));
-        assertEquals(context.getSelectedRole(), new SelectedRole(SelectedRole.Type.ROLE, Optional.of("system-role")));
-        assertEquals(context.getIdentity().getExtraCredentials(), ImmutableMap.of("test.token.foo", "bar", "test.token.abc", "xyz"));
+        assertThat(context.getPreparedStatements()).isEqualTo(ImmutableMap.of("query1", "select * from foo", "query2", "select * from bar"));
+        assertThat(context.getSelectedRole()).isEqualTo(new SelectedRole(SelectedRole.Type.ROLE, Optional.of("system-role")));
+        assertThat(context.getIdentity().getExtraCredentials()).isEqualTo(ImmutableMap.of("test.token.foo", "bar", "test.token.abc", "xyz"));
     }
 
     @Test
@@ -118,34 +118,25 @@ public class TestHttpRequestSessionContextFactory
         MultivaluedMap<String, String> userHeaders = new GuavaMultivaluedMap<>(ImmutableListMultimap.of(protocolHeaders.requestUser(), "testUser"));
         MultivaluedMap<String, String> emptyHeaders = new MultivaluedHashMap<>();
 
-        SessionContext context = SESSION_CONTEXT_FACTORY.createSessionContext(
+        SessionContext context = sessionContextFactory(protocolHeaders).createSessionContext(
                 userHeaders,
-                Optional.of(protocolHeaders.getProtocolName()),
                 Optional.of("testRemote"),
                 Optional.empty());
-        assertEquals(context.getIdentity(), Identity.forUser("testUser").withGroups(ImmutableSet.of("testUser")).build());
+        assertThat(context.getIdentity()).isEqualTo(Identity.forUser("testUser").withGroups(ImmutableSet.of("testUser")).build());
 
-        context = SESSION_CONTEXT_FACTORY.createSessionContext(
+        context = sessionContextFactory(protocolHeaders).createSessionContext(
                 emptyHeaders,
-                Optional.of(protocolHeaders.getProtocolName()),
                 Optional.of("testRemote"),
                 Optional.of(Identity.forUser("mappedUser").withGroups(ImmutableSet.of("test")).build()));
-        assertEquals(context.getIdentity(), Identity.forUser("mappedUser").withGroups(ImmutableSet.of("test", "mappedUser")).build());
+        assertThat(context.getIdentity()).isEqualTo(Identity.forUser("mappedUser").withGroups(ImmutableSet.of("test", "mappedUser")).build());
 
-        context = SESSION_CONTEXT_FACTORY.createSessionContext(
+        context = sessionContextFactory(protocolHeaders).createSessionContext(
                 userHeaders,
-                Optional.of(protocolHeaders.getProtocolName()),
                 Optional.of("testRemote"),
                 Optional.of(Identity.ofUser("mappedUser")));
-        assertEquals(context.getIdentity(), Identity.forUser("testUser").withGroups(ImmutableSet.of("testUser")).build());
+        assertThat(context.getIdentity()).isEqualTo(Identity.forUser("testUser").withGroups(ImmutableSet.of("testUser")).build());
 
-        assertThatThrownBy(
-                () -> SESSION_CONTEXT_FACTORY.createSessionContext(
-                        emptyHeaders,
-                        Optional.of(protocolHeaders.getProtocolName()),
-                        Optional.of("testRemote"),
-                        Optional.empty()))
-                .isInstanceOf(WebApplicationException.class)
+        assertInvalidSession(protocolHeaders, emptyHeaders)
                 .matches(e -> ((WebApplicationException) e).getResponse().getStatus() == 400);
     }
 
@@ -170,13 +161,39 @@ public class TestHttpRequestSessionContextFactory
                 .put(protocolHeaders.requestPreparedStatement(), "query1=abcdefg")
                 .build());
 
-        assertThatThrownBy(
-                () -> SESSION_CONTEXT_FACTORY.createSessionContext(
-                        headers,
-                        Optional.of(protocolHeaders.getProtocolName()),
-                        Optional.of("testRemote"),
-                        Optional.empty()))
-                .isInstanceOf(WebApplicationException.class)
+        assertInvalidSession(protocolHeaders, headers)
                 .hasMessageMatching("Invalid " + protocolHeaders.requestPreparedStatement() + " header: line 1:1: mismatched input 'abcdefg'. Expecting: .*");
+    }
+
+    @Test
+    public void testInternalExtraCredentialName()
+    {
+        MultivaluedMap<String, String> headers = new GuavaMultivaluedMap<>(ImmutableListMultimap.<String, String>builder()
+                .put(TRINO_HEADERS.requestUser(), "testUser")
+                .put(TRINO_HEADERS.requestExtraCredential(), "internal$abc=xyz")
+                .build());
+
+        assertInvalidSession(TRINO_HEADERS, headers)
+                .hasMessage("Invalid extra credential name: internal$abc");
+    }
+
+    private static AbstractThrowableAssert<?, ? extends Throwable> assertInvalidSession(ProtocolHeaders protocolHeaders, MultivaluedMap<String, String> headers)
+    {
+        return assertThatThrownBy(
+                () -> sessionContextFactory(protocolHeaders)
+                        .createSessionContext(headers, Optional.of("testRemote"), Optional.empty()))
+                .isInstanceOf(WebApplicationException.class);
+    }
+
+    private static HttpRequestSessionContextFactory sessionContextFactory(ProtocolHeaders headers)
+    {
+        return new HttpRequestSessionContextFactory(
+                new PreparedStatementEncoder(new ProtocolConfig()),
+                createTestMetadataManager(),
+                ImmutableSet::of,
+                new AllowAllAccessControl(),
+                new ProtocolConfig()
+                        .setAlternateHeaderName(headers.getProtocolName()),
+                QueryDataEncoder.EncoderSelector.noEncoder());
     }
 }

@@ -13,20 +13,8 @@
  */
 package io.trino.metadata;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.base.Splitter;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.compress.zstd.ZstdCompressor;
-import io.airlift.compress.zstd.ZstdDecompressor;
-import io.airlift.json.JsonCodec;
-import io.airlift.json.JsonCodecFactory;
-import io.airlift.json.ObjectMapperProvider;
-import io.trino.cache.NonEvictableLoadingCache;
-import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.CatalogSchemaFunctionName;
@@ -34,284 +22,44 @@ import io.trino.spi.function.FunctionId;
 import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.FunctionNullability;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeId;
 import io.trino.spi.type.TypeSignature;
-import io.trino.sql.tree.QualifiedName;
-import io.trino.type.TypeDeserializer;
-import io.trino.type.TypeSignatureDeserializer;
-import io.trino.type.TypeSignatureKeyDeserializer;
-import io.trino.util.ThreadLocalCompressorDecompressor;
 
-import java.nio.ByteBuffer;
-import java.util.Arrays;
-import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
-import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.io.BaseEncoding.base32Hex;
-import static io.trino.cache.SafeCaches.buildNonEvictableCache;
-import static java.lang.Math.toIntExact;
-import static java.nio.ByteBuffer.allocate;
-import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
-public class ResolvedFunction
+public record ResolvedFunction(
+        BoundSignature signature,
+        CatalogHandle catalogHandle,
+        FunctionId functionId,
+        FunctionKind functionKind,
+        boolean deterministic,
+        FunctionNullability functionNullability,
+        Map<TypeSignature, Type> typeDependencies,
+        Set<ResolvedFunction> functionDependencies)
 {
-    private final BoundSignature signature;
-    private final CatalogHandle catalogHandle;
-    private final FunctionId functionId;
-    private final FunctionKind functionKind;
-    private final boolean deterministic;
-    private final FunctionNullability functionNullability;
-    private final Map<TypeSignature, Type> typeDependencies;
-    private final Set<ResolvedFunction> functionDependencies;
-
-    @JsonCreator
-    public ResolvedFunction(
-            @JsonProperty("signature") BoundSignature signature,
-            @JsonProperty("catalogHandle") CatalogHandle catalogHandle,
-            @JsonProperty("id") FunctionId functionId,
-            @JsonProperty("functionKind") FunctionKind functionKind,
-            @JsonProperty("deterministic") boolean deterministic,
-            @JsonProperty("functionNullability") FunctionNullability functionNullability,
-            @JsonProperty("typeDependencies") Map<TypeSignature, Type> typeDependencies,
-            @JsonProperty("functionDependencies") Set<ResolvedFunction> functionDependencies)
+    public ResolvedFunction
     {
-        this.signature = requireNonNull(signature, "signature is null");
-        this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
-        this.functionId = requireNonNull(functionId, "functionId is null");
-        this.functionKind = requireNonNull(functionKind, "functionKind is null");
-        this.deterministic = deterministic;
-        this.functionNullability = requireNonNull(functionNullability, "functionNullability is null");
-        this.typeDependencies = ImmutableMap.copyOf(requireNonNull(typeDependencies, "typeDependencies is null"));
-        this.functionDependencies = ImmutableSet.copyOf(requireNonNull(functionDependencies, "functionDependencies is null"));
+        requireNonNull(signature, "signature is null");
+        requireNonNull(catalogHandle, "catalogHandle is null");
+        requireNonNull(functionId, "functionId is null");
+        requireNonNull(functionKind, "functionKind is null");
+        requireNonNull(functionNullability, "functionNullability is null");
+        typeDependencies = ImmutableMap.copyOf(requireNonNull(typeDependencies, "typeDependencies is null"));
+        functionDependencies = ImmutableSet.copyOf(requireNonNull(functionDependencies, "functionDependencies is null"));
         checkArgument(functionNullability.getArgumentNullable().size() == signature.getArgumentTypes().size(), "signature and functionNullability must have same argument count");
     }
 
-    @JsonProperty
-    public BoundSignature getSignature()
+    public CatalogSchemaFunctionName name()
     {
-        return signature;
-    }
-
-    @JsonProperty
-    public CatalogHandle getCatalogHandle()
-    {
-        return catalogHandle;
-    }
-
-    @JsonProperty("id")
-    public FunctionId getFunctionId()
-    {
-        return functionId;
-    }
-
-    @JsonProperty("functionKind")
-    public FunctionKind getFunctionKind()
-    {
-        return functionKind;
-    }
-
-    @JsonProperty
-    public boolean isDeterministic()
-    {
-        return deterministic;
-    }
-
-    @JsonProperty
-    public FunctionNullability getFunctionNullability()
-    {
-        return functionNullability;
-    }
-
-    @JsonProperty
-    public Map<TypeSignature, Type> getTypeDependencies()
-    {
-        return typeDependencies;
-    }
-
-    @JsonProperty
-    public Set<ResolvedFunction> getFunctionDependencies()
-    {
-        return functionDependencies;
-    }
-
-    public static boolean isResolved(QualifiedName name)
-    {
-        return SerializedResolvedFunction.isSerializedResolvedFunction(name);
-    }
-
-    public QualifiedName toQualifiedName()
-    {
-        CatalogSchemaFunctionName name = toCatalogSchemaFunctionName();
-        return QualifiedName.of(name.getCatalogName(), name.getSchemaName(), name.getFunctionName());
-    }
-
-    public CatalogSchemaFunctionName toCatalogSchemaFunctionName()
-    {
-        return ResolvedFunctionDecoder.toCatalogSchemaFunctionName(this);
-    }
-
-    public static CatalogSchemaFunctionName extractFunctionName(QualifiedName qualifiedName)
-    {
-        checkArgument(isResolved(qualifiedName), "Expected qualifiedName to be a resolved function: %s", qualifiedName);
-        return SerializedResolvedFunction.fromSerializedName(qualifiedName).functionName();
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        ResolvedFunction that = (ResolvedFunction) o;
-        return Objects.equals(signature, that.signature) &&
-                Objects.equals(catalogHandle, that.catalogHandle) &&
-                Objects.equals(functionId, that.functionId) &&
-                functionKind == that.functionKind &&
-                deterministic == that.deterministic &&
-                Objects.equals(functionNullability, that.functionNullability) &&
-                Objects.equals(typeDependencies, that.typeDependencies) &&
-                Objects.equals(functionDependencies, that.functionDependencies);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(signature, catalogHandle, functionId, functionKind, deterministic, functionNullability, typeDependencies, functionDependencies);
+        return signature().getName();
     }
 
     @Override
     public String toString()
     {
         return signature.toString();
-    }
-
-    public static class ResolvedFunctionDecoder
-    {
-        private static final JsonCodec<ResolvedFunction> SERIALIZE_JSON_CODEC = new JsonCodecFactory().jsonCodec(ResolvedFunction.class);
-        private static final ThreadLocalCompressorDecompressor COMPRESSOR_DECOMPRESSOR = new ThreadLocalCompressorDecompressor(ZstdCompressor::new, ZstdDecompressor::new);
-
-        private final NonEvictableLoadingCache<QualifiedName, ResolvedFunction> resolvedFunctions = buildNonEvictableCache(
-                CacheBuilder.newBuilder().maximumSize(1024), CacheLoader.from(this::deserialize));
-
-        private static final NonEvictableLoadingCache<ResolvedFunction, CatalogSchemaFunctionName> qualifiedNames = buildNonEvictableCache(
-                CacheBuilder.newBuilder().maximumSize(1024), CacheLoader.from(ResolvedFunctionDecoder::serialize));
-
-        private final JsonCodec<ResolvedFunction> jsonCodec;
-
-        public ResolvedFunctionDecoder(Function<TypeId, Type> typeLoader)
-        {
-            ObjectMapperProvider objectMapperProvider = new ObjectMapperProvider();
-            objectMapperProvider.setJsonDeserializers(ImmutableMap.of(
-                    Type.class, new TypeDeserializer(typeLoader),
-                    TypeSignature.class, new TypeSignatureDeserializer()));
-            objectMapperProvider.setKeyDeserializers(ImmutableMap.of(
-                    TypeSignature.class, new TypeSignatureKeyDeserializer()));
-            jsonCodec = new JsonCodecFactory(objectMapperProvider).jsonCodec(ResolvedFunction.class);
-        }
-
-        public Optional<ResolvedFunction> fromCatalogSchemaFunctionName(CatalogSchemaFunctionName name)
-        {
-            return fromQualifiedName(QualifiedName.of(name.getCatalogName(), name.getSchemaName(), name.getFunctionName()));
-        }
-
-        public Optional<ResolvedFunction> fromQualifiedName(QualifiedName qualifiedName)
-        {
-            if (!isResolved(qualifiedName)) {
-                return Optional.empty();
-            }
-
-            return Optional.of(resolvedFunctions.getUnchecked(qualifiedName));
-        }
-
-        public static CatalogSchemaFunctionName toCatalogSchemaFunctionName(ResolvedFunction function)
-        {
-            return qualifiedNames.getUnchecked(function);
-        }
-
-        private ResolvedFunction deserialize(QualifiedName qualifiedName)
-        {
-            SerializedResolvedFunction serialized = SerializedResolvedFunction.fromSerializedName(qualifiedName);
-            // name may have been lower cased, but base32 decoder requires upper case
-            String base32 = serialized.base32Data().toUpperCase(ENGLISH);
-            byte[] compressed = base32Hex().decode(base32);
-
-            ByteBuffer decompressed = allocate(toIntExact(ZstdDecompressor.getDecompressedSize(compressed, 0, compressed.length)));
-            COMPRESSOR_DECOMPRESSOR.decompress(ByteBuffer.wrap(compressed), decompressed);
-
-            ResolvedFunction resolvedFunction = jsonCodec.fromJson(Arrays.copyOf(decompressed.array(), decompressed.position()));
-            // name may have been lower cased, so we have to compare the string version
-            checkArgument(resolvedFunction.getSignature().getName().toString().equalsIgnoreCase(serialized.functionName().toString()),
-                    "Expected decoded function to have name %s, but name is %s", resolvedFunction.getSignature().getName(), serialized.functionName());
-            return resolvedFunction;
-        }
-
-        private static CatalogSchemaFunctionName serialize(ResolvedFunction function)
-        {
-            // json can be large so use zstd to compress
-            byte[] value = SERIALIZE_JSON_CODEC.toJsonBytes(function);
-            ByteBuffer compressed = allocate(COMPRESSOR_DECOMPRESSOR.maxCompressedLength(value.length));
-            COMPRESSOR_DECOMPRESSOR.compress(ByteBuffer.wrap(value), compressed);
-            // names are case insensitive, so use base32 instead of base64
-            String base32 = base32Hex().encode(compressed.array(), 0, compressed.position());
-            // add name so expressions are still readable
-            return new SerializedResolvedFunction(function.getSignature().getName(), base32).serialize();
-        }
-    }
-
-    private record SerializedResolvedFunction(CatalogSchemaFunctionName functionName, String base32Data)
-    {
-        private static final String PREFIX = "@";
-        private static final String SCHEMA = "$resolved";
-
-        public static boolean isSerializedResolvedFunction(QualifiedName name)
-        {
-            // a serialized resolved function must be fully qualified in the system.resolved schema
-            List<String> parts = name.getParts();
-            return parts.size() == 3 &&
-                    parts.get(0).equals(GlobalSystemConnector.NAME) &&
-                    parts.get(1).equals(SCHEMA);
-        }
-
-        public static boolean isSerializedResolvedFunction(CatalogSchemaFunctionName name)
-        {
-            return name.getCatalogName().equals(GlobalSystemConnector.NAME) && name.getSchemaName().equals(SCHEMA);
-        }
-
-        public static SerializedResolvedFunction fromSerializedName(QualifiedName qualifiedName)
-        {
-            checkArgument(isSerializedResolvedFunction(qualifiedName), "Expected qualifiedName to be a resolved function: %s", qualifiedName);
-
-            String data = qualifiedName.getSuffix();
-            List<String> parts = Splitter.on(PREFIX).splitToList(data);
-            checkArgument(parts.size() == 5 && parts.get(0).isEmpty(), "Invalid serialized resolved function: %s", qualifiedName);
-            return new SerializedResolvedFunction(
-                    new CatalogSchemaFunctionName(parts.get(1), parts.get(2), parts.get(3)),
-                    parts.get(4));
-        }
-
-        private SerializedResolvedFunction
-        {
-            requireNonNull(functionName, "functionName is null");
-            checkArgument(!isSerializedResolvedFunction(functionName), "function is already a serialized resolved function: %s", functionName);
-            requireNonNull(base32Data, "base32Data is null");
-        }
-
-        public CatalogSchemaFunctionName serialize()
-        {
-            String encodedName = PREFIX + functionName.getCatalogName() +
-                    PREFIX + functionName.getSchemaName() +
-                    PREFIX + functionName.getFunctionName() +
-                    PREFIX + base32Data;
-            return new CatalogSchemaFunctionName(GlobalSystemConnector.NAME, SCHEMA, encodedName);
-        }
     }
 }

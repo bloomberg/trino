@@ -10,7 +10,6 @@ values in the count. The `coalesce` function can be used to convert null into
 zero.
 
 (aggregate-function-ordering-during-aggregation)=
-
 ## Ordering during aggregation
 
 Some aggregate functions such as {func}`array_agg` produce different results
@@ -23,7 +22,6 @@ array_agg(x ORDER BY x, y, z)
 ```
 
 (aggregate-function-filtering-during-aggregation)=
-
 ## Filtering during aggregation
 
 The `FILTER` keyword can be used to remove rows from aggregation processing
@@ -180,7 +178,7 @@ Synopsis:
 
 ```
 LISTAGG( expression [, separator] [ON OVERFLOW overflow_behaviour])
-    WITHIN GROUP (ORDER BY sort_item, [...])
+    WITHIN GROUP (ORDER BY sort_item, [...]) [FILTER (WHERE condition)]
 ```
 
 If `separator` is not specified, the empty string will be used as `separator`.
@@ -213,7 +211,7 @@ of omitted non-null values in case that the length of the output of the
 function exceeds `1048576` bytes:
 
 ```
-SELECT LISTAGG(value, ',' ON OVERFLOW TRUNCATE '.....' WITH COUNT) WITHIN GROUP (ORDER BY value)
+SELECT listagg(value, ',' ON OVERFLOW TRUNCATE '.....' WITH COUNT) WITHIN GROUP (ORDER BY value)
 FROM (VALUES 'a', 'b', 'c') t(value);
 ```
 
@@ -222,7 +220,7 @@ If not specified, the truncation filler string is by default `'...'`.
 This aggregation function can be also used in a scenario involving grouping:
 
 ```
-SELECT id, LISTAGG(value, ',') WITHIN GROUP (ORDER BY o) csv_value
+SELECT id, listagg(value, ',') WITHIN GROUP (ORDER BY o) csv_value
 FROM (VALUES
     (100, 1, 'a'),
     (200, 3, 'c'),
@@ -241,7 +239,39 @@ results in:
  200 | b,c
 ```
 
-The current implementation of `LISTAGG` function does not support window frames.
+This aggregation function supports
+[filtering during aggregation](aggregate-function-filtering-during-aggregation)
+for scenarios where the aggregation for the data not matching the filter
+condition still needs to show up in the output:
+
+```
+SELECT 
+    country,
+    listagg(city, ',')
+        WITHIN GROUP (ORDER BY population DESC)
+        FILTER (WHERE population >= 10_000_000) megacities
+FROM (VALUES 
+    ('India', 'Bangalore', 13_700_000),
+    ('India', 'Chennai', 12_200_000),
+    ('India', 'Ranchi', 1_547_000),
+    ('Austria', 'Vienna', 1_897_000),
+    ('Poland', 'Warsaw', 1_765_000)
+) t(country, city, population)
+GROUP BY country
+ORDER BY country;
+```
+
+results in:
+
+```text
+ country |    megacities     
+---------+-------------------
+ Austria | NULL              
+ India   | Bangalore,Chennai 
+ Poland  | NULL
+```
+
+The current implementation of `listagg` function does not support window frames.
 :::
 
 :::{function} max(x) -> [same as input]
@@ -293,11 +323,18 @@ Returns the sum of all input values.
 ## Bitwise aggregate functions
 
 :::{function} bitwise_and_agg(x) -> bigint
-Returns the bitwise AND of all input values in 2's complement representation.
+Returns the bitwise AND of all input non-NULL values in 2's complement representation.
+If all records inside the group are NULL, or if the group is empty, the function returns NULL.
 :::
 
 :::{function} bitwise_or_agg(x) -> bigint
-Returns the bitwise OR of all input values in 2's complement representation.
+Returns the bitwise OR of all input non-NULL values in 2's complement representation.
+If all records inside the group are NULL, or if the group is empty, the function returns NULL.
+:::
+
+:::{function} bitwise_xor_agg(x) -> bigint
+Returns the bitwise XOR of all input non-NULL values in 2's complement representation.
+If all records inside the group are NULL, or if the group is empty, the function returns NULL.
 :::
 
 ## Map aggregate functions
@@ -602,5 +639,5 @@ GROUP BY id;
 -- (2, 42)
 ```
 
-The state type must be a boolean, integer, floating-point, or date/time/interval.
+The state type must be a boolean, integer, floating-point, char, varchar or date/time/interval.
 :::

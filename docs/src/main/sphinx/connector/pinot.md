@@ -11,7 +11,7 @@ The Pinot connector allows Trino to query data stored in
 
 To connect to Pinot, you need:
 
-- Pinot 0.11.0 or higher.
+- Pinot 1.1.0 or higher.
 - Network access from the Trino coordinator and workers to the Pinot controller
   nodes. Port 8098 is the default port.
 
@@ -33,8 +33,9 @@ This can be the ip or the FDQN, the url scheme (`http://`) is optional.
 ### General configuration properties
 
 | Property name                                          | Required | Description                                                                                                                                                                                                                                                               |
-| ------------------------------------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|--------------------------------------------------------|----------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pinot.controller-urls`                                | Yes      | A comma separated list of controller hosts. If Pinot is deployed via [Kubernetes](https://kubernetes.io/) this needs to point to the controller service endpoint. The Pinot broker and server must be accessible via DNS as Pinot returns hostnames and not IP addresses. |
+| `pinot.broker-url`                                     | No       | A host and port of broker. If broker URL exposed by Pinot controller API is not accessible, this property can be used to specify the broker endpoint. Enabling this property will disable broker discovery. |
 | `pinot.connection-timeout`                             | No       | Pinot connection timeout, default is `15s`.                                                                                                                                                                                                                               |
 | `pinot.metadata-expiry`                                | No       | Pinot metadata expiration time, default is `2m`.                                                                                                                                                                                                                          |
 | `pinot.controller.authentication.type`                 | No       | Pinot authentication method for controller requests. Allowed values are `NONE` and `PASSWORD` - defaults to `NONE` which is no authentication.                                                                                                                            |
@@ -43,8 +44,7 @@ This can be the ip or the FDQN, the url scheme (`http://`) is optional.
 | `pinot.broker.authentication.type`                     | No       | Pinot authentication method for broker requests. Allowed values are `NONE` and `PASSWORD` - defaults to `NONE` which is no authentication.                                                                                                                                |
 | `pinot.broker.authentication.user`                     | No       | Broker username for basic authentication method.                                                                                                                                                                                                                          |
 | `pinot.broker.authentication.password`                 | No       | Broker password for basic authentication method.                                                                                                                                                                                                                          |
-| `pinot.max-rows-per-split-for-segment-queries`         | No       | Fail query if Pinot server split returns more rows than configured, default to `50,000` for non-gRPC connection, `2,147,483,647` for gRPC connection.                                                                                                                     |
-| `pinot.estimated-size-in-bytes-for-non-numeric-column` | No       | Estimated byte size for non-numeric column for page pre-allocation in non-gRPC connection, default is `20`.                                                                                                                                                               |
+| `pinot.max-rows-per-split-for-segment-queries`         | No       | Fail query if Pinot server split returns more rows than configured, default to `2,147,483,647`.                                                                                                                     |
 | `pinot.prefer-broker-queries`                          | No       | Pinot query plan prefers to query Pinot broker, default is `true`.                                                                                                                                                                                                        |
 | `pinot.forbid-segment-queries`                         | No       | Forbid parallel querying and force all querying to happen via the broker, default is `false`.                                                                                                                                                                             |
 | `pinot.segments-per-split`                             | No       | The number of segments processed in a split. Setting this higher reduces the number of requests made to Pinot. This is useful for smaller Pinot clusters, default is `1`.                                                                                                 |
@@ -68,7 +68,6 @@ If `pinot.controller-urls` uses `https` scheme then TLS is enabled for all conne
 
 | Property name                         | Required | Description                                                          |
 | ------------------------------------- | -------- | -------------------------------------------------------------------- |
-| `pinot.grpc.enabled`                  | No       | Use gRPC endpoint for Pinot server queries, default is `true`.       |
 | `pinot.grpc.port`                     | No       | Pinot gRPC port, default to `8090`.                                  |
 | `pinot.grpc.max-inbound-message-size` | No       | Max inbound message bytes when init gRPC client, default is `128MB`. |
 | `pinot.grpc.use-plain-text`           | No       | Use plain text for gRPC communication, default to `true`.            |
@@ -110,6 +109,7 @@ WHERE bar = 3 AND baz IN ('ONE', 'TWO', 'THREE')
 LIMIT 25000;
 ```
 
+(pinot-dynamic-tables)=
 ## Dynamic tables
 
 To leverage Pinot's fast aggregation, a Pinot query written in PQL can be used as the table name.
@@ -140,7 +140,6 @@ TOP 30000
 ```
 
 (pinot-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Pinot each support types that the other does not, this
@@ -151,47 +150,56 @@ connector {ref}`maps some types <type-mapping-overview>` when reading data.
 The connector maps Pinot types to the corresponding Trino types
 according to the following table:
 
-```{eval-rst}
-.. list-table:: Pinot type to Trino type mapping
-  :widths: 75,60
-  :header-rows: 1
+:::{list-table} Pinot type to Trino type mapping
+:widths: 75,60
+:header-rows: 1
 
-  * - Pinot type
-    - Trino type
-  * - ``INT``
-    - ``INTEGER``
-  * - ``LONG``
-    - ``BIGINT``
-  * - ``FLOAT``
-    - ``REAL``
-  * - ``DOUBLE``
-    - ``DOUBLE``
-  * - ``STRING``
-    - ``VARCHAR``
-  * - ``BYTES``
-    - ``VARBINARY``
-  * - ``JSON``
-    - ``JSON``
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP``
-  * - ``INT_ARRAY``
-    - ``VARCHAR``
-  * - ``LONG_ARRAY``
-    - ``VARCHAR``
-  * - ``FLOAT_ARRAY``
-    - ``VARCHAR``
-  * - ``DOUBLE_ARRAY``
-    - ``VARCHAR``
-  * - ``STRING_ARRAY``
-    - ``VARCHAR``
-```
-
-Pinot does not allow null values in any data type.
+* - Pinot type
+  - Trino type
+* - `INT`
+  - `INTEGER`
+* - `LONG`
+  - `BIGINT`
+* - `FLOAT`
+  - `REAL`
+* - `DOUBLE`
+  - `DOUBLE`
+* - `STRING`
+  - `VARCHAR`
+* - `BYTES`
+  - `VARBINARY`
+* - `JSON`
+  - `JSON`
+* - `TIMESTAMP`
+  - `TIMESTAMP`
+* - `INT_ARRAY`
+  - `VARCHAR`
+* - `LONG_ARRAY`
+  - `VARCHAR`
+* - `FLOAT_ARRAY`
+  - `VARCHAR`
+* - `DOUBLE_ARRAY`
+  - `VARCHAR`
+* - `STRING_ARRAY`
+  - `VARCHAR`
+:::
 
 No other types are supported.
 
-(pinot-sql-support)=
+#### Date Type
 
+For Pinot `DateTimeFields`, if the `FormatSpec` is in days,
+then it is converted to a Trino `DATE` type.
+Pinot allows for `LONG` fields to have a `FormatSpec` of days as well, if the 
+value is larger than `Integer.MAX_VALUE` then the conversion to Trino `DATE` fails.  
+
+#### Null Handling
+
+If a Pinot TableSpec has `nullHandlingEnabled` set to true, then for numeric 
+types the null value is encoded as `MIN_VALUE` for that type. 
+For Pinot `STRING` type, the value `null` is interpreted as a `NULL` value.
+
+(pinot-sql-support)=
 ## SQL support
 
 The connector provides {ref}`globally available <sql-globally-available>` and
@@ -199,7 +207,6 @@ The connector provides {ref}`globally available <sql-globally-available>` and
 metadata in Pinot.
 
 (pinot-pushdown)=
-
 ## Pushdown
 
 The connector supports pushdown for a number of operations:

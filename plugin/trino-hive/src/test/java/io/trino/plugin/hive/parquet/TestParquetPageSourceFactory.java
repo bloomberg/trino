@@ -14,31 +14,36 @@
 package io.trino.plugin.hive.parquet;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.metastore.HiveType;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveColumnProjectionInfo;
-import io.trino.plugin.hive.HiveType;
 import io.trino.spi.type.IntegerType;
 import io.trino.spi.type.RowType;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
-import static io.trino.plugin.hive.HiveType.toHiveType;
+import static io.trino.plugin.hive.util.HiveTypeTranslator.toHiveType;
 import static io.trino.spi.type.RowType.rowType;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 import static org.apache.parquet.schema.Type.Repetition.REQUIRED;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestParquetPageSourceFactory
 {
-    @Test(dataProvider = "useColumnNames")
-    public void testGetNestedMixedRepetitionColumnType(boolean useColumnNames)
+    @Test
+    public void testGetNestedMixedRepetitionColumnType()
+    {
+        testGetNestedMixedRepetitionColumnType(true);
+        testGetNestedMixedRepetitionColumnType(false);
+    }
+
+    private void testGetNestedMixedRepetitionColumnType(boolean useColumnNames)
     {
         RowType rowType = rowType(
                 RowType.field(
@@ -64,17 +69,6 @@ public class TestParquetPageSourceFactory
                 new GroupType(OPTIONAL, "optional_level1",
                         new GroupType(OPTIONAL, "optional_level2",
                                 new PrimitiveType(REQUIRED, INT32, "required_level3"))));
-        assertEquals(
-                ParquetPageSourceFactory.getColumnType(columnHandle, fileSchema, useColumnNames).get(),
-                fileSchema.getType("optional_level1"));
-    }
-
-    @DataProvider
-    public Object[][] useColumnNames()
-    {
-        return new Object[][] {
-                {true}, // use column name
-                {false} // use column index
-        };
+        assertThat(ParquetPageSourceFactory.getColumnType(columnHandle, fileSchema, useColumnNames).get()).isEqualTo(fileSchema.getType("optional_level1"));
     }
 }

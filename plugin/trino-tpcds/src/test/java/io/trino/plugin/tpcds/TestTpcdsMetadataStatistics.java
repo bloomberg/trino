@@ -28,6 +28,7 @@ import io.trino.tpcds.column.WebSiteColumn;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,10 +46,10 @@ public class TestTpcdsMetadataStatistics
                 .forEach(schemaName -> Table.getBaseTables()
                         .forEach(table -> {
                             SchemaTableName schemaTableName = new SchemaTableName(schemaName, table.getName());
-                            ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName);
+                            ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
                             TableStatistics tableStatistics = metadata.getTableStatistics(session, tableHandle);
                             assertThat(tableStatistics.getRowCount().isUnknown()).isTrue();
-                            assertThat(tableStatistics.getColumnStatistics().isEmpty()).isTrue();
+                            assertThat(tableStatistics.getColumnStatistics()).isEmpty();
                         }));
     }
 
@@ -59,11 +60,11 @@ public class TestTpcdsMetadataStatistics
                 .forEach(schemaName -> Table.getBaseTables()
                         .forEach(table -> {
                             SchemaTableName schemaTableName = new SchemaTableName(schemaName, table.getName());
-                            ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName);
+                            ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
                             TableStatistics tableStatistics = metadata.getTableStatistics(session, tableHandle);
                             assertThat(tableStatistics.getRowCount().isUnknown()).isFalse();
                             for (ColumnHandle column : metadata.getColumnHandles(session, tableHandle).values()) {
-                                assertThat(tableStatistics.getColumnStatistics().containsKey(column)).isTrue();
+                                assertThat(tableStatistics.getColumnStatistics()).containsKey(column);
                                 assertThat(tableStatistics.getColumnStatistics().get(column)).isNotNull();
                             }
                         }));
@@ -73,7 +74,7 @@ public class TestTpcdsMetadataStatistics
     public void testTableStatsDetails()
     {
         SchemaTableName schemaTableName = new SchemaTableName("sf1", Table.CALL_CENTER.getName());
-        ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName);
+        ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
         TableStatistics tableStatistics = metadata.getTableStatistics(session, tableHandle);
 
         estimateAssertion.assertClose(tableStatistics.getRowCount(), Estimate.of(6), "Row count does not match");
@@ -81,7 +82,7 @@ public class TestTpcdsMetadataStatistics
         // all columns have stats
         Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(session, tableHandle);
         for (ColumnHandle column : columnHandles.values()) {
-            assertThat(tableStatistics.getColumnStatistics().containsKey(column)).isTrue();
+            assertThat(tableStatistics.getColumnStatistics()).containsKey(column);
             assertThat(tableStatistics.getColumnStatistics().get(column)).isNotNull();
         }
 
@@ -143,7 +144,7 @@ public class TestTpcdsMetadataStatistics
     public void testNullFraction()
     {
         SchemaTableName schemaTableName = new SchemaTableName("sf1", Table.WEB_SITE.getName());
-        ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName);
+        ConnectorTableHandle tableHandle = metadata.getTableHandle(session, schemaTableName, Optional.empty(), Optional.empty());
         TableStatistics tableStatistics = metadata.getTableStatistics(session, tableHandle);
 
         Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(session, tableHandle);

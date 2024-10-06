@@ -19,10 +19,12 @@ import io.trino.plugin.redis.util.JsonEncoder;
 import io.trino.plugin.redis.util.RedisServer;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.sql.query.QueryAssertions;
+import io.trino.testing.QueryRunner;
 import io.trino.testing.StandaloneQueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 import redis.clients.jedis.Jedis;
 
 import java.util.Map;
@@ -33,8 +35,10 @@ import static io.trino.plugin.redis.util.RedisTestUtils.installRedisPlugin;
 import static io.trino.plugin.redis.util.RedisTestUtils.loadSimpleTableDescription;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 @TestInstance(PER_CLASS)
+@Execution(SAME_THREAD)
 public abstract class AbstractTestMinimalFunctionality
 {
     protected static final Session SESSION = testSessionBuilder()
@@ -46,7 +50,7 @@ public abstract class AbstractTestMinimalFunctionality
     protected String tableName;
     protected String stringValueTableName;
     protected String hashValueTableName;
-    protected StandaloneQueryRunner queryRunner;
+    protected QueryRunner queryRunner;
     protected QueryAssertions assertions;
 
     protected abstract Map<String, String> connectorProperties();
@@ -63,8 +67,8 @@ public abstract class AbstractTestMinimalFunctionality
         this.tableName = "test_" + UUID.randomUUID().toString().replaceAll("-", "_");
         RedisTableDescription stringValueTableDescription = loadSimpleTableDescription(queryRunner, "string");
         RedisTableDescription hashValueTableDescription = loadSimpleTableDescription(queryRunner, "hash");
-        this.stringValueTableName = stringValueTableDescription.getTableName();
-        this.hashValueTableName = hashValueTableDescription.getTableName();
+        this.stringValueTableName = stringValueTableDescription.tableName();
+        this.hashValueTableName = hashValueTableDescription.tableName();
 
         installRedisPlugin(redisServer, queryRunner,
                 ImmutableMap.<SchemaTableName, RedisTableDescription>builder()

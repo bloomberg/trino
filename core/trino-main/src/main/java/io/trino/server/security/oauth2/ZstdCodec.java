@@ -13,41 +13,40 @@
  */
 package io.trino.server.security.oauth2;
 
-import io.airlift.compress.zstd.ZstdCompressor;
-import io.airlift.compress.zstd.ZstdDecompressor;
-import io.jsonwebtoken.CompressionCodec;
-import io.jsonwebtoken.CompressionException;
+import io.airlift.compress.v3.zstd.ZstdInputStream;
+import io.airlift.compress.v3.zstd.ZstdOutputStream;
+import io.jsonwebtoken.io.CompressionAlgorithm;
 
-import static java.lang.Math.toIntExact;
-import static java.util.Arrays.copyOfRange;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
 
 public class ZstdCodec
-        implements CompressionCodec
+        implements CompressionAlgorithm
 {
     public static final String CODEC_NAME = "ZSTD";
 
     @Override
-    public String getAlgorithmName()
+    public String getId()
     {
         return CODEC_NAME;
     }
 
     @Override
-    public byte[] compress(byte[] bytes)
-            throws CompressionException
+    public OutputStream compress(OutputStream out)
     {
-        ZstdCompressor compressor = new ZstdCompressor();
-        byte[] compressed = new byte[compressor.maxCompressedLength(bytes.length)];
-        int outputSize = compressor.compress(bytes, 0, bytes.length, compressed, 0, compressed.length);
-        return copyOfRange(compressed, 0, outputSize);
+        try {
+            return new ZstdOutputStream(out);
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     @Override
-    public byte[] decompress(byte[] bytes)
-            throws CompressionException
+    public InputStream decompress(InputStream in)
     {
-        byte[] output = new byte[toIntExact(ZstdDecompressor.getDecompressedSize(bytes, 0, bytes.length))];
-        new ZstdDecompressor().decompress(bytes, 0, bytes.length, output, 0, output.length);
-        return output;
+        return new ZstdInputStream(in);
     }
 }

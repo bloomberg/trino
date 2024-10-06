@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -74,12 +75,10 @@ public class IcebergPageSource
 
                 Map<Integer, Integer> fieldIdToColumnIndex = mapFieldIdsToIndex(requiredColumns);
                 List<ColumnIdentity> rowIdFields = expectedColumn.getColumnIdentity().getChildren();
-                ImmutableMap.Builder<Integer, Integer> fieldIdToRowIdIndex = ImmutableMap.builder();
                 this.rowIdChildColumnIndexes = new int[rowIdFields.size()];
                 for (int columnIndex = 0; columnIndex < rowIdFields.size(); columnIndex++) {
                     int fieldId = rowIdFields.get(columnIndex).getId();
                     rowIdChildColumnIndexes[columnIndex] = requireNonNull(fieldIdToColumnIndex.get(fieldId), () -> format("Column %s not found in requiredColumns", fieldId));
-                    fieldIdToRowIdIndex.put(fieldId, columnIndex);
                 }
             }
         }
@@ -111,6 +110,12 @@ public class IcebergPageSource
     public boolean isFinished()
     {
         return delegate.isFinished();
+    }
+
+    @Override
+    public CompletableFuture<?> isBlocked()
+    {
+        return delegate.isBlocked();
     }
 
     @Override
@@ -164,7 +169,7 @@ public class IcebergPageSource
         Block[] fullPage = new Block[page.getChannelCount()];
         for (int channel = 0; channel < page.getChannelCount(); channel++) {
             if (channel == rowIdColumnIndex) {
-                fullPage[channel] = RowBlock.fromFieldBlocks(page.getPositionCount(), Optional.empty(), rowIdFields);
+                fullPage[channel] = RowBlock.fromFieldBlocks(page.getPositionCount(), rowIdFields);
                 continue;
             }
 

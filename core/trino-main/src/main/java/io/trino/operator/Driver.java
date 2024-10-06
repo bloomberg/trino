@@ -46,12 +46,15 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.util.concurrent.Futures.nonCancellationPropagating;
+import static com.google.common.util.concurrent.Futures.withTimeout;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.trino.operator.Operator.NOT_BLOCKED;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.lang.Boolean.TRUE;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 //
@@ -128,9 +131,9 @@ public class Driver
 
         Optional<SourceOperator> sourceOperator = Optional.empty();
         for (Operator operator : operators) {
-            if (operator instanceof SourceOperator) {
+            if (operator instanceof SourceOperator value) {
                 checkArgument(sourceOperator.isEmpty(), "There must be at most one SourceOperator");
-                sourceOperator = Optional.of((SourceOperator) operator);
+                sourceOperator = Optional.of(value);
             }
         }
         this.sourceOperator = sourceOperator;
@@ -192,7 +195,7 @@ public class Driver
     {
         checkLockHeld("Lock must be held to call isTerminatingOrDoneInternal");
 
-        boolean terminatingOrDone = state.get() != State.ALIVE || activeOperators.isEmpty() || activeOperators.get(activeOperators.size() - 1).isFinished() || driverContext.isTerminatingOrDone();
+        boolean terminatingOrDone = state.get() != State.ALIVE || activeOperators.isEmpty() || activeOperators.getLast().isFinished() || driverContext.isTerminatingOrDone();
         if (terminatingOrDone) {
             state.compareAndSet(State.ALIVE, State.NEED_DESTRUCTION);
         }
@@ -218,42 +221,47 @@ public class Driver
     private void processNewSources()
     {
         checkLockHeld("Lock must be held to call processNewSources");
+        try {
+            // only update if the driver is still alive
+            if (state.get() != State.ALIVE) {
+                return;
+            }
 
-        // only update if the driver is still alive
-        if (state.get() != State.ALIVE) {
-            return;
+            SplitAssignment splitAssignment = pendingSplitAssignmentUpdates.getAndSet(null);
+            if (splitAssignment == null) {
+                return;
+            }
+
+            // merge the current assignment and the specified assignment
+            SplitAssignment newAssignment = currentSplitAssignment.update(splitAssignment);
+
+            // if the update contains no new data, just return
+            if (newAssignment == currentSplitAssignment) {
+                return;
+            }
+
+            // determine new splits to add
+            Set<ScheduledSplit> newSplits = Sets.difference(newAssignment.getSplits(), currentSplitAssignment.getSplits());
+
+            // add new splits
+            SourceOperator sourceOperator = this.sourceOperator.orElseThrow(VerifyException::new);
+            for (ScheduledSplit newSplit : newSplits) {
+                Split split = newSplit.getSplit();
+
+                sourceOperator.addSplit(split);
+            }
+
+            // set no more splits
+            if (newAssignment.isNoMoreSplits()) {
+                sourceOperator.noMoreSplits();
+            }
+
+            currentSplitAssignment = newAssignment;
         }
-
-        SplitAssignment splitAssignment = pendingSplitAssignmentUpdates.getAndSet(null);
-        if (splitAssignment == null) {
-            return;
+        catch (Throwable failure) {
+            driverContext.failed(failure);
+            throw failure;
         }
-
-        // merge the current assignment and the specified assignment
-        SplitAssignment newAssignment = currentSplitAssignment.update(splitAssignment);
-
-        // if the update contains no new data, just return
-        if (newAssignment == currentSplitAssignment) {
-            return;
-        }
-
-        // determine new splits to add
-        Set<ScheduledSplit> newSplits = Sets.difference(newAssignment.getSplits(), currentSplitAssignment.getSplits());
-
-        // add new splits
-        SourceOperator sourceOperator = this.sourceOperator.orElseThrow(VerifyException::new);
-        for (ScheduledSplit newSplit : newSplits) {
-            Split split = newSplit.getSplit();
-
-            sourceOperator.addSplit(split);
-        }
-
-        // set no more splits
-        if (newAssignment.isNoMoreSplits()) {
-            sourceOperator.noMoreSplits();
-        }
-
-        currentSplitAssignment = newAssignment;
     }
 
     public ListenableFuture<Void> processForDuration(Duration duration)
@@ -455,6 +463,13 @@ public class Driver
 
                 // unblock when the first future is complete
                 ListenableFuture<Void> blocked = firstFinishedFuture(blockedFutures);
+                if (driverContext.getBlockedTimeout().isPresent()) {
+                    blocked = withTimeout(
+                            nonCancellationPropagating(blocked),
+                            driverContext.getBlockedTimeout().get().toMillis(),
+                            MILLISECONDS,
+                            driverContext.getTimeoutExecutor());
+                }
                 // driver records serial blocked time
                 driverContext.recordBlocked(blocked);
                 // each blocked operator is responsible for blocking the execution

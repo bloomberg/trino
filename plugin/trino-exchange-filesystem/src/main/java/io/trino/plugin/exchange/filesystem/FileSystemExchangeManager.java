@@ -15,6 +15,8 @@ package io.trino.plugin.exchange.filesystem;
 
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
+import io.airlift.bootstrap.LifeCycleManager;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.spi.TrinoException;
 import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeContext;
@@ -22,6 +24,7 @@ import io.trino.spi.exchange.ExchangeManager;
 import io.trino.spi.exchange.ExchangeSink;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSource;
+import jakarta.annotation.PreDestroy;
 
 import java.net.URI;
 import java.util.List;
@@ -39,8 +42,10 @@ public class FileSystemExchangeManager
 {
     public static final String PATH_SEPARATOR = "/";
 
+    private final LifeCycleManager lifeCycleManager;
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
+    private final Tracer tracer;
     private final List<URI> baseDirectories;
     private final int maxPageStorageSizeInBytes;
     private final int exchangeSinkBufferPoolMinSize;
@@ -55,14 +60,18 @@ public class FileSystemExchangeManager
 
     @Inject
     public FileSystemExchangeManager(
+            LifeCycleManager lifeCycleManager,
             FileSystemExchangeStorage exchangeStorage,
             FileSystemExchangeStats stats,
-            FileSystemExchangeConfig fileSystemExchangeConfig)
+            FileSystemExchangeConfig fileSystemExchangeConfig,
+            Tracer tracer)
     {
+        this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
         this.stats = requireNonNull(stats, "stats is null");
         this.baseDirectories = ImmutableList.copyOf(requireNonNull(fileSystemExchangeConfig.getBaseDirectories(), "baseDirectories is null"));
         this.maxPageStorageSizeInBytes = toIntExact(fileSystemExchangeConfig.getMaxPageStorageSize().toBytes());
+        this.tracer = requireNonNull(tracer, "tracer is null");
         this.exchangeSinkBufferPoolMinSize = fileSystemExchangeConfig.getExchangeSinkBufferPoolMinSize();
         this.exchangeSinkBuffersPerPartition = fileSystemExchangeConfig.getExchangeSinkBuffersPerPartition();
         this.exchangeSinkMaxFileSizeInBytes = fileSystemExchangeConfig.getExchangeSinkMaxFileSize().toBytes();
@@ -72,6 +81,12 @@ public class FileSystemExchangeManager
         this.exchangeFileListingParallelism = fileSystemExchangeConfig.getExchangeFileListingParallelism();
         this.exchangeSourceHandleTargetDataSizeInBytes = fileSystemExchangeConfig.getExchangeSourceHandleTargetDataSize().toBytes();
         this.executor = newCachedThreadPool(daemonThreadsNamed("exchange-source-handles-creation-%s"));
+    }
+
+    @PreDestroy
+    public void destroy()
+    {
+        executor.shutdownNow();
     }
 
     @Override
@@ -87,6 +102,7 @@ public class FileSystemExchangeManager
                 baseDirectories,
                 exchangeStorage,
                 stats,
+                tracer,
                 context,
                 outputPartitionCount,
                 preserveOrderWithinPartition,
@@ -126,5 +142,11 @@ public class FileSystemExchangeManager
     public boolean supportsConcurrentReadAndWrite()
     {
         return false;
+    }
+
+    @Override
+    public void shutdown()
+    {
+        lifeCycleManager.stop();
     }
 }

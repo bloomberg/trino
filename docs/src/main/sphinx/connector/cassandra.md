@@ -123,7 +123,6 @@ SELECT * FROM example.example_keyspace.users;
 ```
 
 (cassandra-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Cassandra each support types that the other does not, this
@@ -137,87 +136,86 @@ each direction.
 The connector maps Cassandra types to the corresponding Trino types according to
 the following table:
 
-```{eval-rst}
-.. list-table:: Cassandra type to Trino type mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} Cassandra type to Trino type mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - Cassandra type
-    - Trino type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``TINYINT``
-    - ``TINYINT``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``INT``
-    - ``INTEGER``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``FLOAT``
-    - ``REAL``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``DECIMAL``
-    - ``DOUBLE``
-    -
-  * - ``ASCII``
-    - ``VARCHAR``
-    - US-ASCII character string
-  * - ``TEXT``
-    - ``VARCHAR``
-    - UTF-8 encoded string
-  * - ``VARCHAR``
-    - ``VARCHAR``
-    - UTF-8 encoded string
-  * - ``VARINT``
-    - ``VARCHAR``
-    - Arbitrary-precision integer
-  * - ``BLOB``
-    - ``VARBINARY``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIME``
-    - ``TIME(9)``
-    -
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP(3) WITH TIME ZONE``
-    -
-  * - ``LIST<?>``
-    - ``VARCHAR``
-    -
-  * - ``MAP<?, ?>``
-    - ``VARCHAR``
-    -
-  * - ``SET<?>``
-    - ``VARCHAR``
-    -
-  * - ``TUPLE``
-    - ``ROW`` with anonymous fields
-    -
-  * - ``UDT``
-    - ``ROW`` with field names
-    -
-  * - ``INET``
-    - ``IPADDRESS``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-  * - ``TIMEUUID``
-    - ``UUID``
-    -
-```
+* - Cassandra type
+  - Trino type
+  - Notes
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `TINYINT`
+  - `TINYINT`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `INT`
+  - `INTEGER`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `FLOAT`
+  - `REAL`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `DECIMAL`
+  - `DOUBLE`
+  -
+* - `ASCII`
+  - `VARCHAR`
+  - US-ASCII character string
+* - `TEXT`
+  - `VARCHAR`
+  - UTF-8 encoded string
+* - `VARCHAR`
+  - `VARCHAR`
+  - UTF-8 encoded string
+* - `VARINT`
+  - `VARCHAR`
+  - Arbitrary-precision integer
+* - `BLOB`
+  - `VARBINARY`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIME`
+  - `TIME(9)`
+  -
+* - `TIMESTAMP`
+  - `TIMESTAMP(3) WITH TIME ZONE`
+  -
+* - `LIST<?>`
+  - `VARCHAR`
+  -
+* - `MAP<?, ?>`
+  - `VARCHAR`
+  -
+* - `SET<?>`
+  - `VARCHAR`
+  -
+* - `TUPLE`
+  - `ROW` with anonymous fields
+  -
+* - `UDT`
+  - `ROW` with field names
+  -
+* - `INET`
+  - `IPADDRESS`
+  -
+* - `UUID`
+  - `UUID`
+  -
+* - `TIMEUUID`
+  - `UUID`
+  -
+:::
 
 No other types are supported.
 
@@ -226,53 +224,51 @@ No other types are supported.
 The connector maps Trino types to the corresponding Cassandra types according to
 the following table:
 
-```{eval-rst}
-.. list-table:: Trino type to Cassandra type mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} Trino type to Cassandra type mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - Trino type
-    - Cassandra type
-    - Notes
+* - Trino type
+  - Cassandra type
+  - Notes
 
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``TINYINT``
-    - ``TINYINT``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``INTEGER``
-    - ``INT``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``REAL``
-    - ``FLOAT``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``VARCHAR``
-    - ``TEXT``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIMESTAMP(3) WITH TIME ZONE``
-    - ``TIMESTAMP``
-    -
-  * - ``IPADDRESS``
-    - ``INET``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-
-```
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `TINYINT`
+  - `TINYINT`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `INTEGER`
+  - `INT`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `REAL`
+  - `FLOAT`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `VARCHAR`
+  - `TEXT`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIMESTAMP(3) WITH TIME ZONE`
+  - `TIMESTAMP`
+  -
+* - `IPADDRESS`
+  - `INET`
+  -
+* - `UUID`
+  - `UUID`
+  -
+:::
 
 No other types are supported.
 
@@ -303,7 +299,6 @@ Partition keys can only be of the following types:
 - Range (`<` or `>` and `BETWEEN`) filters can be applied only to the partition keys.
 
 (cassandra-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -318,13 +313,18 @@ statements, the connector supports the following features:
 - {doc}`/sql/create-table-as`
 - {doc}`/sql/drop-table`
 
-## Table functions
+### Procedures
+
+```{include} procedures-execute.fragment
+```
+
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Cassandra.
 .. \_cassandra-query-function:
 
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying Cassandra directly. It
 requires syntax native to Cassandra, because the full query is pushed down and
@@ -362,7 +362,6 @@ cassandra.allow-drop-table=true
 ```
 
 (sql-delete-limitation)=
-
 ### SQL delete limitation
 
 `DELETE` is only supported if the `WHERE` clause matches entire partitions.

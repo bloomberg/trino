@@ -25,7 +25,9 @@ import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.FaultTolerantExecutionConnectorTestHelper;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingMetadata;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Set;
 
@@ -34,8 +36,9 @@ import static io.trino.spi.predicate.Range.range;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true)
+@Execution(SAME_THREAD)
 public class TestFaultTolerantExecutionDynamicFiltering
         extends AbstractTestCoordinatorDynamicFiltering
 {
@@ -50,14 +53,14 @@ public class TestFaultTolerantExecutionDynamicFiltering
                 .buildOrThrow();
 
         return DistributedQueryRunner.builder(getDefaultSession())
-                .setAdditionalSetup(runner -> {
-                    runner.installPlugin(new FileSystemExchangePlugin());
-                    runner.loadExchangeManager("filesystem", exchangeManagerProperties);
-                })
                 .setExtraProperties(FaultTolerantExecutionConnectorTestHelper.getExtraProperties())
                 // keep limits lower to test edge cases
                 .addExtraProperty("dynamic-filtering.small.max-distinct-values-per-driver", "10")
                 .addExtraProperty("dynamic-filtering.small.range-row-limit-per-driver", "100")
+                .setAdditionalSetup(runner -> {
+                    runner.installPlugin(new FileSystemExchangePlugin());
+                    runner.loadExchangeManager("filesystem", exchangeManagerProperties);
+                })
                 .build();
     }
 
@@ -71,11 +74,10 @@ public class TestFaultTolerantExecutionDynamicFiltering
     // results in each instance of DynamicFilterSourceOperator receiving fewer input rows. Therefore, testing max-distinct-values-per-driver
     // requires larger build side and the assertions on the collected domain are adjusted for multiple ranges instead of single range.
     @Override
-    @Test(timeOut = 30_000, dataProvider = "testJoinDistributionType")
-    public void testSemiJoinWithNonSelectiveBuildSide(JoinDistributionType joinDistributionType, boolean coordinatorDynamicFiltersDistribution)
+    protected void testSemiJoinWithNonSelectiveBuildSide(JoinDistributionType joinDistributionType)
     {
         assertQueryDynamicFilters(
-                noJoinReordering(joinDistributionType, coordinatorDynamicFiltersDistribution),
+                noJoinReordering(joinDistributionType),
                 "SELECT * FROM lineitem WHERE lineitem.partkey IN (SELECT part.partkey FROM tpch.tiny.part)",
                 Set.of(PART_KEY_HANDLE),
                 collectedDomain -> {
@@ -90,11 +92,10 @@ public class TestFaultTolerantExecutionDynamicFiltering
     }
 
     @Override
-    @Test(timeOut = 30_000, dataProvider = "testJoinDistributionType")
-    public void testJoinWithNonSelectiveBuildSide(JoinDistributionType joinDistributionType, boolean coordinatorDynamicFiltersDistribution)
+    protected void testJoinWithNonSelectiveBuildSide(JoinDistributionType joinDistributionType)
     {
         assertQueryDynamicFilters(
-                noJoinReordering(joinDistributionType, coordinatorDynamicFiltersDistribution),
+                noJoinReordering(joinDistributionType),
                 "SELECT * FROM lineitem l JOIN tpch.tiny.part p ON l.partkey = p.partkey",
                 Set.of(PART_KEY_HANDLE),
                 collectedDomain -> {
@@ -109,7 +110,8 @@ public class TestFaultTolerantExecutionDynamicFiltering
     }
 
     @Override
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testRightJoinWithNonSelectiveBuildSide()
     {
         assertQueryDynamicFilters(

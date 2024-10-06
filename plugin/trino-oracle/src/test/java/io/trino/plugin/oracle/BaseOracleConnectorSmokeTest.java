@@ -15,7 +15,7 @@ package io.trino.plugin.oracle;
 
 import io.trino.plugin.jdbc.BaseJdbcConnectorSmokeTest;
 import io.trino.testing.TestingConnectorBehavior;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -28,7 +28,7 @@ public abstract class BaseOracleConnectorSmokeTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_CREATE_SCHEMA,
-                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS -> false;
+                 SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }

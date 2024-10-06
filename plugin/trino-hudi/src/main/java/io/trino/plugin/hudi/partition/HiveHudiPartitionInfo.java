@@ -15,13 +15,12 @@ package io.trino.plugin.hudi.partition;
 
 import com.google.common.collect.ImmutableList;
 import io.trino.filesystem.Location;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.Partition;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.util.HiveUtil;
 import io.trino.spi.TrinoException;
 import io.trino.spi.predicate.TupleDomain;
 
@@ -38,6 +37,8 @@ import static java.lang.String.format;
 public class HiveHudiPartitionInfo
         implements HudiPartitionInfo
 {
+    public static final String NON_PARTITION = "";
+
     private final Table table;
     private final List<HiveColumnHandle> partitionColumnHandles;
     private final TupleDomain<HiveColumnHandle> constraintSummary;
@@ -61,7 +62,7 @@ public class HiveHudiPartitionInfo
         this.hivePartitionName = hivePartitionName;
         this.partitionColumns = partitionColumns;
         if (partitionColumns.isEmpty()) {
-            this.relativePartitionPath = "";
+            this.relativePartitionPath = NON_PARTITION;
             this.hivePartitionKeys = Collections.emptyList();
         }
         this.hiveMetastore = hiveMetastore;
@@ -71,7 +72,7 @@ public class HiveHudiPartitionInfo
     public String getRelativePartitionPath()
     {
         if (relativePartitionPath == null) {
-            loadPartitionInfo(hiveMetastore.getPartition(table, HiveUtil.toPartitionValues(hivePartitionName)));
+            loadPartitionInfo(hiveMetastore.getPartition(table, Partition.toPartitionValues(hivePartitionName)));
         }
         return relativePartitionPath;
     }
@@ -80,7 +81,7 @@ public class HiveHudiPartitionInfo
     public List<HivePartitionKey> getHivePartitionKeys()
     {
         if (hivePartitionKeys == null) {
-            loadPartitionInfo(hiveMetastore.getPartition(table, HiveUtil.toPartitionValues(hivePartitionName)));
+            loadPartitionInfo(hiveMetastore.getPartition(table, Partition.toPartitionValues(hivePartitionName)));
         }
         return hivePartitionKeys;
     }
@@ -88,7 +89,7 @@ public class HiveHudiPartitionInfo
     @Override
     public boolean doesMatchPredicates()
     {
-        if (hivePartitionName.equals("")) {
+        if (hivePartitionName.equals(NON_PARTITION)) {
             hivePartitionKeys = ImmutableList.of();
             return true;
         }
@@ -123,7 +124,7 @@ public class HiveHudiPartitionInfo
                 baseLocationParent == null ? 0 : baseLocationParent.length());
         // Partition-Path could be empty for non-partitioned tables
         boolean isNonPartitionedTable = partitionStartIndex + baseLocationName.length() == fullPartitionPath.length();
-        return isNonPartitionedTable ? "" : fullPartitionPath.substring(partitionStartIndex + baseLocationName.length() + 1);
+        return isNonPartitionedTable ? NON_PARTITION : fullPartitionPath.substring(partitionStartIndex + baseLocationName.length() + 1);
     }
 
     @Override

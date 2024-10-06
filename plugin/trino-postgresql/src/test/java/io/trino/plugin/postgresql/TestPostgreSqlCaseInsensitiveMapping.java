@@ -14,11 +14,9 @@
 package io.trino.plugin.postgresql;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.jdbc.BaseCaseInsensitiveMappingTest;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
-import org.testng.annotations.Test;
 
 import java.nio.file.Path;
 
@@ -28,7 +26,6 @@ import static java.util.Objects.requireNonNull;
 
 // With case-insensitive-name-matching enabled colliding schema/table names are considered as errors.
 // Some tests here create colliding names which can cause any other concurrent test to fail.
-@Test(singleThreaded = true)
 public class TestPostgreSqlCaseInsensitiveMapping
         extends BaseCaseInsensitiveMappingTest
 {
@@ -41,15 +38,13 @@ public class TestPostgreSqlCaseInsensitiveMapping
     {
         mappingFile = createRuleBasedIdentifierMappingFile();
         postgreSqlServer = closeAfterClass(new TestingPostgreSqlServer());
-        return PostgreSqlQueryRunner.createPostgreSqlQueryRunner(
-                postgreSqlServer,
-                ImmutableMap.of(),
-                ImmutableMap.<String, String>builder()
+        return PostgreSqlQueryRunner.builder(postgreSqlServer)
+                .addConnectorProperties(ImmutableMap.<String, String>builder()
                         .put("case-insensitive-name-matching", "true")
                         .put("case-insensitive-name-matching.config-file", mappingFile.toFile().getAbsolutePath())
                         .put("case-insensitive-name-matching.config-file.refresh-period", REFRESH_PERIOD_DURATION.toString())
-                        .buildOrThrow(),
-                ImmutableSet.of());
+                        .buildOrThrow())
+                .build();
     }
 
     @Override
@@ -62,13 +57,5 @@ public class TestPostgreSqlCaseInsensitiveMapping
     protected SqlExecutor onRemoteDatabase()
     {
         return postgreSqlServer::execute;
-    }
-
-    @Test
-    public void forceTestNgToRespectSingleThreaded()
-    {
-        // TODO: Remove after updating TestNG to 7.4.0+ (https://github.com/trinodb/trino/issues/8571)
-        // TestNG doesn't enforce @Test(singleThreaded = true) when tests are defined in base class. According to
-        // https://github.com/cbeust/testng/issues/2361#issuecomment-688393166 a workaround it to add a dummy test to the leaf test class.
     }
 }

@@ -13,35 +13,31 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableMap;
+import io.trino.plugin.deltalake.transactionlog.DeletionVectorEntry;
 import io.trino.spi.connector.ConnectorMergeTableHandle;
+import io.trino.spi.connector.ConnectorTableHandle;
+
+import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
 
-public class DeltaLakeMergeTableHandle
+public record DeltaLakeMergeTableHandle(
+        DeltaLakeTableHandle tableHandle,
+        DeltaLakeInsertTableHandle insertTableHandle,
+        Map<String, DeletionVectorEntry> deletionVectors)
         implements ConnectorMergeTableHandle
 {
-    private final DeltaLakeTableHandle tableHandle;
-    private final DeltaLakeInsertTableHandle insertTableHandle;
-
-    @JsonCreator
-    public DeltaLakeMergeTableHandle(DeltaLakeTableHandle tableHandle, DeltaLakeInsertTableHandle insertTableHandle)
+    public DeltaLakeMergeTableHandle
     {
-        this.tableHandle = requireNonNull(tableHandle, "tableHandle is null");
-        this.insertTableHandle = requireNonNull(insertTableHandle, "insertTableHandle is null");
+        requireNonNull(tableHandle, "tableHandle is null");
+        requireNonNull(insertTableHandle, "insertTableHandle is null");
+        deletionVectors = ImmutableMap.copyOf(requireNonNull(deletionVectors, "deletionVectors is null"));
     }
 
     @Override
-    @JsonProperty
-    public DeltaLakeTableHandle getTableHandle()
+    public ConnectorTableHandle getTableHandle()
     {
-        return tableHandle;
-    }
-
-    @JsonProperty
-    public DeltaLakeInsertTableHandle getInsertTableHandle()
-    {
-        return insertTableHandle;
+        return tableHandle();
     }
 }

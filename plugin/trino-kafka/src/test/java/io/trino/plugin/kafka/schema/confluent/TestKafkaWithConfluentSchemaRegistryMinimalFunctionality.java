@@ -23,6 +23,7 @@ import io.confluent.kafka.serializers.KafkaAvroSerializer;
 import io.confluent.kafka.serializers.json.KafkaJsonSchemaSerializer;
 import io.confluent.kafka.serializers.subject.RecordNameStrategy;
 import io.confluent.kafka.serializers.subject.TopicRecordNameStrategy;
+import io.trino.plugin.kafka.KafkaQueryRunner;
 import io.trino.sql.query.QueryAssertions;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
@@ -34,7 +35,8 @@ import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericRecordBuilder;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.LongSerializer;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.time.Duration;
 import java.util.List;
@@ -42,8 +44,8 @@ import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import static io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG;
-import static io.confluent.kafka.serializers.AbstractKafkaAvroSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY;
+import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.SCHEMA_REGISTRY_URL_CONFIG;
+import static io.confluent.kafka.serializers.AbstractKafkaSchemaSerDeConfig.VALUE_SUBJECT_NAME_STRATEGY;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.Math.multiplyExact;
 import static java.lang.String.format;
@@ -53,9 +55,9 @@ import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CL
 import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true)
+@Execution(SAME_THREAD)
 public class TestKafkaWithConfluentSchemaRegistryMinimalFunctionality
         extends AbstractTestQueryFramework
 {
@@ -80,8 +82,9 @@ public class TestKafkaWithConfluentSchemaRegistryMinimalFunctionality
             throws Exception
     {
         testingKafka = closeAfterClass(TestingKafka.createWithSchemaRegistry());
-        return KafkaWithConfluentSchemaRegistryQueryRunner.builder(testingKafka)
-                .setExtraKafkaProperties(ImmutableMap.of("kafka.confluent-subjects-cache-refresh-interval", "1ms"))
+        testingKafka.start();
+        return KafkaQueryRunner.builderForConfluentSchemaRegistry(testingKafka)
+                .addConnectorProperties(ImmutableMap.of("kafka.confluent-subjects-cache-refresh-interval", "1ms"))
                 .build();
     }
 
@@ -242,7 +245,7 @@ public class TestKafkaWithConfluentSchemaRegistryMinimalFunctionality
                         .put(VALUE_SERIALIZER_CLASS_CONFIG, KafkaJsonSchemaSerializer.class.getName())
                         .buildOrThrow());
 
-        assertTrue(tableExists(topicName));
+        assertThat(tableExists(topicName)).isTrue();
 
         String errorMessage = "Not supported schema: JSON";
         assertThatThrownBy(() -> getQueryRunner().execute("SHOW COLUMNS FROM " + toDoubleQuoted(topicName)))
@@ -366,13 +369,13 @@ public class TestKafkaWithConfluentSchemaRegistryMinimalFunctionality
                         .withMaxAttempts(10)
                         .withDelay(Duration.ofMillis(100))
                         .build())
-                .run(() -> assertTrue(schemaExists()));
+                .run(() -> assertThat(schemaExists()).isTrue());
         Failsafe.with(
                 RetryPolicy.builder()
                         .withMaxAttempts(10)
                         .withDelay(Duration.ofMillis(100))
                         .build())
-                .run(() -> assertTrue(tableExists(tableName)));
+                .run(() -> assertThat(tableExists(tableName)).isTrue());
     }
 
     private boolean schemaExists()

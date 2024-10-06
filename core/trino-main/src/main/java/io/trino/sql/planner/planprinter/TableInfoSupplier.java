@@ -14,13 +14,13 @@
 package io.trino.sql.planner.planprinter;
 
 import io.trino.Session;
-import io.trino.connector.ConnectorName;
 import io.trino.execution.TableInfo;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableProperties;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.sql.planner.plan.TableScanNode;
 
 import java.util.Optional;
@@ -46,8 +46,8 @@ public class TableInfoSupplier
         CatalogSchemaTableName tableName = metadata.getTableName(session, node.getTable());
         TableProperties tableProperties = metadata.getTableProperties(session, node.getTable());
         Optional<String> connectorName = metadata.listCatalogs(session).stream()
-                .filter(catalogInfo -> catalogInfo.getCatalogName().equals(tableName.getCatalogName()))
-                .map(CatalogInfo::getConnectorName)
+                .filter(catalogInfo -> catalogInfo.catalogName().equals(tableName.getCatalogName()))
+                .map(CatalogInfo::connectorName)
                 .map(ConnectorName::toString)
                 .findFirst();
         QualifiedObjectName objectName = new QualifiedObjectName(tableName.getCatalogName(), tableName.getSchemaTableName().getSchemaName(), tableName.getSchemaTableName().getTableName());

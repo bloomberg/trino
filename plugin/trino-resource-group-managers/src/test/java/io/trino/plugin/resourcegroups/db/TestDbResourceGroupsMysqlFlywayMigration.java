@@ -14,18 +14,17 @@
 package io.trino.plugin.resourcegroups.db;
 
 import org.jdbi.v3.core.Handle;
+import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.JdbcDatabaseContainer;
 import org.testcontainers.containers.MySQLContainer;
-import org.testng.annotations.Test;
 
-@Test(singleThreaded = true)
 public class TestDbResourceGroupsMysqlFlywayMigration
         extends BaseTestDbResourceGroupsFlywayMigration
 {
     @Override
     protected final JdbcDatabaseContainer<?> startContainer()
     {
-        JdbcDatabaseContainer<?> container = new MySQLContainer<>("mysql:8.0.30");
+        JdbcDatabaseContainer<?> container = new MySQLContainer<>("mysql:8.0.36");
         container.start();
         return container;
     }
@@ -43,6 +42,8 @@ public class TestDbResourceGroupsMysqlFlywayMigration
                 .setConfigDbPassword(container.getPassword());
         FlywayMigration.migrate(config);
         verifyResourceGroupsSchema(1);
+
+        dropAllTables();
     }
 
     private void createOldSchema()

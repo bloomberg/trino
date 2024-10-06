@@ -14,14 +14,15 @@
 package io.trino.cost;
 
 import com.google.common.collect.ImmutableSet;
+import io.trino.spi.type.Type;
 import io.trino.sql.planner.Symbol;
+import org.assertj.core.api.Assertions;
 
 import java.util.function.Consumer;
 
 import static com.google.common.collect.Sets.union;
 import static io.trino.cost.EstimateAssertion.assertEstimateEquals;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static io.trino.spi.type.DoubleType.DOUBLE;
 
 public class PlanNodeStatsAssertion
 {
@@ -45,13 +46,20 @@ public class PlanNodeStatsAssertion
 
     public PlanNodeStatsAssertion outputRowsCountUnknown()
     {
-        assertTrue(Double.isNaN(actual.getOutputRowCount()), "expected unknown outputRowsCount but got " + actual.getOutputRowCount());
+        Assertions.assertThat(Double.isNaN(actual.getOutputRowCount()))
+                .describedAs("expected unknown outputRowsCount but got " + actual.getOutputRowCount())
+                .isTrue();
         return this;
     }
 
     public PlanNodeStatsAssertion symbolStats(String symbolName, Consumer<SymbolStatsAssertion> symbolStatsAssertionConsumer)
     {
-        return symbolStats(new Symbol(symbolName), symbolStatsAssertionConsumer);
+        return symbolStats(symbolName, DOUBLE, symbolStatsAssertionConsumer);
+    }
+
+    public PlanNodeStatsAssertion symbolStats(String symbolName, Type type, Consumer<SymbolStatsAssertion> symbolStatsAssertionConsumer)
+    {
+        return symbolStats(new Symbol(type, symbolName), symbolStatsAssertionConsumer);
     }
 
     public PlanNodeStatsAssertion symbolStats(Symbol symbol, Consumer<SymbolStatsAssertion> columnAssertionConsumer)
@@ -61,9 +69,9 @@ public class PlanNodeStatsAssertion
         return this;
     }
 
-    public PlanNodeStatsAssertion symbolStatsUnknown(String symbolName)
+    public PlanNodeStatsAssertion symbolStatsUnknown(String symbolName, Type type)
     {
-        return symbolStatsUnknown(new Symbol(symbolName));
+        return symbolStatsUnknown(new Symbol(type, symbolName));
     }
 
     public PlanNodeStatsAssertion symbolStatsUnknown(Symbol symbol)
@@ -78,7 +86,9 @@ public class PlanNodeStatsAssertion
 
     public PlanNodeStatsAssertion symbolsWithKnownStats(Symbol... symbols)
     {
-        assertEquals(actual.getSymbolsWithKnownStatistics(), ImmutableSet.copyOf(symbols), "symbols with known stats");
+        Assertions.assertThat(actual.getSymbolsWithKnownStatistics())
+                .describedAs("symbols with known stats")
+                .isEqualTo(ImmutableSet.copyOf(symbols));
         return this;
     }
 
@@ -94,10 +104,10 @@ public class PlanNodeStatsAssertion
 
     private void assertSymbolStatsEqual(Symbol symbol, SymbolStatsEstimate actual, SymbolStatsEstimate expected)
     {
-        assertEstimateEquals(actual.getNullsFraction(), expected.getNullsFraction(), "nullsFraction mismatch for %s", symbol.getName());
-        assertEstimateEquals(actual.getLowValue(), expected.getLowValue(), "lowValue mismatch for %s", symbol.getName());
-        assertEstimateEquals(actual.getHighValue(), expected.getHighValue(), "highValue mismatch for %s", symbol.getName());
-        assertEstimateEquals(actual.getDistinctValuesCount(), expected.getDistinctValuesCount(), "distinct values count mismatch for %s", symbol.getName());
-        assertEstimateEquals(actual.getAverageRowSize(), expected.getAverageRowSize(), "average row size mismatch for %s", symbol.getName());
+        assertEstimateEquals(actual.getNullsFraction(), expected.getNullsFraction(), "nullsFraction mismatch for %s", symbol.name());
+        assertEstimateEquals(actual.getLowValue(), expected.getLowValue(), "lowValue mismatch for %s", symbol.name());
+        assertEstimateEquals(actual.getHighValue(), expected.getHighValue(), "highValue mismatch for %s", symbol.name());
+        assertEstimateEquals(actual.getDistinctValuesCount(), expected.getDistinctValuesCount(), "distinct values count mismatch for %s", symbol.name());
+        assertEstimateEquals(actual.getAverageRowSize(), expected.getAverageRowSize(), "average row size mismatch for %s", symbol.name());
     }
 }

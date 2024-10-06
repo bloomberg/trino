@@ -13,11 +13,9 @@
  */
 package io.trino.plugin.blackhole;
 
-import com.google.common.collect.ImmutableList;
-import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 
-import java.util.List;
+import java.util.Map;
 
 public enum BlackHoleSplit
         implements ConnectorSplit
@@ -25,21 +23,9 @@ public enum BlackHoleSplit
     INSTANCE;
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return Map.of();
     }
 
     @Override

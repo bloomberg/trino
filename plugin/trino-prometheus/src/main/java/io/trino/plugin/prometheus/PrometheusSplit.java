@@ -16,15 +16,18 @@ package io.trino.plugin.prometheus;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class PrometheusSplit
         implements ConnectorSplit
@@ -49,21 +52,15 @@ public class PrometheusSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
-    {
-        return true;
-    }
-
-    @Override
     public List<HostAddress> getAddresses()
     {
         return addresses;
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.of("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")));
     }
 
     @Override

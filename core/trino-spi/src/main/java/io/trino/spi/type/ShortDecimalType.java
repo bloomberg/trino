@@ -17,9 +17,12 @@ import io.airlift.slice.XxHash64;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.BlockBuilderStatus;
+import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.LongArrayBlockBuilder;
 import io.trino.spi.block.PageBuilderStatus;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.function.BlockIndex;
+import io.trino.spi.function.BlockPosition;
 import io.trino.spi.function.FlatFixed;
 import io.trino.spi.function.FlatFixedOffset;
 import io.trino.spi.function.FlatVariableWidth;
@@ -42,6 +45,7 @@ import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.READ_VALUE;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
 import static io.trino.spi.type.Decimals.MAX_SHORT_PRECISION;
+import static io.trino.spi.type.Decimals.longTenToNth;
 import static io.trino.spi.type.TypeOperatorDeclaration.extractOperatorDeclaration;
 import static java.lang.invoke.MethodHandles.lookup;
 
@@ -67,11 +71,17 @@ final class ShortDecimalType
         return INSTANCES[precision - 1][scale];
     }
 
+    private final Range range;
+
     private ShortDecimalType(int precision, int scale)
     {
-        super(precision, scale, long.class);
-        checkArgument(0 < precision && precision <= Decimals.MAX_SHORT_PRECISION, "Invalid precision: %s", precision);
+        super(precision, scale, long.class, LongArrayBlock.class);
+        checkArgument(0 < precision && precision <= MAX_SHORT_PRECISION, "Invalid precision: %s", precision);
         checkArgument(0 <= scale && scale <= precision, "Invalid scale for precision %s: %s", precision, scale);
+
+        // ShortDecimalType instances are created eagerly and shared, so it's OK to precompute some things.
+        long max = longTenToNth(precision) - 1;
+        range = new Range(-max, max);
     }
 
     @Override
@@ -119,8 +129,7 @@ final class ShortDecimalType
         if (block.isNull(position)) {
             return null;
         }
-        long unscaledValue = block.getLong(position, 0);
-        return new SqlDecimal(BigInteger.valueOf(unscaledValue), getPrecision(), getScale());
+        return new SqlDecimal(BigInteger.valueOf(getLong(block, position)), getPrecision(), getScale());
     }
 
     @Override
@@ -130,14 +139,14 @@ final class ShortDecimalType
             blockBuilder.appendNull();
         }
         else {
-            writeLong(blockBuilder, block.getLong(position, 0));
+            writeLong(blockBuilder, getLong(block, position));
         }
     }
 
     @Override
     public long getLong(Block block, int position)
     {
-        return block.getLong(position, 0);
+        return read((LongArrayBlock) block.getUnderlyingValueBlock(), block.getUnderlyingValuePosition(position));
     }
 
     @Override
@@ -153,9 +162,41 @@ final class ShortDecimalType
     }
 
     @Override
+    public Optional<Range> getRange()
+    {
+        return Optional.of(range);
+    }
+
+    @Override
     public Optional<Stream<?>> getDiscreteValues(Range range)
     {
         return Optional.of(LongStream.rangeClosed((long) range.getMin(), (long) range.getMax()).boxed());
+    }
+
+    @Override
+    public Optional<Object> getPreviousValue(Object object)
+    {
+        long value = (long) object;
+        if ((long) range.getMin() == value) {
+            return Optional.empty();
+        }
+        return Optional.of(value - 1);
+    }
+
+    @Override
+    public Optional<Object> getNextValue(Object object)
+    {
+        long value = (long) object;
+        if ((long) range.getMax() == value) {
+            return Optional.empty();
+        }
+        return Optional.of(value + 1);
+    }
+
+    @ScalarOperator(READ_VALUE)
+    private static long read(@BlockPosition LongArrayBlock block, @BlockIndex int position)
+    {
+        return block.getLong(position);
     }
 
     @ScalarOperator(READ_VALUE)

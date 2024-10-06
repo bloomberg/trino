@@ -14,9 +14,9 @@
 
 package io.trino.operator.aggregation.histogram;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.MapBlockBuilder;
-import io.trino.spi.block.SingleMapBlock;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
@@ -34,32 +34,32 @@ public class SingleHistogramState
     private final MethodHandle readFlat;
     private final MethodHandle writeFlat;
     private final MethodHandle hashFlat;
-    private final MethodHandle distinctFlatBlock;
+    private final MethodHandle identicalFlatBlock;
     private final MethodHandle hashBlock;
     private TypedHistogram typedHistogram;
-    private SingleMapBlock tempSerializedState;
+    private SqlMap tempSerializedState;
 
     public SingleHistogramState(
             Type keyType,
             MethodHandle readFlat,
             MethodHandle writeFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle hashBlock)
     {
         this.keyType = requireNonNull(keyType, "keyType is null");
         this.readFlat = requireNonNull(readFlat, "readFlat is null");
         this.writeFlat = requireNonNull(writeFlat, "writeFlat is null");
         this.hashFlat = requireNonNull(hashFlat, "hashFlat is null");
-        this.distinctFlatBlock = requireNonNull(distinctFlatBlock, "distinctFlatBlock is null");
+        this.identicalFlatBlock = requireNonNull(identicalFlatBlock, "identicalFlatBlock is null");
         this.hashBlock = requireNonNull(hashBlock, "hashBlock is null");
     }
 
     @Override
-    public void add(Block block, int position, long count)
+    public void add(ValueBlock block, int position, long count)
     {
         if (typedHistogram == null) {
-            typedHistogram = new TypedHistogram(keyType, readFlat, writeFlat, hashFlat, distinctFlatBlock, hashBlock, false);
+            typedHistogram = new TypedHistogram(keyType, readFlat, writeFlat, hashFlat, identicalFlatBlock, hashBlock, false);
         }
         typedHistogram.add(0, block, position, count);
     }
@@ -85,16 +85,16 @@ public class SingleHistogramState
         return estimatedSize;
     }
 
-    void setTempSerializedState(SingleMapBlock tempSerializedState)
+    void setTempSerializedState(SqlMap tempSerializedState)
     {
         this.tempSerializedState = tempSerializedState;
     }
 
-    SingleMapBlock removeTempSerializedState()
+    SqlMap removeTempSerializedState()
     {
-        SingleMapBlock block = tempSerializedState;
-        checkState(block != null, "tempDeserializeBlock is null");
+        SqlMap sqlMap = tempSerializedState;
+        checkState(sqlMap != null, "tempDeserializeBlock is null");
         tempSerializedState = null;
-        return block;
+        return sqlMap;
     }
 }

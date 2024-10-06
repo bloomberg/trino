@@ -17,10 +17,14 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.testing.TestingHttpClient;
+import io.airlift.tracing.Tracing;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.FeaturesConfig.DataIntegrityVerification;
 import io.trino.exchange.DirectExchangeInput;
 import io.trino.exchange.ExchangeManagerRegistry;
@@ -38,6 +42,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -46,7 +51,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.SessionTestUtils.TEST_SESSION;
@@ -57,12 +61,12 @@ import static io.trino.operator.TestingTaskBuffer.PAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.TestingTaskContext.createTaskContext;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 @TestInstance(PER_CLASS)
+@Execution(SAME_THREAD)
 public class TestExchangeOperator
 {
     private static final List<Type> TYPES = ImmutableList.of(VARCHAR);
@@ -90,7 +94,7 @@ public class TestExchangeOperator
         pageBufferClientCallbackExecutor = Executors.newSingleThreadExecutor();
         httpClient = new TestingHttpClient(new TestingExchangeHttpClientHandler(taskBuffers, SERDE_FACTORY), scheduler);
 
-        directExchangeClientSupplier = (queryId, exchangeId, memoryContext, taskFailureListener, retryPolicy) -> new DirectExchangeClient(
+        directExchangeClientSupplier = (queryId, exchangeId, span, memoryContext, taskFailureListener, retryPolicy) -> new DirectExchangeClient(
                 "localhost",
                 DataIntegrityVerification.ABORT,
                 new StreamingDirectExchangeBuffer(scheduler, DataSize.of(32, MEGABYTE)),
@@ -173,9 +177,9 @@ public class TestExchangeOperator
         waitForPages(operator, 3);
 
         // verify state
-        assertEquals(operator.isFinished(), false);
-        assertEquals(operator.needsInput(), false);
-        assertEquals(operator.getOutput(), null);
+        assertThat(operator.isFinished()).isEqualTo(false);
+        assertThat(operator.needsInput()).isEqualTo(false);
+        assertThat(operator.getOutput()).isEqualTo(null);
 
         // add more pages and close the buffers
         taskBuffers.getUnchecked(TASK_1_ID).addPages(2, true);
@@ -206,9 +210,9 @@ public class TestExchangeOperator
         waitForPages(operator, 1);
 
         // verify state
-        assertEquals(operator.isFinished(), false);
-        assertEquals(operator.needsInput(), false);
-        assertEquals(operator.getOutput(), null);
+        assertThat(operator.isFinished()).isEqualTo(false);
+        assertThat(operator.needsInput()).isEqualTo(false);
+        assertThat(operator.getOutput()).isEqualTo(null);
 
         // add a buffer location
         operator.addSplit(newRemoteSplit(TASK_2_ID));
@@ -246,9 +250,9 @@ public class TestExchangeOperator
         waitForPages(operator, 3);
 
         // verify state
-        assertEquals(operator.isFinished(), false);
-        assertEquals(operator.needsInput(), false);
-        assertEquals(operator.getOutput(), null);
+        assertThat(operator.isFinished()).isEqualTo(false);
+        assertThat(operator.needsInput()).isEqualTo(false);
+        assertThat(operator.getOutput()).isEqualTo(null);
 
         // finish without closing buffers
         operator.finish();
@@ -265,7 +269,7 @@ public class TestExchangeOperator
                 directExchangeClientSupplier,
                 SERDE_FACTORY,
                 RetryPolicy.NONE,
-                new ExchangeManagerRegistry());
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())));
 
         DriverContext driverContext = createTaskContext(scheduler, scheduledExecutor, TEST_SESSION)
                 .addPipelineContext(0, true, true, false)
@@ -295,10 +299,10 @@ public class TestExchangeOperator
             }
             Thread.sleep(10);
         }
-        assertTrue(greaterThanZero);
+        assertThat(greaterThanZero).isTrue();
 
         while (outputPages.size() < expectedPageCount && System.nanoTime() < endTime) {
-            assertEquals(operator.needsInput(), false);
+            assertThat(operator.needsInput()).isEqualTo(false);
             if (operator.isFinished()) {
                 break;
             }
@@ -316,11 +320,11 @@ public class TestExchangeOperator
         Thread.sleep(10);
 
         // verify state
-        assertEquals(operator.needsInput(), false);
-        assertNull(operator.getOutput());
+        assertThat(operator.needsInput()).isEqualTo(false);
+        assertThat(operator.getOutput()).isNull();
 
         // verify pages
-        assertEquals(outputPages.size(), expectedPageCount);
+        assertThat(outputPages.size()).isEqualTo(expectedPageCount);
         for (Page page : outputPages) {
             assertPageEquals(TYPES, page, PAGE);
         }
@@ -334,8 +338,8 @@ public class TestExchangeOperator
         // wait for finished or until 10 seconds has passed
         long endTime = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
         while (System.nanoTime() - endTime < 0) {
-            assertEquals(operator.needsInput(), false);
-            assertNull(operator.getOutput());
+            assertThat(operator.needsInput()).isEqualTo(false);
+            assertThat(operator.getOutput()).isNull();
             if (operator.isFinished()) {
                 break;
             }
@@ -343,13 +347,13 @@ public class TestExchangeOperator
         }
 
         // verify final state
-        assertEquals(operator.isFinished(), true);
-        assertEquals(operator.needsInput(), false);
-        assertNull(operator.getOutput());
+        assertThat(operator.isFinished()).isEqualTo(true);
+        assertThat(operator.needsInput()).isEqualTo(false);
+        assertThat(operator.getOutput()).isNull();
 
         operator.close();
         operator.getOperatorContext().destroy();
 
-        assertEquals(getOnlyElement(operator.getOperatorContext().getNestedOperatorStats()).getUserMemoryReservation().toBytes(), 0);
+        assertThat(operator.getOperatorContext().getOperatorStats().getUserMemoryReservation().toBytes()).isEqualTo(0);
     }
 }

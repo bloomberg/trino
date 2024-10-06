@@ -5,14 +5,14 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>429-SNAPSHOT</version>
+        <version>461-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-jdbc</artifactId>
+    <description>Trino - JDBC driver</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <project.build.targetJdk>8</project.build.targetJdk>
         <shadeBase>io.trino.jdbc.\$internal</shadeBase>
     </properties>
@@ -66,6 +66,12 @@
         <dependency>
             <groupId>io.opentelemetry.instrumentation</groupId>
             <artifactId>opentelemetry-okhttp-3.0</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -76,6 +82,8 @@
         <dependency>
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
+            <!-- JDK8 support dropped by version 3.0.0+ -->
+            <version>2.1.1</version>
         </dependency>
 
         <dependency>
@@ -90,6 +98,18 @@
         </dependency>
 
         <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-context</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
             <scope>test</scope>
@@ -98,7 +118,6 @@
         <dependency>
             <groupId>com.oracle.database.jdbc</groupId>
             <artifactId>ojdbc11</artifactId>
-            <version>${dep.oracle.version}</version>
             <scope>test</scope>
         </dependency>
 
@@ -129,6 +148,12 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>json</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>junit-extensions</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -175,6 +200,24 @@
         </dependency>
 
         <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-trace</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-blackhole</artifactId>
             <scope>test</scope>
@@ -182,7 +225,13 @@
 
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-hive-hadoop2</artifactId>
+            <artifactId>trino-hdfs</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-hive</artifactId>
             <scope>test</scope>
             <exclusions>
                 <exclusion>
@@ -218,6 +267,12 @@
 
         <dependency>
             <groupId>io.trino</groupId>
+            <artifactId>trino-plugin-toolkit</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
             <artifactId>trino-spi</artifactId>
             <scope>test</scope>
         </dependency>
@@ -241,6 +296,12 @@
         </dependency>
 
         <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>jakarta.ws.rs</groupId>
             <artifactId>jakarta.ws.rs-api</artifactId>
             <scope>test</scope>
@@ -253,8 +314,14 @@
         </dependency>
 
         <dependency>
-            <groupId>org.eclipse.jetty.toolchain</groupId>
-            <artifactId>jetty-jakarta-servlet-api</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -350,11 +417,6 @@
                         <artifactId>surefire-testng</artifactId>
                         <version>${dep.plugin.surefire.version}</version>
                     </dependency>
-                    <dependency>
-                        <groupId>org.junit.jupiter</groupId>
-                        <artifactId>junit-jupiter-engine</artifactId>
-                        <version>${dep.junit.version}</version>
-                    </dependency>
                 </dependencies>
             </plugin>
 
@@ -374,6 +436,10 @@
                                 <relocation>
                                     <pattern>io.trino.client</pattern>
                                     <shadedPattern>${shadeBase}.client</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>io.opentelemetry.instrumentation.okhttp.v3_0</pattern>
+                                    <shadedPattern>${shadeBase}.opentelemetry.okhttp.v3_0</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>com.fasterxml.jackson</pattern>
@@ -396,20 +462,16 @@
                                     <shadedPattern>${shadeBase}.jakarta.annotation</shadedPattern>
                                 </relocation>
                                 <relocation>
+                                    <pattern>net.bytebuddy</pattern>
+                                    <shadedPattern>${shadeBase}.net.bytebuddy</shadedPattern>
+                                </relocation>
+                                <relocation>
                                     <pattern>org.joda.time</pattern>
                                     <shadedPattern>${shadeBase}.joda.time</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>okhttp3</pattern>
                                     <shadedPattern>${shadeBase}.okhttp3</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>io.opentelemetry.extension</pattern>
-                                    <shadedPattern>${shadeBase}.opentelemetry.extension</shadedPattern>
-                                </relocation>
-                                <relocation>
-                                    <pattern>io.opentelemetry.instrumentation</pattern>
-                                    <shadedPattern>${shadeBase}.opentelemetry.instrumentation</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>okio</pattern>
@@ -438,6 +500,7 @@
                                         <exclude>org/intellij/**</exclude>
                                         <exclude>com/google/errorprone/**</exclude>
                                         <exclude>META-INF/maven/**</exclude>
+                                        <exclude>META-INF/licenses/**</exclude>
                                         <exclude>META-INF/services/com.fasterxml.**</exclude>
                                         <exclude>META-INF/proguard/**</exclude>
                                         <exclude>LICENSE</exclude>
@@ -450,6 +513,10 @@
                                         <exclude>META-INF/io/opentelemetry/**</exclude>
                                         <exclude>io/opentelemetry/semconv/**</exclude>
                                         <exclude>META-INF/native-image/**</exclude>
+                                        <exclude>META-INF/kotlin-project-structure-metadata.json</exclude>
+                                        <exclude>**/*.knm</exclude>
+                                        <exclude>**/manifest</exclude>
+                                        <exclude>**/module</exclude>
                                     </excludes>
                                 </filter>
                             </filters>

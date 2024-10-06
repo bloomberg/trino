@@ -24,11 +24,12 @@ import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.expression.ConnectorExpression;
-import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.Type;
 
@@ -37,6 +38,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -65,6 +67,10 @@ public interface JdbcClient
 
     List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle);
 
+    Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema);
+
+    List<RelationCommentMetadata> getAllTableComments(ConnectorSession session, Optional<String> schema);
+
     Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle);
 
     /**
@@ -90,6 +96,11 @@ public interface JdbcClient
     }
 
     default Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return Optional.empty();
+    }
+
+    default Optional<JdbcExpression> convertProjection(ConnectorSession session, JdbcTableHandle handle, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return Optional.empty();
     }
@@ -124,6 +135,17 @@ public interface JdbcClient
             throws SQLException;
 
     Optional<PreparedQuery> implementJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions,
+            JoinStatistics statistics);
+
+    @Deprecated
+    Optional<PreparedQuery> legacyImplementJoin(
             ConnectorSession session,
             JoinType joinType,
             PreparedQuery leftSource,
@@ -168,6 +190,8 @@ public interface JdbcClient
 
     void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type);
 
+    void dropNotNullConstraint(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column);
+
     void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName);
 
     default void setTableProperties(ConnectorSession session, JdbcTableHandle handle, Map<String, Optional<Object>> properties)
@@ -193,22 +217,16 @@ public interface JdbcClient
 
     String buildInsertSql(JdbcOutputTableHandle handle, List<WriteFunction> columnWriters);
 
+    Connection getConnection(ConnectorSession session)
+            throws SQLException;
+
     Connection getConnection(ConnectorSession session, JdbcOutputTableHandle handle)
             throws SQLException;
 
     PreparedStatement getPreparedStatement(Connection connection, String sql, Optional<Integer> columnCount)
             throws SQLException;
 
-    /**
-     * @deprecated Use {@link #getTableStatistics(ConnectorSession, JdbcTableHandle)}
-     */
-    @Deprecated
-    TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle, TupleDomain<ColumnHandle> tupleDomain);
-
-    default TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle)
-    {
-        return getTableStatistics(session, handle, TupleDomain.all());
-    }
+    TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle);
 
     void createSchema(ConnectorSession session, String schemaName);
 
@@ -239,4 +257,9 @@ public interface JdbcClient
     OptionalLong update(ConnectorSession session, JdbcTableHandle handle);
 
     OptionalInt getMaxWriteParallelism(ConnectorSession session);
+
+    default OptionalInt getMaxColumnNameLength(ConnectorSession session)
+    {
+        return OptionalInt.empty();
+    }
 }

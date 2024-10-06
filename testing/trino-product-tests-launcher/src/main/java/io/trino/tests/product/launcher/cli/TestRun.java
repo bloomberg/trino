@@ -32,7 +32,6 @@ import io.trino.tests.product.launcher.env.EnvironmentFactory;
 import io.trino.tests.product.launcher.env.EnvironmentModule;
 import io.trino.tests.product.launcher.env.EnvironmentOptions;
 import io.trino.tests.product.launcher.env.jdk.JdkProvider;
-import io.trino.tests.product.launcher.env.jdk.JdkProviderFactory;
 import io.trino.tests.product.launcher.testcontainers.ExistingNetwork;
 import picocli.CommandLine.ExitCode;
 import picocli.CommandLine.Mixin;
@@ -177,7 +176,7 @@ public final class TestRun
         @Inject
         public Execution(
                 EnvironmentFactory environmentFactory,
-                JdkProviderFactory jdkProviderFactory,
+                JdkProvider jdkProvider,
                 EnvironmentOptions environmentOptions,
                 EnvironmentConfig environmentConfig,
                 TestRunOptions testRunOptions,
@@ -187,7 +186,7 @@ public final class TestRun
             requireNonNull(environmentOptions, "environmentOptions is null");
             this.debug = environmentOptions.debug;
             this.debugSuspend = testRunOptions.debugSuspend;
-            this.jdkProvider = jdkProviderFactory.get(requireNonNull(environmentOptions.jdkProvider, "environmentOptions.jdkProvider is null"));
+            this.jdkProvider = requireNonNull(jdkProvider, "jdkProvider is null");
             this.testJar = requireNonNull(testRunOptions.testJar, "testRunOptions.testJar is null");
             this.cliJar = requireNonNull(testRunOptions.cliJar, "testRunOptions.cliJar is null");
             this.testArguments = ImmutableList.copyOf(requireNonNull(testRunOptions.testArguments, "testRunOptions.testArguments is null"));
@@ -235,7 +234,7 @@ public final class TestRun
                 log.info("Tests execution completed with code %d", exitCode);
                 return exitCode;
             }
-            catch (TimeoutExceededException ignored) {
+            catch (TimeoutExceededException _) {
                 log.error("Test execution exceeded timeout of %s", timeout);
             }
             catch (Throwable e) {
@@ -266,7 +265,7 @@ public final class TestRun
             if (impactedFeatures.isEmpty()) {
                 return true;
             }
-            if (impactedFeatures.get().size() == 0) {
+            if (impactedFeatures.get().isEmpty()) {
                 return false;
             }
             Map<String, List<String>> featuresByName = impactedFeatures.get().stream().collect(groupingBy(feature -> {
@@ -345,18 +344,16 @@ public final class TestRun
                         // the test jar is hundreds MB and file system bind is much more efficient
                         .withFileSystemBind(testJar.getPath(), "/docker/test.jar", READ_ONLY)
                         .withFileSystemBind(cliJar.getPath(), "/docker/trino-cli", READ_ONLY)
-                        .withCopyFileToContainer(forClasspathResource("docker/presto-product-tests/common/standard/set-trino-cli.sh"), "/etc/profile.d/set-trino-cli.sh")
+                        .withCopyFileToContainer(forClasspathResource("docker/trino-product-tests/common/standard/set-trino-cli.sh"), "/etc/profile.d/set-trino-cli.sh")
                         .withEnv("JAVA_HOME", jdkProvider.getJavaHome())
                         .withCommand(ImmutableList.<String>builder()
                                 .add(
                                         jdkProvider.getJavaCommand(),
                                         "-Xmx1g",
-                                        // Force Parallel GC to ensure MaxHeapFreeRatio is respected
-                                        "-XX:+UseParallelGC",
-                                        "-XX:MinHeapFreeRatio=10",
-                                        "-XX:MaxHeapFreeRatio=50",
-                                        "-Djava.util.logging.config.file=/docker/presto-product-tests/conf/tempto/logging.properties",
+                                        "-Djava.util.logging.config.file=/docker/trino-product-tests/conf/tempto/logging.properties",
                                         "-Duser.timezone=Asia/Kathmandu",
+                                        // https://bugs.openjdk.org/browse/JDK-8327134
+                                        "-Djava.security.manager=allow",
                                         // Tempto has progress logging built in
                                         "-DProgressLoggingListener.enabled=false")
                                 .addAll(temptoJavaOptions)
@@ -364,7 +361,7 @@ public final class TestRun
                                         "-jar", "/docker/test.jar",
                                         "--config", String.join(",", ImmutableList.<String>builder()
                                                 .add("tempto-configuration.yaml") // this comes from classpath
-                                                .add("/docker/presto-product-tests/conf/tempto/tempto-configuration-for-docker-default.yaml")
+                                                .add("/docker/trino-product-tests/conf/tempto/tempto-configuration-for-docker-default.yaml")
                                                 .add(CONTAINER_TEMPTO_PROFILE_CONFIG)
                                                 .add(environmentConfig.getTemptoEnvironmentConfigFile())
                                                 .add(container.getEnvMap().getOrDefault("TEMPTO_CONFIG_FILES", "/dev/null"))

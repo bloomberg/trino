@@ -14,8 +14,8 @@
 package io.trino.type;
 
 import com.google.common.collect.ImmutableMap;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.ArrayType;
 import org.junit.jupiter.api.Test;
 
@@ -24,8 +24,8 @@ import java.util.List;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.util.StructuralTestUtil.arrayBlockOf;
-import static io.trino.util.StructuralTestUtil.mapBlockOf;
 import static io.trino.util.StructuralTestUtil.mapType;
+import static io.trino.util.StructuralTestUtil.sqlMapOf;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -39,19 +39,19 @@ public class TestArrayOfMapOfBigintVarcharType
         super(TYPE, List.class, createTestBlock());
     }
 
-    public static Block createTestBlock()
+    public static ValueBlock createTestBlock()
     {
         BlockBuilder blockBuilder = TYPE.createBlockBuilder(null, 4);
         TYPE.writeObject(blockBuilder, arrayBlockOf(TYPE.getElementType(),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(1, "hi")),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(2, "bye"))));
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(1, "hi")),
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(2, "bye"))));
         TYPE.writeObject(blockBuilder, arrayBlockOf(TYPE.getElementType(),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(1, "2", 2, "hello")),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(3, "4", 4, "bye"))));
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(1, "2", 2, "hello")),
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(3, "4", 4, "bye"))));
         TYPE.writeObject(blockBuilder, arrayBlockOf(TYPE.getElementType(),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(100, "hundred")),
-                mapBlockOf(BIGINT, VARCHAR, ImmutableMap.of(200, "two hundred"))));
-        return blockBuilder.build();
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(100, "hundred")),
+                sqlMapOf(BIGINT, VARCHAR, ImmutableMap.of(200, "two hundred"))));
+        return blockBuilder.buildValueBlock();
     }
 
     @Override

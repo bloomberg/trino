@@ -14,10 +14,15 @@
 package io.trino.operator;
 
 import com.google.common.base.Throwables;
+import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
+import io.trino.spi.block.DictionaryBlock;
+import io.trino.spi.block.LazyBlock;
+import io.trino.spi.block.RunLengthEncodedBlock;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.Type;
@@ -32,8 +37,8 @@ import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.operator.VariableWidthData.EMPTY_CHUNK;
 import static io.trino.operator.VariableWidthData.POINTER_SIZE;
 import static io.trino.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
-import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION_NOT_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.FLAT;
+import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.VALUE_BLOCK_POSITION_NOT_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FLAT_RETURN;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.NULLABLE_RETURN;
@@ -69,8 +74,8 @@ public class JoinDomainBuilder
     private final MethodHandle hashFlat;
     private final MethodHandle hashBlock;
 
-    private final MethodHandle distinctFlatFlat;
-    private final MethodHandle distinctFlatBlock;
+    private final MethodHandle identicalFlatFlat;
+    private final MethodHandle identicalFlatBlock;
 
     private final MethodHandle compareFlatFlat;
     private final MethodHandle compareBlockBlock;
@@ -88,8 +93,8 @@ public class JoinDomainBuilder
     private int distinctSize;
     private int distinctMaxFill;
 
-    private Block minValue;
-    private Block maxValue;
+    private ValueBlock minValue;
+    private ValueBlock maxValue;
 
     private boolean collectDistinctValues = true;
     private boolean collectMinMax;
@@ -116,15 +121,15 @@ public class JoinDomainBuilder
         MethodHandle readOperator = typeOperators.getReadValueOperator(type, simpleConvention(NULLABLE_RETURN, FLAT));
         readOperator = readOperator.asType(readOperator.type().changeReturnType(Object.class));
         this.readFlat = readOperator;
-        this.writeFlat = typeOperators.getReadValueOperator(type, simpleConvention(FLAT_RETURN, BLOCK_POSITION_NOT_NULL));
+        this.writeFlat = typeOperators.getReadValueOperator(type, simpleConvention(FLAT_RETURN, VALUE_BLOCK_POSITION_NOT_NULL));
 
         this.hashFlat = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, FLAT));
-        this.hashBlock = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION_NOT_NULL));
-        this.distinctFlatFlat = typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
-        this.distinctFlatBlock = typeOperators.getDistinctFromOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, BLOCK_POSITION_NOT_NULL));
+        this.hashBlock = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, VALUE_BLOCK_POSITION_NOT_NULL));
+        this.identicalFlatFlat = typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
+        this.identicalFlatBlock = typeOperators.getIdenticalOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, VALUE_BLOCK_POSITION_NOT_NULL));
         if (collectMinMax) {
             this.compareFlatFlat = typeOperators.getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, FLAT, FLAT));
-            this.compareBlockBlock = typeOperators.getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION_NOT_NULL, BLOCK_POSITION_NOT_NULL));
+            this.compareBlockBlock = typeOperators.getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, VALUE_BLOCK_POSITION_NOT_NULL, VALUE_BLOCK_POSITION_NOT_NULL));
         }
         else {
             this.compareFlatFlat = null;
@@ -157,9 +162,22 @@ public class JoinDomainBuilder
 
     public void add(Block block)
     {
+        block = block.getLoadedBlock();
         if (collectDistinctValues) {
-            for (int position = 0; position < block.getPositionCount(); ++position) {
-                add(block, position);
+            switch (block) {
+                case ValueBlock valueBlock -> {
+                    for (int position = 0; position < block.getPositionCount(); position++) {
+                        add(valueBlock, position);
+                    }
+                }
+                case RunLengthEncodedBlock rleBlock -> add(rleBlock.getValue(), 0);
+                case DictionaryBlock dictionaryBlock -> {
+                    ValueBlock dictionary = dictionaryBlock.getDictionary();
+                    for (int i = 0; i < dictionaryBlock.getPositionCount(); i++) {
+                        add(dictionary, dictionaryBlock.getId(i));
+                    }
+                }
+                case LazyBlock _ -> throw new VerifyException("Did not expect LazyBlock after loading " + block.getClass().getSimpleName());
             }
 
             // if the distinct size is too large, fall back to min max, and drop the distinct values
@@ -207,8 +225,10 @@ public class JoinDomainBuilder
             int minValuePosition = -1;
             int maxValuePosition = -1;
 
-            for (int position = 0; position < block.getPositionCount(); ++position) {
-                if (block.isNull(position)) {
+            ValueBlock valueBlock = block.getUnderlyingValueBlock();
+            for (int i = 0; i < block.getPositionCount(); i++) {
+                int position = block.getUnderlyingValuePosition(i);
+                if (valueBlock.isNull(position)) {
                     continue;
                 }
                 if (minValuePosition == -1) {
@@ -217,10 +237,10 @@ public class JoinDomainBuilder
                     maxValuePosition = position;
                     continue;
                 }
-                if (valueCompare(block, position, block, minValuePosition) < 0) {
+                if (valueCompare(valueBlock, position, valueBlock, minValuePosition) < 0) {
                     minValuePosition = position;
                 }
-                else if (valueCompare(block, position, block, maxValuePosition) > 0) {
+                else if (valueCompare(valueBlock, position, valueBlock, maxValuePosition) > 0) {
                     maxValuePosition = position;
                 }
             }
@@ -231,18 +251,18 @@ public class JoinDomainBuilder
             }
 
             if (minValue == null) {
-                minValue = block.getSingleValueBlock(minValuePosition);
-                maxValue = block.getSingleValueBlock(maxValuePosition);
+                minValue = valueBlock.getSingleValueBlock(minValuePosition);
+                maxValue = valueBlock.getSingleValueBlock(maxValuePosition);
                 return;
             }
-            if (valueCompare(block, minValuePosition, minValue, 0) < 0) {
+            if (valueCompare(valueBlock, minValuePosition, minValue, 0) < 0) {
                 retainedSizeInBytes -= minValue.getRetainedSizeInBytes();
-                minValue = block.getSingleValueBlock(minValuePosition);
+                minValue = valueBlock.getSingleValueBlock(minValuePosition);
                 retainedSizeInBytes += minValue.getRetainedSizeInBytes();
             }
-            if (valueCompare(block, maxValuePosition, maxValue, 0) > 0) {
+            if (valueCompare(valueBlock, maxValuePosition, maxValue, 0) > 0) {
                 retainedSizeInBytes -= maxValue.getRetainedSizeInBytes();
-                maxValue = block.getSingleValueBlock(maxValuePosition);
+                maxValue = valueBlock.getSingleValueBlock(maxValuePosition);
                 retainedSizeInBytes += maxValue.getRetainedSizeInBytes();
             }
         }
@@ -289,7 +309,7 @@ public class JoinDomainBuilder
         return Domain.all(type);
     }
 
-    private void add(Block block, int position)
+    private void add(ValueBlock block, int position)
     {
         // Inner and right join doesn't match rows with null key column values.
         if (block.isNull(position)) {
@@ -334,7 +354,7 @@ public class JoinDomainBuilder
         while (controlMatches != 0) {
             int slot = Long.numberOfTrailingZeros(controlMatches) >>> 3;
             int bucket = bucket(vectorStartBucket + slot);
-            if (valueNotDistinctFrom(bucket, otherValues, otherVariableWidthData, position)) {
+            if (valueIdentical(bucket, otherValues, otherVariableWidthData, position)) {
                 return bucket;
             }
 
@@ -343,12 +363,12 @@ public class JoinDomainBuilder
         return -1;
     }
 
-    private int matchInVector(Block block, int position, int vectorStartBucket, long repeated, long controlVector)
+    private int matchInVector(ValueBlock block, int position, int vectorStartBucket, long repeated, long controlVector)
     {
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int bucket = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (valueNotDistinctFrom(bucket, block, position)) {
+            if (valueIdentical(bucket, block, position)) {
                 return bucket;
             }
 
@@ -367,7 +387,7 @@ public class JoinDomainBuilder
         return bucket(vectorStartBucket + slot);
     }
 
-    private void insert(int index, Block block, int position, byte hashPrefix)
+    private void insert(int index, ValueBlock block, int position, byte hashPrefix)
     {
         setControl(index, hashPrefix);
 
@@ -512,7 +532,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private Block readValueToBlock(int position)
+    private ValueBlock readValueToBlock(int position)
     {
         return writeNativeValue(type, readValueToObject(position));
     }
@@ -538,7 +558,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private long valueHashCode(Block right, int rightPosition)
+    private long valueHashCode(ValueBlock right, int rightPosition)
     {
         try {
             return (long) hashBlock.invokeExact(right, rightPosition);
@@ -549,7 +569,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftPosition, Block right, int rightPosition)
+    private boolean valueIdentical(int leftPosition, ValueBlock right, int rightPosition)
     {
         byte[] leftFixedRecordChunk = distinctRecords;
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -559,7 +579,7 @@ public class JoinDomainBuilder
         }
 
         try {
-            return !(boolean) distinctFlatBlock.invokeExact(
+            return (boolean) identicalFlatBlock.invokeExact(
                     leftFixedRecordChunk,
                     leftRecordOffset + distinctRecordValueOffset,
                     leftVariableWidthChunk,
@@ -572,7 +592,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftPosition, byte[] rightValues, VariableWidthData rightVariableWidthData, int rightPosition)
+    private boolean valueIdentical(int leftPosition, byte[] rightValues, VariableWidthData rightVariableWidthData, int rightPosition)
     {
         byte[] leftFixedRecordChunk = distinctRecords;
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -589,7 +609,7 @@ public class JoinDomainBuilder
         }
 
         try {
-            return !(boolean) distinctFlatFlat.invokeExact(
+            return (boolean) identicalFlatFlat.invokeExact(
                     leftFixedRecordChunk,
                     leftRecordOffset + distinctRecordValueOffset,
                     leftVariableWidthChunk,
@@ -603,7 +623,7 @@ public class JoinDomainBuilder
         }
     }
 
-    private int valueCompare(Block left, int leftPosition, Block right, int rightPosition)
+    private int valueCompare(ValueBlock left, int leftPosition, ValueBlock right, int rightPosition)
     {
         try {
             return (int) (long) compareBlockBlock.invokeExact(

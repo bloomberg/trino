@@ -18,6 +18,7 @@ import io.airlift.slice.Slices;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.VariableWidthBlock;
 import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.AbstractVariableWidthType;
@@ -44,13 +45,13 @@ public class Re2JRegexpType
     @Override
     public Object getObjectValue(ConnectorSession session, Block block, int position)
     {
-        throw new UnsupportedOperationException();
-    }
+        if (block.isNull(position)) {
+            return null;
+        }
 
-    @Override
-    public void appendTo(Block block, int position, BlockBuilder blockBuilder)
-    {
-        throw new UnsupportedOperationException();
+        VariableWidthBlock valueBlock = (VariableWidthBlock) block.getUnderlyingValueBlock();
+        int valuePosition = block.getUnderlyingValuePosition(position);
+        return valueBlock.getSlice(valuePosition).toStringUtf8();
     }
 
     @Override
@@ -60,7 +61,9 @@ public class Re2JRegexpType
             return null;
         }
 
-        Slice pattern = block.getSlice(position, 0, block.getSliceLength(position));
+        VariableWidthBlock valueBlock = (VariableWidthBlock) block.getUnderlyingValueBlock();
+        int valuePosition = block.getUnderlyingValuePosition(position);
+        Slice pattern = valueBlock.getSlice(valuePosition);
         try {
             return new Re2JRegexp(dfaStatesLimit, dfaRetries, pattern);
         }

@@ -13,9 +13,9 @@
  */
 package io.trino.testing;
 
-import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.UncheckedTimeoutException;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
@@ -42,35 +42,32 @@ import io.trino.sql.planner.plan.LimitNode;
 import io.trino.sql.planner.plan.OutputNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.TableScanNode;
+import io.trino.sql.query.QueryAssertions.QueryAssert;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
+import io.trino.testing.assertions.TrinoExceptionAssert;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TestView;
+import io.trino.tpch.TpchTable;
+import org.assertj.core.api.AssertProvider;
 import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.concurrent.Callable;
-import java.util.concurrent.CompletionService;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -88,9 +85,9 @@ import static com.google.common.util.concurrent.Uninterruptibles.sleepUninterrup
 import static io.airlift.concurrent.MoreFutures.tryGetFutureValue;
 import static io.airlift.units.Duration.nanosSince;
 import static io.trino.SystemSessionProperties.IGNORE_STATS_CALCULATOR_FAILURES;
-import static io.trino.SystemSessionProperties.LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD;
 import static io.trino.connector.informationschema.InformationSchemaTable.INFORMATION_SCHEMA;
 import static io.trino.server.testing.TestingSystemSessionProperties.TESTING_SESSION_TIME;
+import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH;
 import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.STALE;
@@ -101,7 +98,6 @@ import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static io.trino.sql.planner.planprinter.PlanPrinter.textLogicalPlan;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
@@ -110,6 +106,7 @@ import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ADD_COLUMN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ADD_COLUMN_WITH_COMMENT;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ADD_FIELD;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ADD_FIELD_IN_ARRAY;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ARRAY;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_COMMENT_ON_COLUMN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_COMMENT_ON_MATERIALIZED_VIEW_COLUMN;
@@ -117,8 +114,10 @@ import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_COMMENT_ON_TABL
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_COMMENT_ON_VIEW;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_COMMENT_ON_VIEW_COLUMN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_FEDERATED_MATERIALIZED_VIEW;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_FUNCTION;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_MATERIALIZED_VIEW;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_MATERIALIZED_VIEW_GRACE_PERIOD;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_OR_REPLACE_TABLE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_SCHEMA;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_TABLE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT;
@@ -129,6 +128,8 @@ import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DELETE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DEREFERENCE_PUSHDOWN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DROP_COLUMN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DROP_FIELD;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DROP_FIELD_IN_ARRAY;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DROP_NOT_NULL_CONSTRAINT;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_DROP_SCHEMA_CASCADE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_INSERT;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_MATERIALIZED_VIEW_FRESHNESS_FROM_BASE_TABLES;
@@ -149,12 +150,13 @@ import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ROW_LEVEL_UPDAT
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_ROW_TYPE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_SET_COLUMN_TYPE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_SET_FIELD_TYPE;
+import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_SET_FIELD_TYPE_IN_ARRAY;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_TOPN_PUSHDOWN;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_TRUNCATE;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_UPDATE;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.assertions.Assert.assertEventually;
-import static io.trino.testing.assertions.TestUtil.verifyResultOrFailure;
+import static io.trino.tpch.TpchTable.CUSTOMER;
 import static java.lang.String.format;
 import static java.lang.String.join;
 import static java.lang.Thread.currentThread;
@@ -169,12 +171,9 @@ import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Fail.fail;
 import static org.assertj.core.api.InstanceOfAssertFactories.ZONED_DATE_TIME;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 /**
  * Generic test for connectors.
@@ -184,9 +183,14 @@ public abstract class BaseConnectorTest
 {
     private static final Logger log = Logger.get(BaseConnectorTest.class);
 
+    protected static final List<TpchTable<?>> REQUIRED_TPCH_TABLES = ImmutableSet.<TpchTable<?>>builder()
+            .addAll(AbstractTestQueries.REQUIRED_TPCH_TABLES)
+            .add(CUSTOMER)
+            .build().asList();
+
     private final ConcurrentMap<String, Function<ConnectorSession, List<String>>> mockTableListings = new ConcurrentHashMap<>();
 
-    @BeforeClass
+    @BeforeAll
     public void initMockCatalog()
     {
         QueryRunner queryRunner = getQueryRunner();
@@ -223,8 +227,7 @@ public abstract class BaseConnectorTest
     }
 
     /**
-     * Ensure the tests are run with {@link DistributedQueryRunner}. E.g. {@link LocalQueryRunner} takes some
-     * shortcuts, not exercising certain aspects.
+     * Ensure the tests are run with {@link io.trino.testing.DistributedQueryRunner} with multiple workers.
      */
     @Test
     public void ensureDistributedQueryRunner()
@@ -466,6 +469,13 @@ public abstract class BaseConnectorTest
         assertQuery(
                 "SELECT count(*) FROM (SELECT count(*) FROM nation UNION ALL SELECT count(*) FROM region)",
                 "VALUES 2");
+
+        // HAVING, i.e. filter after aggregation
+        assertQuery("SELECT count(*) FROM nation HAVING count(*) = 25");
+        assertQuery("SELECT regionkey, count(*) FROM nation GROUP BY regionkey HAVING count(*) = 5");
+        assertQuery(
+                "SELECT regionkey, count(*) FROM nation GROUP BY GROUPING SETS ((), (regionkey)) HAVING count(*) IN (5, 25)",
+                "(SELECT NULL, count(*) FROM nation) UNION ALL (SELECT regionkey, count(*) FROM nation GROUP BY regionkey)");
     }
 
     @Test
@@ -528,7 +538,7 @@ public abstract class BaseConnectorTest
         assertQuery("" +
                 "SELECT orderkey, custkey, orderstatus, totalprice, orderdate, orderpriority, clerk, shippriority, comment " +
                 "FROM orders " +
-                "WHERE orderkey BETWEEN 10 AND 50");
+                "WHERE orderkey BETWEEN 10 AND 50 OR orderkey BETWEEN 100 AND 150");
     }
 
     @Test
@@ -604,30 +614,30 @@ public abstract class BaseConnectorTest
                 "varchar_as_date_pred",
                 "(a varchar)",
                 List.of("'2005-06-bad-date'", "'2005-09-10'"))) {
-            assertThatThrownBy(() -> query("SELECT a FROM %s WHERE CAST(a AS date) < DATE '2005-09-10'".formatted(table.getName())))
-                    .hasMessage("Value cannot be cast to date: 2005-06-bad-date");
+            assertThat(query("SELECT a FROM %s WHERE CAST(a AS date) < DATE '2005-09-10'".formatted(table.getName())))
+                    .failure().hasMessage("Value cannot be cast to date: 2005-06-bad-date");
             verifyResultOrFailure(
-                    () -> query("SELECT a FROM %s WHERE CAST(a AS date) = DATE '2005-09-10'".formatted(table.getName())),
-                    queryAssert -> assertThat(queryAssert)
+                    query("SELECT a FROM %s WHERE CAST(a AS date) = DATE '2005-09-10'".formatted(table.getName())),
+                    queryAssert -> queryAssert
                             .skippingTypesCheck()
                             .matches("VALUES '2005-09-10'"),
-                    failure -> assertThat(failure)
+                    failureAssert -> failureAssert
                             .hasMessage("Value cannot be cast to date: 2005-06-bad-date"));
             // This failure isn't guaranteed: a row may be filtered out on the connector side with a derived predicate on a varchar column.
             verifyResultOrFailure(
-                    () -> query("SELECT a FROM %s WHERE CAST(a AS date) != DATE '2005-9-1'".formatted(table.getName())),
-                    queryAssert -> assertThat(queryAssert)
+                    query("SELECT a FROM %s WHERE CAST(a AS date) != DATE '2005-9-1'".formatted(table.getName())),
+                    queryAssert -> queryAssert
                             .skippingTypesCheck()
                             .matches("VALUES '2005-09-10'"),
-                    failure -> assertThat(failure)
+                    failureAssert -> failureAssert
                             .hasMessage("Value cannot be cast to date: 2005-06-bad-date"));
             // This failure isn't guaranteed: a row may be filtered out on the connector side with a derived predicate on a varchar column.
             verifyResultOrFailure(
-                    () -> query("SELECT a FROM %s WHERE CAST(a AS date) > DATE '2022-08-10'".formatted(table.getName())),
-                    queryAssert -> assertThat(queryAssert)
+                    query("SELECT a FROM %s WHERE CAST(a AS date) > DATE '2022-08-10'".formatted(table.getName())),
+                    queryAssert -> queryAssert
                             .skippingTypesCheck()
                             .returnsEmptyResult(),
-                    failure -> assertThat(failure)
+                    failureAssert -> failureAssert
                             .hasMessage("Value cannot be cast to date: 2005-06-bad-date"));
         }
         try (TestTable table = new TestTable(
@@ -640,6 +650,22 @@ public abstract class BaseConnectorTest
                     .skippingTypesCheck()
                     .matches("VALUES '2005-09-10'");
         }
+    }
+
+    private static void verifyResultOrFailure(AssertProvider<QueryAssert> queryAssertProvider, Consumer<QueryAssert> verifyResults, Consumer<TrinoExceptionAssert> verifyFailure)
+    {
+        requireNonNull(verifyResults, "verifyResults is null");
+        requireNonNull(verifyFailure, "verifyFailure is null");
+
+        QueryAssert queryAssert = assertThat(queryAssertProvider);
+        try {
+            var ignored = queryAssert.result();
+        }
+        catch (Throwable t) {
+            verifyFailure.accept(queryAssert.failure());
+            return;
+        }
+        verifyResults.accept(queryAssert);
     }
 
     @Test
@@ -668,13 +694,13 @@ public abstract class BaseConnectorTest
     @Test
     public void testSelectVersionOfNonExistentTable()
     {
+        String tableName = "foo_" + randomNameSuffix();
         String catalog = getSession().getCatalog().orElseThrow();
         String schema = getSession().getSchema().orElseThrow();
-        String tableName = "foo_" + randomNameSuffix();
-        assertThatThrownBy(() -> query("SELECT * FROM " + tableName + " FOR TIMESTAMP AS OF TIMESTAMP '2021-03-01 00:00:01'"))
-                .hasMessage(format("line 1:15: Table '%s.%s.%s' does not exist", catalog, schema, tableName));
-        assertThatThrownBy(() -> query("SELECT * FROM " + tableName + " FOR VERSION AS OF 'version1'"))
-                .hasMessage(format("line 1:15: Table '%s.%s.%s' does not exist", catalog, schema, tableName));
+        assertThat(query("SELECT * FROM " + tableName + " FOR TIMESTAMP AS OF TIMESTAMP '2021-03-01 00:00:01'"))
+                .failure().hasMessageMatching("line 1:15: Table '%s.%s.%s' does not exist|This connector does not support versioned tables".formatted(catalog, schema, tableName));
+        assertThat(query("SELECT * FROM " + tableName + " FOR VERSION AS OF 'version1'"))
+                .failure().hasMessageMatching("line 1:15: Table '%s.%s.%s' does not exist|This connector does not support versioned tables".formatted(catalog, schema, tableName));
     }
 
     /**
@@ -724,23 +750,18 @@ public abstract class BaseConnectorTest
     /**
      * Test interactions between optimizer (including CBO), scheduling and connector metadata APIs.
      */
-    @Test(dataProvider = "joinDistributionTypes")
-    public void testJoinWithEmptySides(JoinDistributionType joinDistributionType)
+    @Test
+    public void testJoinWithEmptySides()
     {
-        Session session = noJoinReordering(joinDistributionType);
-        // empty build side
-        assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.name = ''", "VALUES 0");
-        assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.regionkey < 0", "VALUES 0");
-        // empty probe side
-        assertQuery(session, "SELECT count(*) FROM region JOIN nation ON nation.regionkey = region.regionkey AND region.name = ''", "VALUES 0");
-        assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.regionkey < 0", "VALUES 0");
-    }
-
-    @DataProvider
-    public Object[][] joinDistributionTypes()
-    {
-        return Stream.of(JoinDistributionType.values())
-                .collect(toDataProvider());
+        for (JoinDistributionType joinDistributionType : JoinDistributionType.values()) {
+            Session session = noJoinReordering(joinDistributionType);
+            // empty build side
+            assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.name = ''", "VALUES 0");
+            assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.regionkey < 0", "VALUES 0");
+            // empty probe side
+            assertQuery(session, "SELECT count(*) FROM region JOIN nation ON nation.regionkey = region.regionkey AND region.name = ''", "VALUES 0");
+            assertQuery(session, "SELECT count(*) FROM nation JOIN region ON nation.regionkey = region.regionkey AND region.regionkey < 0", "VALUES 0");
+        }
     }
 
     /**
@@ -783,7 +804,7 @@ public abstract class BaseConnectorTest
     public void testDescribeTable()
     {
         // TODO: this is redundant with testShowColumns()
-        assertThat(query("DESCRIBE orders")).matches(getDescribeOrdersResult());
+        assertThat(query("DESCRIBE orders")).result().matches(getDescribeOrdersResult());
     }
 
     protected MaterializedResult getDescribeOrdersResult()
@@ -901,11 +922,13 @@ public abstract class BaseConnectorTest
 
         // column listing
         assertThat(query("SHOW COLUMNS FROM " + testView))
+                .result()
                 .projected("Column") // column types can very between connectors
                 .skippingTypesCheck()
                 .matches("VALUES 'orderkey', 'orderstatus', 'half'");
 
         assertThat(query("DESCRIBE " + testView))
+                .result()
                 .projected("Column") // column types can very between connectors
                 .skippingTypesCheck()
                 .matches("VALUES 'orderkey', 'orderstatus', 'half'");
@@ -1029,10 +1052,10 @@ public abstract class BaseConnectorTest
         assertThat((String) computeScalar("SHOW CREATE MATERIALIZED VIEW " + viewWithComment)).contains("COMMENT 'mv_comment'");
         assertThat(query(
                 "SELECT table_name, comment FROM system.metadata.table_comments " +
-                        "WHERE catalog_name = '" + view.getCatalogName() + "' AND " +
-                        "schema_name = '" + view.getSchemaName() + "'"))
+                        "WHERE catalog_name = '" + view.catalogName() + "' AND " +
+                        "schema_name = '" + view.schemaName() + "'"))
                 .skippingTypesCheck()
-                .containsAll("VALUES ('" + view.getObjectName() + "', null), ('" + viewWithComment.getObjectName() + "', 'mv_comment')");
+                .containsAll("VALUES ('" + view.objectName() + "', null), ('" + viewWithComment.objectName() + "', 'mv_comment')");
 
         // reading
         assertThat(query("SELECT * FROM " + view))
@@ -1045,40 +1068,42 @@ public abstract class BaseConnectorTest
         // table listing
         assertThat(query("SHOW TABLES"))
                 .skippingTypesCheck()
-                .containsAll("VALUES '" + view.getObjectName() + "'");
+                .containsAll("VALUES '" + view.objectName() + "'");
         // information_schema.tables without table_name filter so that ConnectorMetadata.listViews is exercised
         assertThat(query(
                 "SELECT table_name, table_type FROM information_schema.tables " +
-                        "WHERE table_schema = '" + view.getSchemaName() + "'"))
+                        "WHERE table_schema = '" + view.schemaName() + "'"))
                 .skippingTypesCheck()
-                .containsAll("VALUES ('" + view.getObjectName() + "', 'BASE TABLE')");
+                .containsAll("VALUES ('" + view.objectName() + "', 'BASE TABLE')");
         // information_schema.tables with table_name filter
         assertQuery(
                 "SELECT table_name, table_type FROM information_schema.tables " +
-                        "WHERE table_schema = '" + view.getSchemaName() + "' and table_name = '" + view.getObjectName() + "'",
-                "VALUES ('" + view.getObjectName() + "', 'BASE TABLE')");
+                        "WHERE table_schema = '" + view.schemaName() + "' and table_name = '" + view.objectName() + "'",
+                "VALUES ('" + view.objectName() + "', 'BASE TABLE')");
 
         // system.jdbc.tables without filter
         assertThat(query("SELECT table_schem, table_name, table_type FROM system.jdbc.tables"))
                 .skippingTypesCheck()
-                .containsAll("VALUES ('" + view.getSchemaName() + "', '" + view.getObjectName() + "', 'TABLE')");
+                .containsAll("VALUES ('" + view.schemaName() + "', '" + view.objectName() + "', 'TABLE')");
 
         // system.jdbc.tables with table prefix filter
         assertQuery(
                 "SELECT table_schem, table_name, table_type " +
                         "FROM system.jdbc.tables " +
-                        "WHERE table_cat = '" + view.getCatalogName() + "' AND " +
-                        "table_schem = '" + view.getSchemaName() + "' AND " +
-                        "table_name = '" + view.getObjectName() + "'",
-                "VALUES ('" + view.getSchemaName() + "', '" + view.getObjectName() + "', 'TABLE')");
+                        "WHERE table_cat = '" + view.catalogName() + "' AND " +
+                        "table_schem = '" + view.schemaName() + "' AND " +
+                        "table_name = '" + view.objectName() + "'",
+                "VALUES ('" + view.schemaName() + "', '" + view.objectName() + "', 'TABLE')");
 
         // column listing
-        assertThat(query("SHOW COLUMNS FROM " + view.getObjectName()))
+        assertThat(query("SHOW COLUMNS FROM " + view.objectName()))
+                .result()
                 .projected("Column") // column types can very between connectors
                 .skippingTypesCheck()
                 .matches("VALUES 'nationkey', 'name', 'regionkey', 'comment'");
 
-        assertThat(query("DESCRIBE " + view.getObjectName()))
+        assertThat(query("DESCRIBE " + view.objectName()))
+                .result()
                 .projected("Column") // column types can very between connectors
                 .skippingTypesCheck()
                 .matches("VALUES 'nationkey', 'name', 'regionkey', 'comment'");
@@ -1087,61 +1112,61 @@ public abstract class BaseConnectorTest
         assertThat(query(
                 "SELECT table_name, column_name " +
                         "FROM information_schema.columns " +
-                        "WHERE table_schema = '" + view.getSchemaName() + "'"))
+                        "WHERE table_schema = '" + view.schemaName() + "'"))
                 .skippingTypesCheck()
                 .containsAll(
-                        "SELECT * FROM (VALUES '" + view.getObjectName() + "') " +
+                        "SELECT * FROM (VALUES '" + view.objectName() + "') " +
                                 "CROSS JOIN UNNEST(ARRAY['nationkey', 'name', 'regionkey', 'comment'])");
 
         // information_schema.columns with table_name filter
         assertThat(query(
                 "SELECT table_name, column_name " +
                         "FROM information_schema.columns " +
-                        "WHERE table_schema = '" + view.getSchemaName() + "' and table_name = '" + view.getObjectName() + "'"))
+                        "WHERE table_schema = '" + view.schemaName() + "' and table_name = '" + view.objectName() + "'"))
                 .skippingTypesCheck()
                 .containsAll(
-                        "SELECT * FROM (VALUES '" + view.getObjectName() + "') " +
+                        "SELECT * FROM (VALUES '" + view.objectName() + "') " +
                                 "CROSS JOIN UNNEST(ARRAY['nationkey', 'name', 'regionkey', 'comment'])");
 
         // view-specific listings
-        assertThat(computeActual("SELECT table_name FROM information_schema.views WHERE table_schema = '" + view.getSchemaName() + "'").getOnlyColumnAsSet())
-                .doesNotContain(view.getObjectName());
-        assertThat(query("SELECT table_name FROM information_schema.views WHERE table_schema = '" + view.getSchemaName() + "' AND table_name = '" + view.getObjectName() + "'"))
+        assertThat(computeActual("SELECT table_name FROM information_schema.views WHERE table_schema = '" + view.schemaName() + "'").getOnlyColumnAsSet())
+                .doesNotContain(view.objectName());
+        assertThat(query("SELECT table_name FROM information_schema.views WHERE table_schema = '" + view.schemaName() + "' AND table_name = '" + view.objectName() + "'"))
                 .returnsEmptyResult();
 
         // materialized view-specific listings
-        assertThat(query("SELECT name FROM system.metadata.materialized_views WHERE catalog_name = '" + catalog + "' AND schema_name = '" + view.getSchemaName() + "'"))
-                .containsAll("VALUES VARCHAR '" + view.getObjectName() + "'");
+        assertThat(query("SELECT name FROM system.metadata.materialized_views WHERE catalog_name = '" + catalog + "' AND schema_name = '" + view.schemaName() + "'"))
+                .containsAll("VALUES VARCHAR '" + view.objectName() + "'");
 
         // system.jdbc.columns without filter
         assertThat(query("SELECT table_schem, table_name, column_name FROM system.jdbc.columns"))
                 .skippingTypesCheck()
                 .containsAll(
-                        "SELECT * FROM (VALUES ('" + view.getSchemaName() + "', '" + view.getObjectName() + "')) " +
+                        "SELECT * FROM (VALUES ('" + view.schemaName() + "', '" + view.objectName() + "')) " +
                                 "CROSS JOIN UNNEST(ARRAY['nationkey', 'name', 'regionkey', 'comment'])");
 
         // system.jdbc.columns with schema filter
         assertThat(query(
                 "SELECT table_schem, table_name, column_name " +
                         "FROM system.jdbc.columns " +
-                        "WHERE table_schem LIKE '%" + view.getSchemaName() + "%'"))
+                        "WHERE table_schem LIKE '%" + view.schemaName() + "%'"))
                 .skippingTypesCheck()
                 .containsAll(
-                        "SELECT * FROM (VALUES ('" + view.getSchemaName() + "', '" + view.getObjectName() + "')) " +
+                        "SELECT * FROM (VALUES ('" + view.schemaName() + "', '" + view.objectName() + "')) " +
                                 "CROSS JOIN UNNEST(ARRAY['nationkey', 'name', 'regionkey', 'comment'])");
 
         // system.jdbc.columns with table filter
         assertThat(query(
                 "SELECT table_schem, table_name, column_name " +
                         "FROM system.jdbc.columns " +
-                        "WHERE table_name LIKE '%" + view.getObjectName() + "%'"))
+                        "WHERE table_name LIKE '%" + view.objectName() + "%'"))
                 .skippingTypesCheck()
                 .containsAll(
-                        "SELECT * FROM (VALUES ('" + view.getSchemaName() + "', '" + view.getObjectName() + "')) " +
+                        "SELECT * FROM (VALUES ('" + view.schemaName() + "', '" + view.objectName() + "')) " +
                                 "CROSS JOIN UNNEST(ARRAY['nationkey', 'name', 'regionkey', 'comment'])");
 
         // details
-        assertThat(((String) computeScalar("SHOW CREATE MATERIALIZED VIEW " + view.getObjectName())))
+        assertThat(((String) computeScalar("SHOW CREATE MATERIALIZED VIEW " + view.objectName())))
                 .matches("(?s)" +
                         "CREATE MATERIALIZED VIEW \\Q" + view + "\\E" +
                         ".* AS\n" +
@@ -1154,32 +1179,32 @@ public abstract class BaseConnectorTest
         assertUpdate("DROP MATERIALIZED VIEW " + viewWithComment);
 
         // test filtering materialized views in system metadata table
-        assertThat(query(listMaterializedViewsSql("catalog_name = '" + view.getCatalogName() + "'")))
+        assertThat(query(listMaterializedViewsSql("catalog_name = '" + view.catalogName() + "'")))
                 .skippingTypesCheck()
                 .containsAll(getTestingMaterializedViewsResultRows(view, otherView));
 
         assertThat(query(
                 listMaterializedViewsSql(
-                        "catalog_name = '" + otherView.getCatalogName() + "'",
-                        "schema_name = '" + otherView.getSchemaName() + "'")))
+                        "catalog_name = '" + otherView.catalogName() + "'",
+                        "schema_name = '" + otherView.schemaName() + "'")))
                 .skippingTypesCheck()
                 .containsAll(getTestingMaterializedViewsResultRow(otherView, "sarcastic comment"));
 
         assertThat(query(
                 listMaterializedViewsSql(
-                        "catalog_name = '" + view.getCatalogName() + "'",
-                        "schema_name = '" + view.getSchemaName() + "'",
-                        "name = '" + view.getObjectName() + "'")))
+                        "catalog_name = '" + view.catalogName() + "'",
+                        "schema_name = '" + view.schemaName() + "'",
+                        "name = '" + view.objectName() + "'")))
                 .skippingTypesCheck()
                 .containsAll(getTestingMaterializedViewsResultRow(view, ""));
 
         assertThat(query(
-                listMaterializedViewsSql("schema_name LIKE '%" + view.getSchemaName() + "%'")))
+                listMaterializedViewsSql("schema_name LIKE '%" + view.schemaName() + "%'")))
                 .skippingTypesCheck()
                 .containsAll(getTestingMaterializedViewsResultRow(view, ""));
 
         assertThat(query(
-                listMaterializedViewsSql("name LIKE '%" + view.getObjectName() + "%'")))
+                listMaterializedViewsSql("name LIKE '%" + view.objectName() + "%'")))
                 .skippingTypesCheck()
                 .containsAll(getTestingMaterializedViewsResultRow(view, ""));
 
@@ -1192,9 +1217,9 @@ public abstract class BaseConnectorTest
         assertUpdate("DROP MATERIALIZED VIEW " + view);
         assertUpdate("DROP MATERIALIZED VIEW " + otherView);
 
-        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + view.getObjectName() + "'"));
-        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + otherView.getObjectName() + "'"));
-        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + viewWithComment.getObjectName() + "'"));
+        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + view.objectName() + "'"));
+        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + otherView.objectName() + "'"));
+        assertQueryReturnsEmptyResult(listMaterializedViewsSql("name = '" + viewWithComment.objectName() + "'"));
 
         assertUpdate("DROP SCHEMA " + otherSchema);
     }
@@ -1277,9 +1302,6 @@ public abstract class BaseConnectorTest
                 "test_base_table",
                 "AS TABLE region")) {
             Session defaultSession = getSession();
-            Session legacySession = Session.builder(defaultSession)
-                    .setSystemProperty(LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
-                    .build();
             Session futureSession = Session.builder(defaultSession)
                     // This gets ignored: .setStart(...)
                     .setSystemProperty(TESTING_SESSION_TIME, Instant.now().plus(1, ChronoUnit.DAYS).toString())
@@ -1303,7 +1325,6 @@ public abstract class BaseConnectorTest
             assertThat(getMaterializedViewFreshness(viewName)).isEqualTo(STALE);
             assertThat(getMaterializedViewLastFreshTime(viewName)).isEmpty();
             assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
-            assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
             assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
 
             ZonedDateTime beforeRefresh = ZonedDateTime.now();
@@ -1323,7 +1344,6 @@ public abstract class BaseConnectorTest
                         .get(ZONED_DATE_TIME).isBetween(beforeRefresh, afterRefresh);
             }
             assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-            assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
             assertThat(query(futureSession, "TABLE " + viewName))
                     .hasPlan(supportsFresh ? readFromStorageTable : readFromBaseTables)
                     .matches(initialResults);
@@ -1341,9 +1361,6 @@ public abstract class BaseConnectorTest
                             supportsFresh ? beforeModification : beforeRefresh,
                             supportsFresh ? afterModification : afterRefresh);
             assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-            assertThat(query(legacySession, "TABLE " + viewName))
-                    .hasPlan(supportsFresh ? readFromBaseTables : readFromStorageTable)
-                    .matches(supportsFresh ? updatedResults : initialResults);
             assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(updatedResults);
 
             assertUpdate("REFRESH MATERIALIZED VIEW " + viewName, 6);
@@ -1359,7 +1376,6 @@ public abstract class BaseConnectorTest
             }
 
             assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
-            assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
             assertThat(query(futureSession, "TABLE " + viewName))
                     .hasPlan(supportsFresh ? readFromStorageTable : readFromBaseTables)
                     .matches(updatedResults);
@@ -1386,9 +1402,6 @@ public abstract class BaseConnectorTest
         }
 
         Session defaultSession = getSession();
-        Session legacySession = Session.builder(defaultSession)
-                .setSystemProperty(LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
-                .build();
         Session futureSession = Session.builder(defaultSession)
                 // This gets ignored: .setStart(...)
                 .setSystemProperty(TESTING_SESSION_TIME, Instant.now().plus(1, ChronoUnit.DAYS).toString())
@@ -1413,7 +1426,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewFreshness(viewName)).isEqualTo(STALE);
                     assertThat(getMaterializedViewLastFreshTime(viewName)).isEmpty();
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
 
                     ZonedDateTime beforeRefresh = ZonedDateTime.now();
@@ -1425,7 +1437,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeRefresh, afterRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
 
                     // Change underlying state
@@ -1437,7 +1448,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeRefresh, afterRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
 
                     ZonedDateTime beforeSecondRefresh = ZonedDateTime.now();
@@ -1449,7 +1459,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeSecondRefresh, afterSecondRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
 
                     assertUpdate("DROP MATERIALIZED VIEW " + viewName);
@@ -1471,9 +1480,6 @@ public abstract class BaseConnectorTest
                 "GROUP BY table_name"; // GROUP BY so that it is easy to distinguish between inlined view and reading materialization
 
         Session defaultSession = getSession();
-        Session legacySession = Session.builder(defaultSession)
-                .setSystemProperty(LEGACY_MATERIALIZED_VIEW_GRACE_PERIOD, "true")
-                .build();
         Session futureSession = Session.builder(defaultSession)
                 // This gets ignored: .setStart(...)
                 .setSystemProperty(TESTING_SESSION_TIME, Instant.now().plus(1, ChronoUnit.DAYS).toString())
@@ -1500,7 +1506,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewFreshness(viewName)).isEqualTo(STALE);
                     assertThat(getMaterializedViewLastFreshTime(viewName)).isEmpty();
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
 
                     ZonedDateTime beforeRefresh = ZonedDateTime.now();
@@ -1512,7 +1517,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeRefresh, afterRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(initialResults);
 
                     // Change underlying state
@@ -1524,7 +1528,6 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeRefresh, afterRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(initialResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(updatedResults);
 
                     ZonedDateTime beforeSecondRefresh = ZonedDateTime.now();
@@ -1536,15 +1539,20 @@ public abstract class BaseConnectorTest
                     assertThat(getMaterializedViewLastFreshTime(viewName))
                             .get(ZONED_DATE_TIME).isBetween(beforeSecondRefresh, afterSecondRefresh);
                     assertThat(query(defaultSession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
-                    assertThat(query(legacySession, "TABLE " + viewName)).hasPlan(readFromStorageTable).matches(updatedResults);
                     assertThat(query(futureSession, "TABLE " + viewName)).hasPlan(readFromBaseTables).matches(updatedResults);
 
                     assertUpdate("DROP MATERIALIZED VIEW " + viewName);
                 });
     }
 
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testMaterializedViewBaseTableGone(boolean initialized)
+    @Test
+    public void testMaterializedViewBaseTableGone()
+    {
+        testMaterializedViewBaseTableGone(true);
+        testMaterializedViewBaseTableGone(false);
+    }
+
+    private void testMaterializedViewBaseTableGone(boolean initialized)
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW));
 
@@ -1670,8 +1678,15 @@ public abstract class BaseConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "testViewMetadataDataProvider")
-    public void testViewMetadata(String securityClauseInCreate, String securityClauseInShowCreate)
+    @Test
+    public void testViewMetadata()
+    {
+        testViewMetadata("", "DEFINER");
+        testViewMetadata(" SECURITY DEFINER", "DEFINER");
+        testViewMetadata(" SECURITY INVOKER", "INVOKER");
+    }
+
+    private void testViewMetadata(String securityClauseInCreate, String securityClauseInShowCreate)
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_VIEW));
 
@@ -1719,7 +1734,7 @@ public abstract class BaseConnectorTest
 
         // test SHOW COLUMNS
         assertThat(query("SHOW COLUMNS FROM " + viewName))
-                .matches(resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                .result().matches(resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
                         .row("x", "bigint", "", "")
                         .row("y", "varchar(3)", "", "")
                         .build());
@@ -1735,23 +1750,13 @@ public abstract class BaseConnectorTest
 
         actual = computeActual("SHOW CREATE VIEW " + viewName);
 
-        assertEquals(getOnlyElement(actual.getOnlyColumnAsSet()), expectedSql);
+        assertThat(getOnlyElement(actual.getOnlyColumnAsSet())).isEqualTo(expectedSql);
 
         actual = computeActual(format("SHOW CREATE VIEW %s.%s.%s", getSession().getCatalog().get(), getSession().getSchema().get(), viewName));
 
-        assertEquals(getOnlyElement(actual.getOnlyColumnAsSet()), expectedSql);
+        assertThat(getOnlyElement(actual.getOnlyColumnAsSet())).isEqualTo(expectedSql);
 
         assertUpdate("DROP VIEW " + viewName);
-    }
-
-    @DataProvider
-    public static Object[][] testViewMetadataDataProvider()
-    {
-        return new Object[][] {
-                {"", "DEFINER"},
-                {" SECURITY DEFINER", "DEFINER"},
-                {" SECURITY INVOKER", "INVOKER"},
-        };
     }
 
     @Test
@@ -1777,7 +1782,7 @@ public abstract class BaseConnectorTest
                 viewName);
         assertUpdate(ddl);
 
-        assertEquals(computeScalar("SHOW CREATE VIEW " + viewName), ddl);
+        assertThat(computeScalar("SHOW CREATE VIEW " + viewName)).isEqualTo(ddl);
 
         assertUpdate("DROP VIEW " + viewName);
     }
@@ -1812,8 +1817,8 @@ public abstract class BaseConnectorTest
         assertTestingMaterializedViewQuery(schema, renamedMaterializedView);
         // verify new name in the system.metadata.materialized_views
         assertQuery(session, "SELECT catalog_name, schema_name FROM system.metadata.materialized_views WHERE name = '" + renamedMaterializedView + "'",
-                format("VALUES ('%s', '%s')", originalMaterializedView.getCatalogName(), originalMaterializedView.getSchemaName()));
-        assertQueryReturnsEmptyResult(session, listMaterializedViewsSql("name = '" + originalMaterializedView.getObjectName() + "'"));
+                format("VALUES ('%s', '%s')", originalMaterializedView.catalogName(), originalMaterializedView.schemaName()));
+        assertQueryReturnsEmptyResult(session, listMaterializedViewsSql("name = '" + originalMaterializedView.objectName() + "'"));
 
         // rename with IF EXISTS on existing materialized view
         String testExistsMaterializedViewName = "test_materialized_view_rename_exists_" + randomNameSuffix();
@@ -1828,26 +1833,26 @@ public abstract class BaseConnectorTest
         String otherSchema = "rename_mv_other_schema_" + randomNameSuffix();
         assertUpdate(createSchemaSql(otherSchema));
         if (hasBehavior(SUPPORTS_RENAME_MATERIALIZED_VIEW_ACROSS_SCHEMAS)) {
-            assertUpdate(session, "ALTER MATERIALIZED VIEW " + uppercaseName + " RENAME TO " + otherSchema + "." + originalMaterializedView.getObjectName());
-            assertTestingMaterializedViewQuery(otherSchema, originalMaterializedView.getObjectName());
+            assertUpdate(session, "ALTER MATERIALIZED VIEW " + uppercaseName + " RENAME TO " + otherSchema + "." + originalMaterializedView.objectName());
+            assertTestingMaterializedViewQuery(otherSchema, originalMaterializedView.objectName());
 
-            assertUpdate(session, "DROP MATERIALIZED VIEW " + otherSchema + "." + originalMaterializedView.getObjectName());
+            assertUpdate(session, "DROP MATERIALIZED VIEW " + otherSchema + "." + originalMaterializedView.objectName());
         }
         else {
             assertQueryFails(
                     session,
-                    "ALTER MATERIALIZED VIEW " + uppercaseName + " RENAME TO " + otherSchema + "." + originalMaterializedView.getObjectName(),
+                    "ALTER MATERIALIZED VIEW " + uppercaseName + " RENAME TO " + otherSchema + "." + originalMaterializedView.objectName(),
                     "Materialized View rename across schemas is not supported");
             assertUpdate(session, "DROP MATERIALIZED VIEW " + uppercaseName);
         }
 
-        assertFalse(getQueryRunner().tableExists(session, originalMaterializedView.toString()));
-        assertFalse(getQueryRunner().tableExists(session, renamedMaterializedView));
-        assertFalse(getQueryRunner().tableExists(session, testExistsMaterializedViewName));
+        assertThat(getQueryRunner().tableExists(session, originalMaterializedView.toString())).isFalse();
+        assertThat(getQueryRunner().tableExists(session, renamedMaterializedView)).isFalse();
+        assertThat(getQueryRunner().tableExists(session, testExistsMaterializedViewName)).isFalse();
 
         // rename with IF EXISTS on NOT existing materialized view
         assertUpdate(session, "ALTER TABLE IF EXISTS " + originalMaterializedView + " RENAME TO " + renamedMaterializedView);
-        assertQueryReturnsEmptyResult(session, listMaterializedViewsSql("name = '" + originalMaterializedView.getObjectName() + "'"));
+        assertQueryReturnsEmptyResult(session, listMaterializedViewsSql("name = '" + originalMaterializedView.objectName() + "'"));
         assertQueryReturnsEmptyResult(session, listMaterializedViewsSql("name = '" + renamedMaterializedView + "'"));
     }
 
@@ -1870,9 +1875,9 @@ public abstract class BaseConnectorTest
     {
         return format(
                 "VALUES ('%s', '%s', '%s', '%s', 'SELECT *\nFROM\n  nation\n')",
-                materializedView.getCatalogName(),
-                materializedView.getSchemaName(),
-                materializedView.getObjectName(),
+                materializedView.catalogName(),
+                materializedView.schemaName(),
+                materializedView.objectName(),
                 comment);
     }
 
@@ -1885,13 +1890,13 @@ public abstract class BaseConnectorTest
         return format(
                 "VALUES ('%s', '%s', '%s', '', '%s')," +
                         "('%s', '%s', '%s', 'sarcastic comment', '%s')",
-                materializedView.getCatalogName(),
-                materializedView.getSchemaName(),
-                materializedView.getObjectName(),
+                materializedView.catalogName(),
+                materializedView.schemaName(),
+                materializedView.objectName(),
                 viewDefinitionSql,
-                otherMaterializedView.getCatalogName(),
-                otherMaterializedView.getSchemaName(),
-                otherMaterializedView.getObjectName(),
+                otherMaterializedView.catalogName(),
+                otherMaterializedView.schemaName(),
+                otherMaterializedView.objectName(),
                 viewDefinitionSql);
     }
 
@@ -1950,199 +1955,6 @@ public abstract class BaseConnectorTest
         assertUpdate("DROP MATERIALIZED VIEW " + materializedViewName);
     }
 
-    /**
-     * Test that reading table, column metadata, like {@code SHOW TABLES} or reading from {@code information_schema.views}
-     * does not fail when relations are concurrently created or dropped.
-     */
-    @Test(timeOut = 180_000)
-    public void testReadMetadataWithRelationsConcurrentModifications()
-            throws Exception
-    {
-        if (!hasBehavior(SUPPORTS_CREATE_TABLE) && !hasBehavior(SUPPORTS_CREATE_VIEW) && !hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW)) {
-            throw new SkipException("Cannot test");
-        }
-
-        int readIterations = 5;
-        // generous timeout as this is a generic test; typically should be faster
-        int testTimeoutSeconds = 150;
-
-        testReadMetadataWithRelationsConcurrentModifications(readIterations, testTimeoutSeconds);
-    }
-
-    protected void testReadMetadataWithRelationsConcurrentModifications(int readIterations, int testTimeoutSeconds)
-            throws Exception
-    {
-        Stopwatch testWatch = Stopwatch.createStarted();
-
-        int readerTasksCount = 6
-                + (hasBehavior(SUPPORTS_CREATE_VIEW) ? 1 : 0)
-                + (hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW) ? 1 : 0);
-        AtomicInteger incompleteReadTasks = new AtomicInteger(readerTasksCount);
-        List<Callable<Void>> readerTasks = new ArrayList<>();
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SHOW TABLES"));
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM information_schema.tables WHERE table_schema = CURRENT_SCHEMA"));
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA"));
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM system.jdbc.tables WHERE table_cat = CURRENT_CATALOG AND table_schem = CURRENT_SCHEMA"));
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM system.jdbc.columns WHERE table_cat = CURRENT_CATALOG AND table_schem = CURRENT_SCHEMA"));
-        readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM system.metadata.table_comments WHERE catalog_name = CURRENT_CATALOG AND schema_name = CURRENT_SCHEMA"));
-        if (hasBehavior(SUPPORTS_CREATE_VIEW)) {
-            readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM information_schema.views WHERE table_schema = CURRENT_SCHEMA"));
-        }
-        if (hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW)) {
-            readerTasks.add(queryRepeatedly(readIterations, incompleteReadTasks, "SELECT * FROM system.metadata.materialized_views WHERE catalog_name = CURRENT_CATALOG AND schema_name = CURRENT_SCHEMA"));
-        }
-        assertEquals(readerTasks.size(), readerTasksCount);
-
-        int writeTasksCount = 1
-                + (hasBehavior(SUPPORTS_CREATE_VIEW) ? 1 : 0)
-                + (hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW) ? 1 : 0);
-        writeTasksCount = 2 * writeTasksCount; // writes are scheduled twice
-        CountDownLatch writeTasksInitialized = new CountDownLatch(writeTasksCount);
-        Runnable writeInitialized = writeTasksInitialized::countDown;
-        AtomicBoolean aborted = new AtomicBoolean();
-        Supplier<Boolean> done = () -> aborted.get() || incompleteReadTasks.get() == 0;
-        List<Callable<Void>> writeTasks = new ArrayList<>();
-        writeTasks.add(createDropRepeatedly(writeInitialized, done, "concur_table", createTableSqlTemplateForConcurrentModifications(), "DROP TABLE %s"));
-        if (hasBehavior(SUPPORTS_CREATE_VIEW)) {
-            writeTasks.add(createDropRepeatedly(writeInitialized, done, "concur_view", "CREATE VIEW %s AS SELECT 1 a", "DROP VIEW %s"));
-        }
-        if (hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW)) {
-            writeTasks.add(createDropRepeatedly(writeInitialized, done, "concur_mview", "CREATE MATERIALIZED VIEW %s AS SELECT 1 a", "DROP MATERIALIZED VIEW %s"));
-        }
-        assertEquals(writeTasks.size() * 2, writeTasksCount);
-
-        ExecutorService executor = newFixedThreadPool(readerTasksCount + writeTasksCount);
-        try {
-            CompletionService<Void> completionService = new ExecutorCompletionService<>(executor);
-            submitTasks(writeTasks, completionService);
-            submitTasks(writeTasks, completionService); // twice to increase chances of catching problems
-            if (!writeTasksInitialized.await(testTimeoutSeconds, SECONDS)) {
-                Future<Void> someFailure = completionService.poll();
-                if (someFailure != null) {
-                    someFailure.get(); // non-blocking
-                }
-                fail("Setup failed");
-            }
-            submitTasks(readerTasks, completionService);
-            for (int i = 0; i < readerTasksCount + writeTasksCount; i++) {
-                long remainingTimeSeconds = testTimeoutSeconds - testWatch.elapsed(SECONDS);
-                Future<Void> future = completionService.poll(remainingTimeSeconds, SECONDS);
-                verifyNotNull(future, "Task did not completed before timeout; completed tasks: %s, current poll timeout: %s s", i, remainingTimeSeconds);
-                future.get(); // non-blocking
-            }
-        }
-        catch (Throwable failure) {
-            aborted.set(true);
-            executor.shutdownNow();
-            if (!executor.awaitTermination(10, SECONDS)) {
-                throw new AssertionError("Test threads did not complete. Leaving test threads behind may violate AbstractTestQueryFramework.checkQueryInfosFinal", failure);
-            }
-            throw failure;
-        }
-        finally {
-            executor.shutdownNow();
-        }
-        assertTrue(executor.awaitTermination(10, SECONDS));
-    }
-
-    @Language("SQL")
-    protected String createTableSqlTemplateForConcurrentModifications()
-    {
-        return "CREATE TABLE %s(a integer)";
-    }
-
-    /**
-     * Run {@code sql} query at least {@code minIterations} times and keep running until other tasks complete.
-     * {@code incompleteReadTasks} is used for orchestrating end of execution.
-     */
-    protected Callable<Void> queryRepeatedly(int minIterations, AtomicInteger incompleteReadTasks, @Language("SQL") String sql)
-    {
-        return new Callable<>()
-        {
-            @Override
-            public Void call()
-            {
-                boolean alwaysEmpty = true;
-                for (int i = 0; i < minIterations; i++) {
-                    MaterializedResult result = computeActual(sql);
-                    alwaysEmpty &= result.getRowCount() == 0;
-                }
-                if (alwaysEmpty) {
-                    fail(format("The results of [%s] are always empty after %s iterations, this may indicate test misconfiguration or broken connector behavior", sql, minIterations));
-                }
-                assertThat(incompleteReadTasks.decrementAndGet()).as("incompleteReadTasks").isGreaterThanOrEqualTo(0);
-                // Keep running so that faster test queries have same length of exposure in wall time
-                while (incompleteReadTasks.get() != 0) {
-                    computeActual(sql);
-                }
-                return null;
-            }
-
-            @Override
-            public String toString()
-            {
-                return format("Query(%s)", sql);
-            }
-        };
-    }
-
-    protected Callable<Void> createDropRepeatedly(Runnable initReady, Supplier<Boolean> done, String namePrefix, String createTemplate, String dropTemplate)
-    {
-        return new Callable<>()
-        {
-            @Override
-            public Void call()
-            {
-                int objectsToKeep = 3;
-                Deque<String> liveObjects = new ArrayDeque<>(objectsToKeep);
-                for (int i = 0; i < objectsToKeep; i++) {
-                    String name = namePrefix + "_" + randomNameSuffix();
-                    assertUpdate(format(createTemplate, name));
-                    liveObjects.addLast(name);
-                }
-                initReady.run();
-                while (!done.get()) {
-                    assertUpdate(format(dropTemplate, liveObjects.removeFirst()));
-                    String name = namePrefix + "_" + randomNameSuffix();
-                    assertUpdate(format(createTemplate, name));
-                    liveObjects.addLast(name);
-                }
-                while (!liveObjects.isEmpty()) {
-                    assertUpdate(format(dropTemplate, liveObjects.removeFirst()));
-                }
-                return null;
-            }
-
-            @Override
-            public String toString()
-            {
-                return format("Repeat (%s) and (%s)", createTemplate, dropTemplate);
-            }
-        };
-    }
-
-    protected <T> void submitTasks(List<Callable<T>> callables, CompletionService<T> completionService)
-    {
-        for (Callable<T> callable : callables) {
-            String taskDescription = callable.toString();
-            completionService.submit(new Callable<T>()
-            {
-                @Override
-                public T call()
-                        throws Exception
-                {
-                    try {
-                        return callable.call();
-                    }
-                    catch (Throwable e) {
-                        e.addSuppressed(new Exception("Task: " + taskDescription));
-                        throw e;
-                    }
-                }
-            });
-        }
-    }
-
     @Test
     public void testExplainAnalyze()
     {
@@ -2181,8 +1993,8 @@ public abstract class BaseConnectorTest
         MaterializedResult all = computeActual("SELECT orderkey FROM orders");
 
         assertContains(all, fullSample);
-        assertEquals(emptySample.getMaterializedRows().size(), 0);
-        assertTrue(all.getMaterializedRows().size() >= randomSample.getMaterializedRows().size());
+        assertThat(emptySample.getMaterializedRows().size()).isEqualTo(0);
+        assertThat(all.getMaterializedRows().size() >= randomSample.getMaterializedRows().size()).isTrue();
     }
 
     @Test
@@ -2192,10 +2004,10 @@ public abstract class BaseConnectorTest
         MaterializedResult halfSample = computeActual("SELECT DISTINCT orderkey, orderdate FROM orders TABLESAMPLE SYSTEM (50) WHERE orderkey BETWEEN 0 AND 9999999999");
         MaterializedResult all = computeActual("SELECT orderkey, orderdate FROM orders");
 
-        assertEquals(emptySample.getMaterializedRows().size(), 0);
+        assertThat(emptySample.getMaterializedRows().size()).isEqualTo(0);
         // Assertions need to be loose here because SYSTEM sampling random selects data on split boundaries. In this case either all the data will be selected, or
         // none of it. Sampling with a 100% ratio is ignored, so that also cannot be used to guarantee results.
-        assertTrue(all.getMaterializedRows().size() >= halfSample.getMaterializedRows().size());
+        assertThat(all.getMaterializedRows().size() >= halfSample.getMaterializedRows().size()).isTrue();
     }
 
     @Test
@@ -2256,16 +2068,7 @@ public abstract class BaseConnectorTest
         String schema = getSession().getSchema().get();
         String schemaPattern = schema.replaceAll(".$", "_");
 
-        @Language("SQL") String ordersTableWithColumns = "VALUES " +
-                "('orders', 'orderkey'), " +
-                "('orders', 'custkey'), " +
-                "('orders', 'orderstatus'), " +
-                "('orders', 'totalprice'), " +
-                "('orders', 'orderdate'), " +
-                "('orders', 'orderpriority'), " +
-                "('orders', 'clerk'), " +
-                "('orders', 'shippriority'), " +
-                "('orders', 'comment')";
+        String ordersTableWithColumns = getOrdersTableWithColumns();
 
         assertQuery("SELECT table_schema FROM information_schema.columns WHERE table_schema = '" + schema + "' GROUP BY table_schema", "VALUES '" + schema + "'");
         assertQuery("SELECT table_name FROM information_schema.columns WHERE table_name = 'orders' GROUP BY table_name", "VALUES 'orders'");
@@ -2297,6 +2100,22 @@ public abstract class BaseConnectorTest
                         "('table_privileges'), " +
                         "('tables'), " +
                         "('views')");
+    }
+
+    protected @Language("SQL") String getOrdersTableWithColumns()
+    {
+        return """
+                VALUES
+                ('orders', 'orderkey'),
+                ('orders', 'custkey'),
+                ('orders', 'orderstatus'),
+                ('orders', 'totalprice'),
+                ('orders', 'orderdate'),
+                ('orders', 'orderpriority'),
+                ('orders', 'clerk'),
+                ('orders', 'shippriority'),
+                ('orders', 'comment')
+                """;
     }
 
     @Test
@@ -2379,14 +2198,16 @@ public abstract class BaseConnectorTest
         }
 
         if (!hasBehavior(SUPPORTS_CREATE_SCHEMA)) {
-            throw new SkipException("Skipping as connector does not support CREATE SCHEMA");
+            abort("Skipping as connector does not support CREATE SCHEMA");
         }
 
         String schemaName = "test_rename_schema_" + randomNameSuffix();
         try {
             assertUpdate(createSchemaSql(schemaName));
             assertUpdate("ALTER SCHEMA " + schemaName + " RENAME TO " + schemaName + "_renamed");
-            assertThat(computeActual("SHOW SCHEMAS").getOnlyColumnAsSet()).contains(schemaName + "_renamed");
+            assertThat(computeActual("SHOW SCHEMAS").getOnlyColumnAsSet())
+                    .doesNotContain(schemaName)
+                    .contains(schemaName + "_renamed");
         }
         finally {
             assertUpdate("DROP SCHEMA IF EXISTS " + schemaName);
@@ -2461,6 +2282,9 @@ public abstract class BaseConnectorTest
             assertQuery(
                     "SELECT * FROM " + table.getName(),
                     "VALUES ('first', NULL)");
+            assertQuery(
+                    "SELECT * FROM " + table.getName() + " WHERE a IS NULL",
+                    "VALUES ('first', NULL)");
             assertUpdate("INSERT INTO " + table.getName() + " SELECT 'second', 'xxx'", 1);
             assertQuery(
                     "SELECT x, a FROM " + table.getName(),
@@ -2480,10 +2304,10 @@ public abstract class BaseConnectorTest
                     "VALUES ('first', NULL, NULL, NULL), ('second', 'xxx', NULL, NULL), ('third', 'yyy', 33.3, NULL), ('fourth', 'zzz', 55.3, 'newColumn')");
         }
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " ADD COLUMN x bigint");
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " ADD COLUMN IF NOT EXISTS x bigint");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     /**
@@ -2513,7 +2337,7 @@ public abstract class BaseConnectorTest
             assertThat(getColumnComment(tableName, "b_varchar")).isEqualTo("test new column comment");
 
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN empty_comment varchar COMMENT ''");
-            assertEquals(getColumnComment(tableName, "empty_comment"), "");
+            assertThat(getColumnComment(tableName, "empty_comment")).isEqualTo("");
         }
     }
 
@@ -2536,7 +2360,7 @@ public abstract class BaseConnectorTest
             }
 
             assertUpdate(addNonNullColumn);
-            assertFalse(columnIsNullable(tableName, "b_varchar"));
+            assertThat(columnIsNullable(tableName, "b_varchar")).isFalse();
             assertUpdate("INSERT INTO " + tableName + " VALUES ('a', 'b')", 1);
             assertThat(query("TABLE " + tableName))
                     .skippingTypesCheck()
@@ -2604,24 +2428,94 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_add_field_",
                 "AS SELECT CAST(row(1, row(10)) AS row(a integer, b row(x integer))) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b row(x integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b row(x integer))");
 
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.c integer");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b row(x integer), c integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b row(x integer), c integer)");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10), NULL) AS row(a integer, b row(x integer), c integer))");
 
             // Add a nested field
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.b.y integer");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b row(x integer, y integer), c integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b row(x integer, y integer), c integer)");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10, NULL), NULL) AS row(a integer, b row(x integer, y integer), c integer))");
 
             // Specify existing fields with IF NOT EXISTS option
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN IF NOT EXISTS col.a varchar");
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN IF NOT EXISTS col.b.x varchar");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b row(x integer, y integer), c integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b row(x integer, y integer), c integer)");
 
             // Specify existing fields without IF NOT EXISTS option
             assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col.a varchar", ".* Field 'a' already exists");
+        }
+    }
+
+    @Test
+    public void testAddRowFieldInArray()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA) && hasBehavior(SUPPORTS_ROW_TYPE));
+
+        if (!hasBehavior(SUPPORTS_ADD_FIELD_IN_ARRAY)) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_field_in_array_", "AS SELECT CAST(array[row(1)] AS array(row(x integer))) AS col")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " ADD COLUMN col.element.y integer",
+                        ".*does not support.*");
+            }
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute,
+                "test_add_field_in_array_",
+                "AS SELECT CAST(array[row(1, row(10), array[row(11)])] AS array(row(a integer, b row(x integer), c array(row(v integer))))) AS col")) {
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b row(x integer), c array(row(v integer))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.d integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b row(x integer), c array(row(v integer)), d integer))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10), array[row(11)], NULL)] AS array(row(a integer, b row(x integer), c array(row(v integer)), d integer)))");
+
+            // Add a nested field
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.b.y integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b row(x integer, y integer), c array(row(v integer)), d integer))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10, NULL), array[row(11)], NULL)] AS array(row(a integer, b row(x integer, y integer), c array(row(v integer)), d integer)))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.c.element.w integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b row(x integer, y integer), c array(row(v integer, w integer)), d integer))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10, NULL), array[row(11, NULL)], NULL)] AS array(row(a integer, b row(x integer, y integer), c array(row(v integer, w integer)), d integer)))");
+
+            // Denote to array without 'element' designator
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " ADD COLUMN col.c.element.blah integer",
+                    "\\QARRAY type should be denoted by 'element' in the path; found 'c'");
+
+            // Specify existing fields with IF NOT EXISTS option
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN IF NOT EXISTS col.element.a varchar");
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN IF NOT EXISTS col.element.b.x varchar");
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN IF NOT EXISTS col.element.c.element.w varchar");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b row(x integer, y integer), c array(row(v integer, w integer)), d integer))");
+
+            // Specify existing fields without IF NOT EXISTS option
+            assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.a varchar", ".* Field 'a' already exists");
+            assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.b.x varchar", ".* Field 'x' already exists");
+            assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.c.element.w varchar", ".* Field 'w' already exists");
+        }
+
+        // test row in array of arrays
+        try (TestTable table = new TestTable(getQueryRunner()::execute,
+                "test_add_field_in_array_nested_",
+                "AS SELECT CAST(array[array[row(1, row(10), array[row(11)])]] AS array(array(row(a integer, b row(x integer), c array(row(v integer)))))) AS col")) {
+
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, b row(x integer), c array(row(v integer)))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.element.d integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, b row(x integer), c array(row(v integer)), d integer)))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10), array[row(11)], NULL)]] AS array(array(row(a integer, b row(x integer), c array(row(v integer)), d integer))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.element.b.y integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, b row(x integer, y integer), c array(row(v integer)), d integer)))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10, NULL), array[row(11)], NULL)]] AS array(array(row(a integer, b row(x integer, y integer), c array(row(v integer)), d integer))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col.element.element.c.element.w integer");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, b row(x integer, y integer), c array(row(v integer, w integer)), d integer)))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10, NULL), array[row(11, NULL)], NULL)]] AS array(array(row(a integer, b row(x integer, y integer), c array(row(v integer, w integer)), d integer))))");
         }
     }
 
@@ -2647,10 +2541,10 @@ public abstract class BaseConnectorTest
             assertQueryFails("ALTER TABLE " + tableName + " DROP COLUMN a", ".* Cannot drop the only column in a table");
         }
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " DROP COLUMN notExistColumn");
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " DROP COLUMN IF EXISTS notExistColumn");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Test
@@ -2671,15 +2565,15 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_drop_field_",
                 "AS SELECT CAST(row(1, 2, row(10, 20)) AS row(a integer, b integer, c row(x integer, y integer))) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b integer, c row(x integer, y integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b integer, c row(x integer, y integer))");
 
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.b");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, c row(x integer, y integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, c row(x integer, y integer))");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10, 20)) AS row(a integer, c row(x integer, y integer)))");
 
             // Drop a nested field
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.c.y");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, c row(x integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, c row(x integer))");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10)) AS row(a integer, c row(x integer)))");
 
             // Verify failure when trying to drop unique field in nested row type
@@ -2692,16 +2586,112 @@ public abstract class BaseConnectorTest
 
             // Drop a row having fields
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.c");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer)");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1) AS row(a integer))");
 
             // Specify non-existing fields with IF EXISTS option
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN IF EXISTS non_existing.a");
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN IF EXISTS col.non_existing");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer)");
         }
     }
 
+    @Test
+    public void testDropRowFieldInArray()
+    {
+        if (!hasBehavior(SUPPORTS_DROP_FIELD_IN_ARRAY)) {
+            if (!hasBehavior(SUPPORTS_DROP_COLUMN) || !hasBehavior(SUPPORTS_ROW_TYPE)) {
+                return;
+            }
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_drop_field_in_array_", "AS SELECT CAST(array[row(1, 2)] AS array(row(x integer, y integer))) AS col")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " DROP COLUMN col.element.x",
+                        ".*does not support.*");
+            }
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute,
+                "test_drop_field_in_array_",
+                "AS SELECT CAST(array[row(1, 2, row(10, 20), array[row(30, 40)])] AS array(row(a integer, b integer, c row(x integer, y integer), d array(row(v integer, w integer))))) AS col")) {
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, b integer, c row(x integer, y integer), d array(row(v integer, w integer))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.b");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, c row(x integer, y integer), d array(row(v integer, w integer))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10, 20), array[row(30, 40)])] AS array(row(a integer, c row(x integer, y integer), d array(row(v integer, w integer)))))");
+
+            // Drop a nested field
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.c.y");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, c row(x integer), d array(row(v integer, w integer))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10), array[row(30, 40)])] AS array(row(a integer, c row(x integer), d array(row(v integer, w integer)))))");
+
+            // Drop a nested field in array
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.d.element.v");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, c row(x integer), d array(row(w integer))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, row(10), array[row(40)])] AS array(row(a integer, c row(x integer), d array(row(w integer)))))");
+
+            // Verify failure when trying to drop unique field in nested row type
+            assertQueryFails("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.c.x", ".* Cannot drop the only field in a row type");
+            assertQueryFails("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.d.element.w", ".* Cannot drop the only field in a row type");
+
+            // Verify failure when trying to drop non-existing fields
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN col.element.c.non_existing",
+                    "\\Qline 1:1: Cannot resolve field 'non_existing' within row(x integer) type when dropping [element, c, non_existing] in array(row(a integer, c row(x integer), d array(row(w integer))))");
+
+            // Verify failure when trying to drop non-existing fields
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN col.element.d.element.non_existing",
+                    "\\Qline 1:1: Cannot resolve field 'non_existing' within row(w integer) type when dropping [element, d, element, non_existing] in array(row(a integer, c row(x integer), d array(row(w integer))))");
+
+            // Drop a row having fields
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.c");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer, d array(row(w integer))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1, array[row(40)])] AS array(row(a integer, d array(row(w integer)))))");
+
+            // Drop a array(row) having fields
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.d");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[row(1)] AS array(row(a integer)))");
+
+            // Denote to array without 'element' designator
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN col.a",
+                    "\\QARRAY type should be denoted by 'element' in the path; found 'a'");
+
+            // Specify non-existing fields with IF EXISTS option
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN IF EXISTS non_existing.a");
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN IF EXISTS col.element.non_existing");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(a integer))");
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute,
+                "test_drop_field_in_array_nested_",
+                "AS SELECT CAST(array[array[row(1, 2, row(10, 20), array[row(30, 40)])]] AS array(array(row(a integer, b integer, c row(x integer, y integer), d array(row(v integer, w integer)))))) AS col")) {
+
+            // Use path ending with element
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN col.element.element",
+                    "\\Qline 1:1: Field path [element, element] does not point to row field");
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN col.element.element.d.element",
+                    "\\Qline 1:1: Field path [element, element, d, element] does not point to row field");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.element.b");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, c row(x integer, y integer), d array(row(v integer, w integer)))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10, 20), array[row(30, 40)])]] AS array(array(row(a integer, c row(x integer, y integer), d array(row(v integer, w integer))))))");
+
+            // Drop a nested field
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.element.c.y");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, c row(x integer), d array(row(v integer, w integer)))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10), array[row(30, 40)])]] AS array(array(row(a integer, c row(x integer), d array(row(v integer, w integer))))))");
+
+            // Drop a nested field in array
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.element.element.d.element.v");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(a integer, c row(x integer), d array(row(w integer)))))");
+            assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(array[array[row(1, row(10), array[row(40)])]] AS array(array(row(a integer, c row(x integer), d array(row(w integer))))))");
+        }
+    }
     @Test
     public void testDropRowFieldWhenDuplicates()
     {
@@ -2710,12 +2700,12 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_drop_duplicated_field_",
                 "AS SELECT CAST(row(1, 2, 3) AS row(a integer, a integer, b integer)) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, a integer, b integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, a integer, b integer)");
 
             assertQueryFails(
                     "ALTER TABLE " + table.getName() + " DROP COLUMN col.a",
                     "\\QField path [a] within row(a integer, a integer, b integer) is ambiguous");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, a integer, b integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, a integer, b integer)");
         }
     }
 
@@ -2727,7 +2717,7 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_drop_row_field_case_sensitivity_",
                 "AS SELECT CAST(row(1, 2) AS row(lower integer, \"UPPER\" integer)) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(lower integer, UPPER integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(lower integer, UPPER integer)");
 
             assertQueryFails(
                     "ALTER TABLE " + table.getName() + " DROP COLUMN col.LOWER",
@@ -2737,7 +2727,7 @@ public abstract class BaseConnectorTest
                     "\\Qline 1:1: Cannot resolve field 'upper' within row(lower integer, UPPER integer) type when dropping [upper] in row(lower integer, UPPER integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.\"UPPER\"");
-            assertEquals(getColumnType(table.getName(), "col"), "row(lower integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(lower integer)");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1) AS row(lower integer))");
         }
     }
@@ -2753,16 +2743,16 @@ public abstract class BaseConnectorTest
                         AS SELECT CAST(row(1, 2, 3, 4, 5) AS
                         row("sOME_FIELd" integer, "some_field" integer, "SomE_Field" integer, "SOME_FIELD" integer, "sOME_FieLd" integer)) AS col
                         """)) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(sOME_FIELd integer, some_field integer, SomE_Field integer, SOME_FIELD integer, sOME_FieLd integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(sOME_FIELd integer, some_field integer, SomE_Field integer, SOME_FIELD integer, sOME_FieLd integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.some_field");
-            assertEquals(getColumnType(table.getName(), "col"), "row(sOME_FIELd integer, SomE_Field integer, SOME_FIELD integer, sOME_FieLd integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(sOME_FIELd integer, SomE_Field integer, SOME_FIELD integer, sOME_FieLd integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.\"SomE_Field\"");
-            assertEquals(getColumnType(table.getName(), "col"), "row(sOME_FIELd integer, SOME_FIELD integer, sOME_FieLd integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(sOME_FIELd integer, SOME_FIELD integer, sOME_FieLd integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN col.\"SOME_FIELD\"");
-            assertEquals(getColumnType(table.getName(), "col"), "row(sOME_FIELd integer, sOME_FieLd integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(sOME_FIELd integer, sOME_FieLd integer)");
 
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, 5) AS row(\"sOME_FIELd\" integer, \"sOME_FieLd\" integer))");
         }
@@ -2814,10 +2804,10 @@ public abstract class BaseConnectorTest
             assertQuery("SELECT * FROM " + tableName, "VALUES 'some value'");
         }
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " RENAME COLUMN columnNotExists TO y");
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " RENAME COLUMN IF EXISTS columnNotExists TO y");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Test
@@ -2850,21 +2840,21 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_add_field_",
                 "AS SELECT CAST(row(1, row(10)) AS row(a integer, b row(x integer))) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(a integer, b row(x integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a integer, b row(x integer))");
 
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN col.a TO a_renamed");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a_renamed integer, b row(x integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a_renamed integer, b row(x integer))");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10)) AS row(a_renamed integer, b row(x integer)))");
 
             // Rename a nested field
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN col.b.x TO x_renamed");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a_renamed integer, b row(x_renamed integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a_renamed integer, b row(x_renamed integer))");
             assertThat(query("SELECT * FROM " + table.getName())).matches("SELECT CAST(row(1, row(10)) AS row(a_renamed integer, b row(x_renamed integer)))");
 
             // Specify not existing fields with IF EXISTS option
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN IF EXISTS col.a_missing TO a_missing_renamed");
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN IF EXISTS col.b.x_missing TO x_missing_renamed");
-            assertEquals(getColumnType(table.getName(), "col"), "row(a_renamed integer, b row(x_renamed integer))");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(a_renamed integer, b row(x_renamed integer))");
 
             // Specify existing fields without IF EXISTS option
             assertQueryFails("ALTER TABLE " + table.getName() + " RENAME COLUMN col.a_renamed TO a_renamed", ".* Field 'a_renamed' already exists");
@@ -2879,16 +2869,16 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute,
                 "test_add_row_field_case_sensitivity_",
                 "AS SELECT CAST(row(1, 2) AS row(lower integer, \"UPPER\" integer)) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(lower integer, UPPER integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(lower integer, UPPER integer)");
 
             assertQueryFails("ALTER TABLE " + table.getName() + " RENAME COLUMN col.lower TO UPPER", ".* Field 'upper' already exists");
             assertQueryFails("ALTER TABLE " + table.getName() + " RENAME COLUMN col.lower TO upper", ".* Field 'upper' already exists");
 
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN col.lower TO LOWER_RENAMED");
-            assertEquals(getColumnType(table.getName(), "col"), "row(lower_renamed integer, UPPER integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(lower_renamed integer, UPPER integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN col.\"UPPER\" TO upper_renamed");
-            assertEquals(getColumnType(table.getName(), "col"), "row(lower_renamed integer, upper_renamed integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(lower_renamed integer, upper_renamed integer)");
 
             assertThat(query("SELECT * FROM " + table.getName()))
                     .matches("SELECT CAST(row(1, 2) AS row(lower_renamed integer, upper_renamed integer))");
@@ -2908,49 +2898,50 @@ public abstract class BaseConnectorTest
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_column_type_", "AS SELECT CAST(123 AS integer) AS col")) {
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE bigint");
 
-            assertEquals(getColumnType(table.getName(), "col"), "bigint");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("bigint");
             assertThat(query("SELECT * FROM " + table.getName()))
                     .skippingTypesCheck()
                     .matches("VALUES bigint '123'");
         }
     }
 
-    @Test(dataProvider = "setColumnTypesDataProvider")
-    public void testSetColumnTypes(SetColumnTypeSetup setup)
+    @Test
+    public void testSetColumnTypes()
     {
         skipTestUnless(hasBehavior(SUPPORTS_SET_COLUMN_TYPE) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
 
-        TestTable table;
-        try {
-            table = new TestTable(getQueryRunner()::execute, "test_set_column_type_", " AS SELECT CAST(" + setup.sourceValueLiteral + " AS " + setup.sourceColumnType + ") AS col");
-        }
-        catch (Exception e) {
-            verifyUnsupportedTypeException(e, setup.sourceColumnType);
-            throw new SkipException("Unsupported column type: " + setup.sourceColumnType);
-        }
-        try (table) {
-            Runnable setColumnType = () -> assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE " + setup.newColumnType);
-            if (setup.unsupportedType) {
-                assertThatThrownBy(setColumnType::run)
-                        .satisfies(this::verifySetColumnTypeFailurePermissible);
-                return;
+        for (SetColumnTypeSetup setup : setColumnTypesDataProvider()) {
+            TestTable table;
+            try {
+                table = new TestTable(getQueryRunner()::execute, "test_set_column_type_", " AS SELECT CAST(" + setup.sourceValueLiteral + " AS " + setup.sourceColumnType + ") AS col");
             }
-            setColumnType.run();
+            catch (Exception e) {
+                verifyUnsupportedTypeException(e, setup.sourceColumnType);
+                continue;
+            }
+            try (table) {
+                Runnable setColumnType = () -> assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE " + setup.newColumnType);
+                if (setup.unsupportedType) {
+                    assertThatThrownBy(setColumnType::run)
+                            .satisfies(this::verifySetColumnTypeFailurePermissible);
+                    return;
+                }
+                setColumnType.run();
 
-            assertEquals(getColumnType(table.getName(), "col"), setup.newColumnType);
-            assertThat(query("SELECT * FROM " + table.getName()))
-                    .skippingTypesCheck()
-                    .matches("SELECT " + setup.newValueLiteral);
+                assertThat(getColumnType(table.getName(), "col")).isEqualTo(setup.newColumnType);
+                assertThat(query("SELECT * FROM " + table.getName()))
+                        .skippingTypesCheck()
+                        .matches("SELECT " + setup.newValueLiteral);
+            }
         }
     }
 
-    @DataProvider
-    public Object[][] setColumnTypesDataProvider()
+    private List<SetColumnTypeSetup> setColumnTypesDataProvider()
     {
         return setColumnTypeSetupData().stream()
                 .map(this::filterSetColumnTypesDataProvider)
                 .flatMap(Optional::stream)
-                .collect(toDataProvider());
+                .collect(toList());
     }
 
     protected Optional<SetColumnTypeSetup> filterSetColumnTypesDataProvider(SetColumnTypeSetup setup)
@@ -2962,9 +2953,14 @@ public abstract class BaseConnectorTest
     {
         return ImmutableList.<SetColumnTypeSetup>builder()
                 .add(new SetColumnTypeSetup("tinyint", "TINYINT '127'", "smallint"))
+                .add(new SetColumnTypeSetup("tinyint", "TINYINT '126'", "integer"))
+                .add(new SetColumnTypeSetup("tinyint", "TINYINT '125'", "bigint"))
                 .add(new SetColumnTypeSetup("smallint", "SMALLINT '32767'", "integer"))
+                .add(new SetColumnTypeSetup("smallint", "SMALLINT '32766'", "bigint"))
                 .add(new SetColumnTypeSetup("integer", "2147483647", "bigint"))
                 .add(new SetColumnTypeSetup("bigint", "BIGINT '-2147483648'", "integer"))
+                .add(new SetColumnTypeSetup("bigint", "BIGINT '-32768'", "smallint"))
+                .add(new SetColumnTypeSetup("bigint", "BIGINT '-128'", "tinyint"))
                 .add(new SetColumnTypeSetup("real", "REAL '10.3'", "double"))
                 .add(new SetColumnTypeSetup("real", "REAL 'NaN'", "double"))
                 .add(new SetColumnTypeSetup("decimal(5,3)", "12.345", "decimal(10,3)")) // short decimal -> short decimal
@@ -3016,6 +3012,12 @@ public abstract class BaseConnectorTest
             requireNonNull(newValueLiteral, "newValueLiteral is null");
         }
 
+        public SetColumnTypeSetup withNewColumnType(String newColumnType)
+        {
+            checkState(!unsupportedType);
+            return new SetColumnTypeSetup(sourceColumnType, sourceValueLiteral, newColumnType);
+        }
+
         public SetColumnTypeSetup withNewValueLiteral(String newValueLiteral)
         {
             checkState(!unsupportedType);
@@ -3034,10 +3036,10 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_SET_COLUMN_TYPE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_column_type_null_", "(col int NOT NULL)")) {
-            assertFalse(columnIsNullable(table.getName(), "col"));
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE bigint");
-            assertFalse(columnIsNullable(table.getName(), "col"));
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
         }
     }
 
@@ -3047,10 +3049,10 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_SET_COLUMN_TYPE) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_column_type_comment_", "(col int COMMENT 'test comment')")) {
-            assertEquals(getColumnComment(table.getName(), "col"), "test comment");
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE bigint");
-            assertEquals(getColumnComment(table.getName(), "col"), "test comment");
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
         }
     }
 
@@ -3109,56 +3111,57 @@ public abstract class BaseConnectorTest
         }
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_", "AS SELECT CAST(row(123) AS row(field integer)) AS col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(field integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(field integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.field SET DATA TYPE bigint");
 
-            assertEquals(getColumnType(table.getName(), "col"), "row(field bigint)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(field bigint)");
             assertThat(query("SELECT * FROM " + table.getName()))
                     .skippingTypesCheck()
                     .matches("SELECT row(bigint '123')");
         }
     }
 
-    @Test(dataProvider = "setFieldTypesDataProvider")
-    public void testSetFieldTypes(SetColumnTypeSetup setup)
+    @Test
+    public void testSetFieldTypes()
     {
         skipTestUnless(hasBehavior(SUPPORTS_SET_FIELD_TYPE) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
 
-        TestTable table;
-        try {
-            table = new TestTable(
-                    getQueryRunner()::execute,
-                    "test_set_field_type_",
-                    " AS SELECT CAST(row(" + setup.sourceValueLiteral + ") AS row(field " + setup.sourceColumnType + ")) AS col");
-        }
-        catch (Exception e) {
-            verifyUnsupportedTypeException(e, setup.sourceColumnType);
-            throw new SkipException("Unsupported column type: " + setup.sourceColumnType);
-        }
-        try (table) {
-            Runnable setFieldType = () -> assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.field SET DATA TYPE " + setup.newColumnType);
-            if (setup.unsupportedType) {
-                assertThatThrownBy(setFieldType::run)
-                        .satisfies(this::verifySetFieldTypeFailurePermissible);
-                return;
+        for (SetColumnTypeSetup setup : setFieldTypesDataProvider()) {
+            TestTable table;
+            try {
+                table = new TestTable(
+                        getQueryRunner()::execute,
+                        "test_set_field_type_",
+                        " AS SELECT CAST(row(" + setup.sourceValueLiteral + ") AS row(field " + setup.sourceColumnType + ")) AS col");
             }
-            setFieldType.run();
+            catch (Exception e) {
+                verifyUnsupportedTypeException(e, setup.sourceColumnType);
+                continue;
+            }
+            try (table) {
+                Runnable setFieldType = () -> assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.field SET DATA TYPE " + setup.newColumnType);
+                if (setup.unsupportedType) {
+                    assertThatThrownBy(setFieldType::run)
+                            .satisfies(this::verifySetFieldTypeFailurePermissible);
+                    return;
+                }
+                setFieldType.run();
 
-            assertEquals(getColumnType(table.getName(), "col"), "row(field " + setup.newColumnType + ")");
-            assertThat(query("SELECT * FROM " + table.getName()))
-                    .skippingTypesCheck()
-                    .matches("SELECT row(" + setup.newValueLiteral + ")");
+                assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(field " + setup.newColumnType + ")");
+                assertThat(query("SELECT * FROM " + table.getName()))
+                        .skippingTypesCheck()
+                        .matches("SELECT row(" + setup.newValueLiteral + ")");
+            }
         }
     }
 
-    @DataProvider
-    public Object[][] setFieldTypesDataProvider()
+    public List<SetColumnTypeSetup> setFieldTypesDataProvider()
     {
         return setColumnTypeSetupData().stream()
                 .map(this::filterSetFieldTypesDataProvider)
                 .flatMap(Optional::stream)
-                .collect(toDataProvider());
+                .collect(toList());
     }
 
     protected Optional<SetColumnTypeSetup> filterSetFieldTypesDataProvider(SetColumnTypeSetup setup)
@@ -3172,10 +3175,10 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_SET_FIELD_TYPE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_case_", " AS SELECT CAST(row(1) AS row(\"UPPER\" integer)) col")) {
-            assertEquals(getColumnType(table.getName(), "col"), "row(UPPER integer)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(UPPER integer)");
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.upper SET DATA TYPE bigint");
-            assertEquals(getColumnType(table.getName(), "col"), "row(UPPER bigint)");
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("row(UPPER bigint)");
             assertThat(query("SELECT * FROM " + table.getName()))
                     .matches("SELECT CAST(row(1) AS row(UPPER bigint))");
         }
@@ -3187,10 +3190,10 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_SET_FIELD_TYPE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_null_", "(col row(field int) NOT NULL)")) {
-            assertFalse(columnIsNullable(table.getName(), "col"));
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.field SET DATA TYPE bigint");
-            assertFalse(columnIsNullable(table.getName(), "col"));
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
         }
     }
 
@@ -3200,10 +3203,10 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_SET_FIELD_TYPE) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_comment_", "(col row(field int) COMMENT 'test comment')")) {
-            assertEquals(getColumnComment(table.getName(), "col"), "test comment");
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
 
             assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.field SET DATA TYPE bigint");
-            assertEquals(getColumnComment(table.getName(), "col"), "test comment");
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
         }
     }
 
@@ -3239,6 +3242,53 @@ public abstract class BaseConnectorTest
         }
     }
 
+    @Test
+    public void testSetFieldTypeInArray()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA) && hasBehavior(SUPPORTS_ARRAY) && hasBehavior(SUPPORTS_ROW_TYPE));
+
+        if (!hasBehavior(SUPPORTS_SET_FIELD_TYPE_IN_ARRAY)) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_in_array_", "(col array(row(field int)))")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " ALTER COLUMN col.element.field SET DATA TYPE bigint",
+                        ".*does not support.*");
+            }
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_in_array_", "AS SELECT CAST(array[row(123)] AS array(row(field integer))) AS col")) {
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(field integer))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.element.field SET DATA TYPE bigint");
+
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(row(field bigint))");
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("SELECT array[row(bigint '123')]");
+        }
+    }
+
+    @Test
+    public void testSetFieldTypeInNestedArray()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_SET_FIELD_TYPE_IN_ARRAY) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA) && hasBehavior(SUPPORTS_ARRAY) && hasBehavior(SUPPORTS_ROW_TYPE));
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_field_type_in_nested_array_", "AS SELECT CAST(array[array[row(array[row(123)])]] AS array(array(row(field array(row(a integer)))))) AS col")) {
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(field array(row(a integer)))))");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col.element.element.field.element.a SET DATA TYPE bigint");
+
+            assertThat(getColumnType(table.getName(), "col")).isEqualTo("array(array(row(field array(row(a bigint)))))");
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .skippingTypesCheck()
+                    .matches("SELECT array[array[row(array[row(bigint '123')])]]");
+
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " ALTER COLUMN col.element.element SET DATA TYPE bigint",
+                    "\\Qline 1:1: Field path [col, element, element] does not point to row field");
+        }
+    }
+
     protected void verifySetFieldTypeFailurePermissible(Throwable e)
     {
         throw new AssertionError("Unexpected set field type failure", e);
@@ -3249,6 +3299,48 @@ public abstract class BaseConnectorTest
         return (String) computeScalar(format("SELECT data_type FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA AND table_name = '%s' AND column_name = '%s'",
                 tableName,
                 columnName));
+    }
+
+    @Test
+    public void testDropNotNullConstraint()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE) && hasBehavior(SUPPORTS_NOT_NULL_CONSTRAINT));
+
+        if (!hasBehavior(SUPPORTS_DROP_NOT_NULL_CONSTRAINT)) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_drop_not_null_", "(col integer NOT NULL)")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " ALTER COLUMN col DROP NOT NULL",
+                        "This connector does not support dropping a not null constraint");
+            }
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_drop_not_null_", "(col integer NOT NULL)")) {
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col DROP NOT NULL");
+            assertThat(columnIsNullable(table.getName(), "col")).isTrue();
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES NULL", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES NULL");
+        }
+    }
+
+    @Test
+    public void testDropNotNullConstraintWithColumnComment()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_DROP_NOT_NULL_CONSTRAINT) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT));
+
+        // Verify DROP NOT NULL preserves the existing column comment
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_drop_not_null_", "(col integer NOT NULL COMMENT 'test comment')")) {
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
+            assertThat(columnIsNullable(table.getName(), "col")).isFalse();
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col DROP NOT NULL");
+            assertThat(columnIsNullable(table.getName(), "col")).isTrue();
+
+            assertThat(getColumnComment(table.getName(), "col")).isEqualTo("test comment");
+        }
     }
 
     @Test
@@ -3263,49 +3355,49 @@ public abstract class BaseConnectorTest
         assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet()) // prime the cache, if any
                 .doesNotContain(tableName);
         assertUpdate("CREATE TABLE " + tableName + " (a bigint, b double, c varchar(50))");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet())
                 .contains(tableName);
         assertTableColumnNames(tableName, "a", "b", "c");
-        assertNull(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName));
+        assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName)).isNull();
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet())
                 .doesNotContain(tableName);
 
         assertQueryFails("CREATE TABLE " + tableName + " (a bad_type)", ".* Unknown type 'bad_type' for column 'a'");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         // TODO (https://github.com/trinodb/trino/issues/5901) revert to longer name when Oracle version is updated
         tableName = "test_cr_not_exists_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a bigint, b varchar(50), c double)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "a", "b", "c");
 
         assertUpdate("CREATE TABLE IF NOT EXISTS " + tableName + " (d bigint, e varchar(50))");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "a", "b", "c");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         // Test CREATE TABLE LIKE
         tableName = "test_create_orig_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a bigint, b double, c varchar(50))");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertTableColumnNames(tableName, "a", "b", "c");
 
         String tableNameLike = "test_create_like_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableNameLike + " (LIKE " + tableName + ", d bigint, e varchar(50))");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableNameLike));
+        assertThat(getQueryRunner().tableExists(getSession(), tableNameLike)).isTrue();
         assertTableColumnNames(tableNameLike, "a", "b", "c", "d", "e");
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
         assertUpdate("DROP TABLE " + tableNameLike);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableNameLike));
+        assertThat(getQueryRunner().tableExists(getSession(), tableNameLike)).isFalse();
     }
 
     @Test
@@ -3322,6 +3414,112 @@ public abstract class BaseConnectorTest
                 .skippingTypesCheck()
                 .containsAll(format("VALUES '%s'", schemaName));
         assertUpdate(newSession, "DROP SCHEMA " + schemaName);
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWhenTableDoesNotExist()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        String table = "test_create_or_replace_" + randomNameSuffix();
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            assertQueryFails("CREATE OR REPLACE TABLE " + table + " (a bigint, b double, c varchar(50))", "This connector does not support replacing tables");
+            return;
+        }
+
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + table + " (a bigint, b double, c varchar(50))");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table);
+        } finally {
+            assertUpdate("DROP TABLE IF EXISTS " + table);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsSelectWhenTableDoesNotExists()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        String table = "test_create_or_replace_" + randomNameSuffix();
+        @Language("SQL") String query = "SELECT nationkey, name, regionkey FROM nation";
+        @Language("SQL") String rowCountQuery = "SELECT count(*) FROM nation";
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            assertQueryFails("CREATE OR REPLACE TABLE " + table + " AS " + query, "This connector does not support replacing tables");
+            return;
+        }
+
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + table + " AS " + query, rowCountQuery);
+            assertQuery("SELECT * FROM " + table, query);
+        } finally {
+            assertUpdate("DROP TABLE IF EXISTS " + table);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWhenTableAlreadyExistsSameSchema()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            // covered in testCreateOrReplaceTableWhenTableDoesNotExist
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", "AS SELECT CAST(1 AS BIGINT) AS nationkey, 'test' AS name, CAST(2 AS BIGINT) AS regionkey FROM nation LIMIT 1")) {
+            @Language("SQL") String query = "SELECT nationkey, name, regionkey FROM nation";
+            @Language("SQL") String rowCountQuery = "SELECT count(*) FROM nation";
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS " + query, rowCountQuery);
+            assertQuery("SELECT * FROM " + table.getName(), query);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWhenTableAlreadyExistsSameSchemaNoData()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            // covered in testCreateOrReplaceTableWhenTableDoesNotExist
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " AS SELECT nationkey, name, regionkey FROM nation")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT nationkey, name, regionkey FROM nation WITH NO DATA", 0L);
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithNewColumnNames()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            // covered in testCreateOrReplaceTableWhenTableDoesNotExist
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " AS SELECT nationkey, name, regionkey FROM nation")) {
+            assertTableColumnNames(table.getName(), "nationkey", "name", "regionkey");
+            @Language("SQL") String query = "SELECT nationkey AS nationkey_new, name AS name_new_2, regionkey AS region_key_new FROM nation";
+            @Language("SQL") String rowCountQuery = "SELECT count(*) FROM nation";
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS " + query, rowCountQuery);
+            assertTableColumnNames(table.getName(), "nationkey_new", "name_new_2", "region_key_new");
+            assertQuery("SELECT * FROM " + table.getName(), query);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithDifferentDataType()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            // covered in testCreateOrReplaceTableWhenTableDoesNotExist
+            return;
+        }
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " AS SELECT nationkey, name FROM nation")) {
+            @Language("SQL") String query = "SELECT name AS nationkey, nationkey AS name FROM nation";
+            @Language("SQL") String rowCountQuery = "SELECT count(*) FROM nation";
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS " + query, rowCountQuery);
+            assertQuery(getSession(), "SELECT * FROM " + table.getName(), query);
+        }
     }
 
     @Test
@@ -3403,7 +3601,7 @@ public abstract class BaseConnectorTest
 
         String validTableName = baseTableName + "z".repeat(maxLength - baseTableName.length());
         assertUpdate("CREATE TABLE " + validTableName + " (a bigint)");
-        assertTrue(getQueryRunner().tableExists(getSession(), validTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isTrue();
         assertUpdate("DROP TABLE " + validTableName);
 
         if (maxTableNameLength().isEmpty()) {
@@ -3413,7 +3611,7 @@ public abstract class BaseConnectorTest
         String invalidTableName = validTableName + "z";
         assertThatThrownBy(() -> assertUpdate("CREATE TABLE " + invalidTableName + " (a bigint)"))
                 .satisfies(this::verifyTableNameLengthFailurePermissible);
-        assertFalse(getQueryRunner().tableExists(getSession(), validTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isFalse();
     }
 
     @Test
@@ -3432,7 +3630,7 @@ public abstract class BaseConnectorTest
 
         String validTargetTableName = baseTableName + "z".repeat(maxLength - baseTableName.length());
         assertUpdate("ALTER TABLE " + sourceTableName + " RENAME TO " + validTargetTableName);
-        assertTrue(getQueryRunner().tableExists(getSession(), validTargetTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTargetTableName)).isTrue();
         assertQuery("SELECT x FROM " + validTargetTableName, "VALUES 123");
         assertUpdate("DROP TABLE " + validTargetTableName);
 
@@ -3444,7 +3642,7 @@ public abstract class BaseConnectorTest
         String invalidTargetTableName = validTargetTableName + "z";
         assertThatThrownBy(() -> assertUpdate("ALTER TABLE " + sourceTableName + " RENAME TO " + invalidTargetTableName))
                 .satisfies(this::verifyTableNameLengthFailurePermissible);
-        assertFalse(getQueryRunner().tableExists(getSession(), invalidTargetTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), invalidTargetTableName)).isFalse();
         assertUpdate("DROP TABLE " + sourceTableName);
     }
 
@@ -3477,7 +3675,7 @@ public abstract class BaseConnectorTest
 
         String validColumnName = baseColumnName + "z".repeat(maxLength - baseColumnName.length());
         assertUpdate("CREATE TABLE " + tableName + " (" + validColumnName + " bigint)");
-        assertTrue(columnExists(tableName, validColumnName));
+        assertThat(columnExists(tableName, validColumnName)).isTrue();
         assertUpdate("DROP TABLE " + tableName);
 
         if (maxColumnNameLength().isEmpty()) {
@@ -3487,7 +3685,7 @@ public abstract class BaseConnectorTest
         String invalidColumnName = validColumnName + "z";
         assertThatThrownBy(() -> assertUpdate("CREATE TABLE " + tableName + " (" + invalidColumnName + " bigint)"))
                 .satisfies(this::verifyColumnNameLengthFailurePermissible);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     // TODO: Add test for CREATE TABLE AS SELECT with long column name
@@ -3507,7 +3705,7 @@ public abstract class BaseConnectorTest
 
         String validTargetColumnName = baseColumnName + "z".repeat(maxLength - baseColumnName.length());
         assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN " + validTargetColumnName + " int");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertQuery("SELECT x FROM " + tableName, "VALUES 123");
         assertUpdate("DROP TABLE " + tableName);
 
@@ -3520,6 +3718,8 @@ public abstract class BaseConnectorTest
         assertThatThrownBy(() -> assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN " + invalidTargetColumnName + " int"))
                 .satisfies(this::verifyColumnNameLengthFailurePermissible);
         assertQuery("SELECT x FROM " + tableName, "VALUES 123");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -3537,7 +3737,9 @@ public abstract class BaseConnectorTest
 
         String validTargetColumnName = baseColumnName + "z".repeat(maxLength - baseColumnName.length());
         assertUpdate("ALTER TABLE " + tableName + " RENAME COLUMN x TO " + validTargetColumnName);
-        assertQuery("SELECT " + validTargetColumnName + " FROM " + tableName, "VALUES 123");
+        assertUpdate("INSERT INTO " + tableName + " VALUES 456", 1);
+        assertQuery("SELECT " + validTargetColumnName + " FROM " + tableName, "VALUES 123, 456");
+        assertThat(query("SHOW STATS FOR " + tableName)).succeeds();
         assertUpdate("DROP TABLE " + tableName);
 
         if (maxColumnNameLength().isEmpty()) {
@@ -3549,6 +3751,8 @@ public abstract class BaseConnectorTest
         assertThatThrownBy(() -> assertUpdate("ALTER TABLE " + tableName + " RENAME COLUMN x TO " + invalidTargetTableName))
                 .satisfies(this::verifyColumnNameLengthFailurePermissible);
         assertQuery("SELECT x FROM " + tableName, "VALUES 123");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     protected boolean columnExists(String tableName, String columnName)
@@ -3584,7 +3788,7 @@ public abstract class BaseConnectorTest
         }
 
         assertUpdate("CREATE TABLE " + tableName + " (a bigint) COMMENT 'test comment'");
-        assertEquals(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName), "test comment");
+        assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName)).isEqualTo("test comment");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -3602,7 +3806,7 @@ public abstract class BaseConnectorTest
         }
 
         assertUpdate("CREATE TABLE " + tableName + " (a bigint COMMENT 'test comment')");
-        assertEquals(getColumnComment(tableName, "a"), "test comment");
+        assertThat(getColumnComment(tableName, "a")).isEqualTo("test comment");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -3634,7 +3838,7 @@ public abstract class BaseConnectorTest
         }
         assertUpdate("CREATE TABLE IF NOT EXISTS " + tableName + " AS SELECT name, regionkey FROM nation", "SELECT count(*) FROM nation");
         assertTableColumnNames(tableName, "name", "regionkey");
-        assertNull(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName));
+        assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName)).isNull();
         assertUpdate("DROP TABLE " + tableName);
 
         // Some connectors support CREATE TABLE AS but not the ordinary CREATE TABLE. Let's test CTAS IF NOT EXISTS with a table that is guaranteed to exist.
@@ -3711,7 +3915,7 @@ public abstract class BaseConnectorTest
         }
 
         assertUpdate("CREATE TABLE " + tableName + " COMMENT 'test comment' AS SELECT name FROM nation", 25);
-        assertEquals(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName), "test comment");
+        assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), tableName)).isEqualTo("test comment");
 
         assertUpdate("DROP TABLE " + tableName);
     }
@@ -3760,7 +3964,7 @@ public abstract class BaseConnectorTest
         assertQuery(session, "SELECT * FROM " + table, expectedQuery);
         assertUpdate(session, "DROP TABLE " + table);
 
-        assertFalse(getQueryRunner().tableExists(session, table));
+        assertThat(getQueryRunner().tableExists(session, table)).isFalse();
     }
 
     @Test
@@ -3829,12 +4033,12 @@ public abstract class BaseConnectorTest
 
         assertUpdate("DROP TABLE " + uppercaseName);
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-        assertFalse(getQueryRunner().tableExists(getSession(), renamedTable));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        assertThat(getQueryRunner().tableExists(getSession(), renamedTable)).isFalse();
 
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " RENAME TO " + renamedTable);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-        assertFalse(getQueryRunner().tableExists(getSession(), renamedTable));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        assertThat(getQueryRunner().tableExists(getSession(), renamedTable)).isFalse();
     }
 
     @Test
@@ -3843,7 +4047,7 @@ public abstract class BaseConnectorTest
     {
         if (!hasBehavior(SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS)) {
             if (!hasBehavior(SUPPORTS_RENAME_TABLE)) {
-                throw new SkipException("Skipping since rename table is not supported at all");
+                abort("Skipping since rename table is not supported at all");
             }
             assertQueryFails("ALTER TABLE nation RENAME TO other_schema.yyyy", "This connector does not support renaming tables across schemas");
             return;
@@ -3873,14 +4077,14 @@ public abstract class BaseConnectorTest
             }
         }
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertQuery("SELECT x FROM " + schemaName + "." + renamedTable, "VALUES 123");
 
         assertUpdate("DROP TABLE " + schemaName + "." + renamedTable);
         assertUpdate("DROP SCHEMA " + schemaName);
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-        assertFalse(getQueryRunner().tableExists(Session.builder(getSession()).setSchema(schemaName).build(), renamedTable));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        assertThat(getQueryRunner().tableExists(Session.builder(getSession()).setSchema(schemaName).build(), renamedTable)).isFalse();
     }
 
     @Test
@@ -3974,7 +4178,7 @@ public abstract class BaseConnectorTest
                 }
                 return;
             }
-            throw new SkipException("Skipping as connector does not support CREATE VIEW");
+            abort("Skipping as connector does not support CREATE VIEW");
         }
 
         String catalogName = getSession().getCatalog().orElseThrow();
@@ -4037,15 +4241,14 @@ public abstract class BaseConnectorTest
         }
     }
 
-    @Test(dataProvider = "testColumnNameDataProvider")
-    public void testCommentColumnName(String columnName)
+    @Test
+    public void testCommentColumnName()
     {
         skipTestUnless(hasBehavior(SUPPORTS_COMMENT_ON_COLUMN));
 
-        if (!requiresDelimiting(columnName)) {
-            testCommentColumnName(columnName, false);
+        for (String columnName : testColumnNameDataProvider()) {
+            testCommentColumnName(columnName, requiresDelimiting(columnName));
         }
-        testCommentColumnName(columnName, true);
     }
 
     protected void testCommentColumnName(String columnName, boolean delimited)
@@ -4076,7 +4279,7 @@ public abstract class BaseConnectorTest
                 }
                 return;
             }
-            throw new SkipException("Skipping as connector does not support CREATE VIEW");
+            abort("Skipping as connector does not support CREATE VIEW");
         }
 
         String viewColumnName = "regionkey";
@@ -4121,38 +4324,38 @@ public abstract class BaseConnectorTest
             throw new AssertionError("Cannot test INSERT without CTAS, the test needs to be implemented in a connector-specific way");
         }
 
-        String query = "SELECT phone, custkey, acctbal FROM customer";
+        String query = "SELECT name, nationkey, regionkey FROM nation";
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_", "AS " + query + " WITH NO DATA")) {
             assertQuery("SELECT count(*) FROM " + table.getName() + "", "SELECT 0");
 
-            assertUpdate("INSERT INTO " + table.getName() + " " + query, "SELECT count(*) FROM customer");
+            assertUpdate("INSERT INTO " + table.getName() + " " + query, 25);
 
             assertQuery("SELECT * FROM " + table.getName() + "", query);
 
-            assertUpdate("INSERT INTO " + table.getName() + " (custkey) VALUES (-1)", 1);
-            assertUpdate("INSERT INTO " + table.getName() + " (custkey) VALUES (null)", 1);
-            assertUpdate("INSERT INTO " + table.getName() + " (phone) VALUES ('3283-2001-01-01')", 1);
-            assertUpdate("INSERT INTO " + table.getName() + " (custkey, phone) VALUES (-2, '3283-2001-01-02')", 1);
-            assertUpdate("INSERT INTO " + table.getName() + " (phone, custkey) VALUES ('3283-2001-01-03', -3)", 1);
-            assertUpdate("INSERT INTO " + table.getName() + " (acctbal) VALUES (1234)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (nationkey) VALUES (-1)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (nationkey) VALUES (null)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (name) VALUES ('name-dummy-1')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (nationkey, name) VALUES (-2, 'name-dummy-2')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (name, nationkey) VALUES ('name-dummy-3', -3)", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " (regionkey) VALUES (1234)", 1);
 
             assertQuery("SELECT * FROM " + table.getName() + "", query
                     + " UNION ALL SELECT null, -1, null"
                     + " UNION ALL SELECT null, null, null"
-                    + " UNION ALL SELECT '3283-2001-01-01', null, null"
-                    + " UNION ALL SELECT '3283-2001-01-02', -2, null"
-                    + " UNION ALL SELECT '3283-2001-01-03', -3, null"
+                    + " UNION ALL SELECT 'name-dummy-1', null, null"
+                    + " UNION ALL SELECT 'name-dummy-2', -2, null"
+                    + " UNION ALL SELECT 'name-dummy-3', -3, null"
                     + " UNION ALL SELECT null, null, 1234");
 
             // UNION query produces columns in the opposite order
             // of how they are declared in the table schema
             assertUpdate(
-                    "INSERT INTO " + table.getName() + " (custkey, phone, acctbal) " +
-                            "SELECT custkey, phone, acctbal FROM customer " +
+                    "INSERT INTO " + table.getName() + " (nationkey, name, regionkey) " +
+                            "SELECT nationkey, name, regionkey FROM nation " +
                             "UNION ALL " +
-                            "SELECT custkey, phone, acctbal FROM customer",
-                    "SELECT 2 * count(*) FROM customer");
+                            "SELECT nationkey, name, regionkey FROM nation",
+                    50);
         }
     }
 
@@ -4234,10 +4437,10 @@ public abstract class BaseConnectorTest
 
         String tableName = "test_insert_array_" + randomNameSuffix();
         if (!hasBehavior(SUPPORTS_ARRAY)) {
-            assertThatThrownBy(() -> query("CREATE TABLE " + tableName + " (a array(bigint))"))
+            assertThat(query("CREATE TABLE " + tableName + " (a array(bigint))"))
                     // TODO Unify failure message across connectors
-                    .hasMessageMatching("[Uu]nsupported (column )?type: \\Qarray(bigint)");
-            throw new SkipException("not supported");
+                    .failure().hasMessageMatching("[Uu]nsupported (column )?type: \\Qarray(bigint)");
+            abort("not supported");
         }
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_insert_array_", "(a ARRAY<DOUBLE>, b ARRAY<BIGINT>)")) {
@@ -4398,7 +4601,7 @@ public abstract class BaseConnectorTest
                 });
                 commit = true;
             }
-            catch (RollbackException ignored) {
+            catch (RollbackException _) {
                 // failure accepted, transaction rolled back
                 commit = false;
             }
@@ -4681,6 +4884,17 @@ public abstract class BaseConnectorTest
     }
 
     @Test
+    public void testUpdateMultipleCondition()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_UPDATE));
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_row_update", "AS SELECT * FROM (VALUES (1, 10), (1, 20), (2, 10)) AS t(a, b)")) {
+            assertUpdate("UPDATE " + table.getName() + " SET b = 100 WHERE a = 1 AND b = 10", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 100), (1, 20), (2, 10)");
+        }
+    }
+
+    @Test
     public void testRowLevelUpdate()
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
@@ -4706,7 +4920,8 @@ public abstract class BaseConnectorTest
     }
 
     // Repeat test with invocationCount for better test coverage, since the tested aspect is inherently non-deterministic.
-    @Test(timeOut = 60_000, invocationCount = 4)
+    @RepeatedTest(4)
+    @Timeout(60)
     public void testUpdateRowConcurrently()
             throws Exception
     {
@@ -4772,7 +4987,8 @@ public abstract class BaseConnectorTest
     }
 
     // Repeat test with invocationCount for better test coverage, since the tested aspect is inherently non-deterministic.
-    @Test(timeOut = 60_000, invocationCount = 4)
+    @RepeatedTest(4)
+    @Timeout(60)
     public void testInsertRowConcurrently()
             throws Exception
     {
@@ -4840,7 +5056,8 @@ public abstract class BaseConnectorTest
     }
 
     // Repeat test with invocationCount for better test coverage, since the tested aspect is inherently non-deterministic.
-    @Test(timeOut = 60_000, invocationCount = 4)
+    @RepeatedTest(4)
+    @Timeout(60)
     public void testAddColumnConcurrently()
             throws Exception
     {
@@ -4886,6 +5103,7 @@ public abstract class BaseConnectorTest
                     .collect(toImmutableList());
 
             assertThat(query("DESCRIBE " + tableName))
+                    .result()
                     .projected("Column")
                     .skippingTypesCheck()
                     .matches(Stream.concat(Stream.of("col"), addedColumns.stream())
@@ -4902,6 +5120,88 @@ public abstract class BaseConnectorTest
     {
         // By default, do not expect ALTER TABLE ADD COLUMN to fail in case of concurrent inserts
         throw new AssertionError("Unexpected concurrent add column failure", e);
+    }
+
+    // Repeat test with invocationCount for better test coverage, since the tested aspect is inherently non-deterministic.
+    @RepeatedTest(4)
+    @Timeout(60)
+    public void testCreateOrReplaceTableConcurrently()
+            throws Exception
+    {
+        if (!hasBehavior(SUPPORTS_CREATE_OR_REPLACE_TABLE)) {
+            // Already handled in testCreateOrReplaceTableWhenTableDoesNotExist
+            return;
+        }
+
+        int threads = 4;
+        int numOfCreateOrReplaceStatements = 4;
+        int numOfReads = 16;
+        CyclicBarrier barrier = new CyclicBarrier(threads + 1);
+        ExecutorService executor = newFixedThreadPool(threads + 1);
+        List<Future<?>> futures = new ArrayList<>();
+        try (TestTable table = createTableWithOneIntegerColumn("test_create_or_replace")) {
+            String tableName = table.getName();
+
+            getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT 1 a");
+            assertThat(query("SELECT * FROM " + tableName)).matches("VALUES 1");
+
+            /// One thread submits some CREATE OR REPLACE statements
+            futures.add(executor.submit(() -> {
+                barrier.await(30, SECONDS);
+                IntStream.range(0, numOfCreateOrReplaceStatements).forEach(index -> {
+                    try {
+                        getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT * FROM (VALUES (1), (2)) AS t(a) ");
+                    } catch (Exception e) {
+                        RuntimeException trinoException = getTrinoExceptionCause(e);
+                        try {
+                            throw new AssertionError("Unexpected concurrent CREATE OR REPLACE failure", trinoException);
+                        } catch (Throwable verifyFailure) {
+                            if (verifyFailure != e) {
+                                verifyFailure.addSuppressed(e);
+                            }
+                            throw verifyFailure;
+                        }
+                    }
+                });
+                return null;
+            }));
+            // Other 4 threads continue try to read the same table, none of the reads should fail.
+            IntStream.range(0, threads)
+                    .forEach(threadNumber -> futures.add(executor.submit(() -> {
+                        barrier.await(30, SECONDS);
+                        IntStream.range(0, numOfReads).forEach(readIndex -> {
+                            try {
+                                MaterializedResult result = computeActual("SELECT * FROM " + tableName);
+                                if (result.getRowCount() == 1) {
+                                    assertEqualsIgnoreOrder(result.getMaterializedRows(), List.of(new MaterializedRow(List.of(1))));
+                                }
+                                else {
+                                    assertEqualsIgnoreOrder(result.getMaterializedRows(), List.of(new MaterializedRow(List.of(1)), new MaterializedRow(List.of(2))));
+                                }
+                            }
+                            catch (Exception e) {
+                                RuntimeException trinoException = getTrinoExceptionCause(e);
+                                try {
+                                    throw new AssertionError("Unexpected concurrent CREATE OR REPLACE failure", trinoException);
+                                }
+                                catch (Throwable verifyFailure) {
+                                    if (verifyFailure != e) {
+                                        verifyFailure.addSuppressed(e);
+                                    }
+                                    throw verifyFailure;
+                                }
+                            }
+                        });
+                        return null;
+                    })));
+            futures.forEach(Futures::getUnchecked);
+            getQueryRunner().execute("CREATE OR REPLACE TABLE " + tableName + " AS SELECT * FROM (VALUES (1), (2), (3)) AS t(a)");
+            assertThat(query("SELECT * FROM " + tableName)).matches("VALUES 1, 2, 3");
+        }
+        finally {
+            executor.shutdownNow();
+            executor.awaitTermination(30, SECONDS);
+        }
     }
 
     protected TestTable createTableWithOneIntegerColumn(String namePrefix)
@@ -4995,18 +5295,18 @@ public abstract class BaseConnectorTest
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
         String tableName = "test_drop_table_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + "(col bigint)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
 
         assertUpdate("DROP TABLE " + tableName);
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Test
     public void testDropTableIfExists()
     {
-        assertFalse(getQueryRunner().tableExists(getSession(), "test_drop_if_exists"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_drop_if_exists")).isFalse();
         assertUpdate("DROP TABLE IF EXISTS test_drop_if_exists");
-        assertFalse(getQueryRunner().tableExists(getSession(), "test_drop_if_exists"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_drop_if_exists")).isFalse();
     }
 
     @Test
@@ -5034,19 +5334,17 @@ public abstract class BaseConnectorTest
         executeExclusively(() -> {
             assertEventually(
                     new Duration(1, MINUTES),
-                    () -> assertEquals(
-                            queryManager.getQueries().stream()
-                                    .map(BasicQueryInfo::getQueryId)
-                                    .map(queryManager::getFullQueryInfo)
-                                    .filter(info -> !info.isFinalQueryInfo())
-                                    .collect(toList()),
-                            ImmutableList.of()));
+                    () -> assertThat(queryManager.getQueries().stream()
+                            .map(BasicQueryInfo::getQueryId)
+                            .map(queryManager::getFullQueryInfo)
+                            .filter(info -> !info.isFinalQueryInfo())
+                            .collect(toList())).isEqualTo(ImmutableList.of()));
 
             // We cannot simply get the number of completed queries as soon as all the queries are completed, because this counter may not be up-to-date at that point.
             // The completed queries counter is updated in a final query info listener, which is called eventually.
             // Therefore, here we wait until the value of this counter gets stable.
 
-            DispatchManager dispatchManager = ((DistributedQueryRunner) getQueryRunner()).getCoordinator().getDispatchManager();
+            DispatchManager dispatchManager = getQueryRunner().getCoordinator().getDispatchManager();
             long beforeCompletedQueriesCount = waitUntilStable(() -> dispatchManager.getStats().getCompletedQueries().getTotalCount(), new Duration(5, SECONDS));
             long beforeSubmittedQueriesCount = dispatchManager.getStats().getSubmittedQueries().getTotalCount();
             String tableName = "test_logging_count" + randomNameSuffix();
@@ -5058,8 +5356,8 @@ public abstract class BaseConnectorTest
             // TODO: Figure out a better way of synchronization
             assertEventually(
                     new Duration(1, MINUTES),
-                    () -> assertEquals(dispatchManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount, 4));
-            assertEquals(dispatchManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount, 4);
+                    () -> assertThat(dispatchManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount).isEqualTo(4));
+            assertThat(dispatchManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount).isEqualTo(4);
         });
     }
 
@@ -5091,7 +5389,7 @@ public abstract class BaseConnectorTest
     public void testShowSchemasFromOther()
     {
         MaterializedResult result = computeActual("SHOW SCHEMAS FROM tpch");
-        assertTrue(result.getOnlyColumnAsSet().containsAll(ImmutableSet.of(INFORMATION_SCHEMA, "tiny", "sf1")));
+        assertThat(result.getOnlyColumnAsSet().containsAll(ImmutableSet.of(INFORMATION_SCHEMA, "tiny", "sf1"))).isTrue();
     }
 
     // TODO move to to engine-only
@@ -5115,20 +5413,20 @@ public abstract class BaseConnectorTest
         String tableName = "test_written_stats_" + randomNameSuffix();
         try {
             String sql = "CREATE TABLE " + tableName + " AS SELECT * FROM nation";
-            MaterializedResultWithQueryId resultResultWithQueryId = getDistributedQueryRunner().executeWithQueryId(getSession(), sql);
-            QueryInfo queryInfo = getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
+            MaterializedResultWithPlan result = getDistributedQueryRunner().executeWithPlan(getSession(), sql);
+            QueryInfo queryInfo = getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(result.queryId());
 
-            assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
-            assertEquals(queryInfo.getQueryStats().getWrittenPositions(), 25L);
-            assertTrue(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L);
+            assertThat(queryInfo.getQueryStats().getOutputPositions()).isEqualTo(1L);
+            assertThat(queryInfo.getQueryStats().getWrittenPositions()).isEqualTo(25L);
+            assertThat(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L).isTrue();
 
             sql = "INSERT INTO " + tableName + " SELECT * FROM nation LIMIT 10";
-            resultResultWithQueryId = getDistributedQueryRunner().executeWithQueryId(getSession(), sql);
-            queryInfo = getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
+            result = getDistributedQueryRunner().executeWithPlan(getSession(), sql);
+            queryInfo = getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(result.queryId());
 
-            assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
-            assertEquals(queryInfo.getQueryStats().getWrittenPositions(), 10L);
-            assertTrue(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L);
+            assertThat(queryInfo.getQueryStats().getOutputPositions()).isEqualTo(1L);
+            assertThat(queryInfo.getQueryStats().getWrittenPositions()).isEqualTo(10L);
+            assertThat(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L).isTrue();
         }
         finally {
             assertUpdate("DROP TABLE IF EXISTS " + tableName);
@@ -5161,18 +5459,17 @@ public abstract class BaseConnectorTest
     public void testNoDataSystemTable()
     {
         assertQuerySucceeds("TABLE nation");
-        assertQueryFails("TABLE \"nation$data\"", "line 1:1: Table '\\w+.\\w+.nation\\$data' does not exist");
+        assertQueryFails("TABLE \"nation$data\"", "line 1:1: Table '\\w+.\\w+.\"nation\\$data\"' does not exist");
     }
 
-    @Test(dataProvider = "testColumnNameDataProvider")
-    public void testColumnName(String columnName)
+    @Test
+    public void testColumnName()
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
 
-        if (!requiresDelimiting(columnName)) {
-            testColumnName(columnName, false);
+        for (String columnName : testColumnNameDataProvider()) {
+            testColumnName(columnName, requiresDelimiting(columnName));
         }
-        testColumnName(columnName, true);
     }
 
     protected void testColumnName(String columnName, boolean delimited)
@@ -5209,15 +5506,14 @@ public abstract class BaseConnectorTest
         }
     }
 
-    @Test(dataProvider = "testColumnNameDataProvider")
-    public void testAddAndDropColumnName(String columnName)
+    @Test
+    public void testAddAndDropColumnName()
     {
         skipTestUnless(hasBehavior(SUPPORTS_ADD_COLUMN) && hasBehavior(SUPPORTS_DROP_COLUMN));
 
-        if (!requiresDelimiting(columnName)) {
-            testAddAndDropColumnName(columnName, false);
+        for (String columnName : testColumnNameDataProvider()) {
+            testAddAndDropColumnName(columnName, requiresDelimiting(columnName));
         }
-        testAddAndDropColumnName(columnName, true);
     }
 
     protected void testAddAndDropColumnName(String columnName, boolean delimited)
@@ -5254,15 +5550,14 @@ public abstract class BaseConnectorTest
         return "CREATE TABLE " + tableName + "(" + columnNameInSql + " varchar(50), value varchar(50))";
     }
 
-    @Test(dataProvider = "testColumnNameDataProvider")
-    public void testRenameColumnName(String columnName)
+    @Test
+    public void testRenameColumnName()
     {
         skipTestUnless(hasBehavior(SUPPORTS_RENAME_COLUMN));
 
-        if (!requiresDelimiting(columnName)) {
-            testRenameColumnName(columnName, false);
+        for (String columnName : testColumnNameDataProvider()) {
+            testRenameColumnName(columnName, requiresDelimiting(columnName));
         }
-        testRenameColumnName(columnName, true);
     }
 
     protected void testRenameColumnName(String columnName, boolean delimited)
@@ -5309,14 +5604,13 @@ public abstract class BaseConnectorTest
         return !identifierName.matches("[a-zA-Z][a-zA-Z0-9_]*");
     }
 
-    @DataProvider
-    public Object[][] testColumnNameDataProvider()
+    public List<String> testColumnNameDataProvider()
     {
         return testColumnNameTestData().stream()
                 .map(this::filterColumnNameTestData)
                 .filter(Optional::isPresent)
                 .map(Optional::get)
-                .collect(toDataProvider());
+                .collect(toList());
     }
 
     private List<String> testColumnNameTestData()
@@ -5342,6 +5636,7 @@ public abstract class BaseConnectorTest
                 .add("a\\backslash`")
                 .add("adigit0")
                 .add("0startwithdigit")
+                .add("カラム")
                 .build();
     }
 
@@ -5355,83 +5650,145 @@ public abstract class BaseConnectorTest
         return "test_data_mapping_smoke_" + trinoTypeName.replaceAll("[^a-zA-Z0-9]", "_") + randomNameSuffix();
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testCreateTableWithTableCommentSpecialCharacter(String comment)
+    @Test
+    public void testCreateTableWithTableCommentSpecialCharacter()
+    {
+        testCreateTableWithTableCommentSpecialCharacter("a;semicolon");
+        testCreateTableWithTableCommentSpecialCharacter("an@at");
+        testCreateTableWithTableCommentSpecialCharacter("a\"quote");
+        testCreateTableWithTableCommentSpecialCharacter("an'apostrophe");
+        testCreateTableWithTableCommentSpecialCharacter("a`backtick`");
+        testCreateTableWithTableCommentSpecialCharacter("a/slash");
+        testCreateTableWithTableCommentSpecialCharacter("a\\backslash");
+        testCreateTableWithTableCommentSpecialCharacter("a?question");
+        testCreateTableWithTableCommentSpecialCharacter("[square bracket]");
+    }
+
+    protected void testCreateTableWithTableCommentSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_", "(a bigint) COMMENT " + varcharLiteral(comment))) {
-            assertEquals(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName()), comment);
+            assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName())).isEqualTo(comment);
         }
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testCreateTableAsSelectWithTableCommentSpecialCharacter(String comment)
+    @Test
+    public void testCreateTableAsSelectWithTableCommentSpecialCharacter()
+    {
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a;semicolon");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("an@at");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a\"quote");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("an'apostrophe");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a`backtick`");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a/slash");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a\\backslash");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("a?question");
+        testCreateTableAsSelectWithTableCommentSpecialCharacter("[square bracket]");
+    }
+
+    private void testCreateTableAsSelectWithTableCommentSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA) && hasBehavior(SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_", " COMMENT " + varcharLiteral(comment) + " AS SELECT 1 a")) {
-            assertEquals(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName()), comment);
+            assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName())).isEqualTo(comment);
         }
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testCreateTableWithColumnCommentSpecialCharacter(String comment)
+    @Test
+    public void testCreateTableWithColumnCommentSpecialCharacter()
+    {
+        testCreateTableWithColumnCommentSpecialCharacter("a;semicolon");
+        testCreateTableWithColumnCommentSpecialCharacter("an@at");
+        testCreateTableWithColumnCommentSpecialCharacter("a\"quote");
+        testCreateTableWithColumnCommentSpecialCharacter("an'apostrophe");
+        testCreateTableWithColumnCommentSpecialCharacter("a`backtick`");
+        testCreateTableWithColumnCommentSpecialCharacter("a/slash");
+        testCreateTableWithColumnCommentSpecialCharacter("a\\backslash");
+        testCreateTableWithColumnCommentSpecialCharacter("a?question");
+        testCreateTableWithColumnCommentSpecialCharacter("[square bracket]");
+    }
+
+    private void testCreateTableWithColumnCommentSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_", " (a bigint COMMENT " + varcharLiteral(comment) + ")")) {
-            assertEquals(getColumnComment(table.getName(), "a"), comment);
+            assertThat(getColumnComment(table.getName(), "a")).isEqualTo(comment);
         }
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testAddColumnWithCommentSpecialCharacter(String comment)
+    @Test
+    public void testAddColumnWithCommentSpecialCharacter()
+    {
+        testAddColumnWithCommentSpecialCharacter("a;semicolon");
+        testAddColumnWithCommentSpecialCharacter("an@at");
+        testAddColumnWithCommentSpecialCharacter("a\"quote");
+        testAddColumnWithCommentSpecialCharacter("an'apostrophe");
+        testAddColumnWithCommentSpecialCharacter("a`backtick`");
+        testAddColumnWithCommentSpecialCharacter("a/slash");
+        testAddColumnWithCommentSpecialCharacter("a\\backslash");
+        testAddColumnWithCommentSpecialCharacter("a?question");
+        testAddColumnWithCommentSpecialCharacter("[square bracket]");
+    }
+
+    protected void testAddColumnWithCommentSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_ADD_COLUMN_WITH_COMMENT));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_col_", "(a_varchar varchar)")) {
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN b_varchar varchar COMMENT " + varcharLiteral(comment));
-            assertEquals(getColumnComment(table.getName(), "b_varchar"), comment);
+            assertThat(getColumnComment(table.getName(), "b_varchar")).isEqualTo(comment);
         }
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testCommentTableSpecialCharacter(String comment)
+    @Test
+    public void testCommentTableSpecialCharacter()
+    {
+        testCommentTableSpecialCharacter("a;semicolon");
+        testCommentTableSpecialCharacter("an@at");
+        testCommentTableSpecialCharacter("a\"quote");
+        testCommentTableSpecialCharacter("an'apostrophe");
+        testCommentTableSpecialCharacter("a`backtick`");
+        testCommentTableSpecialCharacter("a/slash");
+        testCommentTableSpecialCharacter("a\\backslash");
+        testCommentTableSpecialCharacter("a?question");
+        testCommentTableSpecialCharacter("[square bracket]");
+    }
+
+    private void testCommentTableSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_COMMENT_ON_TABLE));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_comment_table_", "(a integer)")) {
             assertUpdate("COMMENT ON TABLE " + table.getName() + " IS " + varcharLiteral(comment));
-            assertEquals(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName()), comment);
+            assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName())).isEqualTo(comment);
         }
     }
 
-    @Test(dataProvider = "testCommentDataProvider")
-    public void testCommentColumnSpecialCharacter(String comment)
+    @Test
+    public void testCommentColumnSpecialCharacter()
+    {
+        testCommentColumnSpecialCharacter("a;semicolon");
+        testCommentColumnSpecialCharacter("an@at");
+        testCommentColumnSpecialCharacter("a\"quote");
+        testCommentColumnSpecialCharacter("an'apostrophe");
+        testCommentColumnSpecialCharacter("a`backtick`");
+        testCommentColumnSpecialCharacter("a/slash");
+        testCommentColumnSpecialCharacter("a\\backslash");
+        testCommentColumnSpecialCharacter("a?question");
+        testCommentColumnSpecialCharacter("[square bracket]");
+    }
+
+    private void testCommentColumnSpecialCharacter(String comment)
     {
         skipTestUnless(hasBehavior(SUPPORTS_COMMENT_ON_COLUMN));
 
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_comment_column_", "(a integer)")) {
             assertUpdate("COMMENT ON COLUMN " + table.getName() + ".a IS " + varcharLiteral(comment));
-            assertEquals(getColumnComment(table.getName(), "a"), comment);
+            assertThat(getColumnComment(table.getName(), "a")).isEqualTo(comment);
         }
-    }
-
-    @DataProvider
-    public Object[][] testCommentDataProvider()
-    {
-        return new Object[][] {
-                {"a;semicolon"},
-                {"an@at"},
-                {"a\"quote"},
-                {"an'apostrophe"},
-                {"a`backtick`"},
-                {"a/slash"},
-                {"a\\backslash"},
-                {"a?question"},
-                {"[square bracket]"},
-        };
     }
 
     protected static String varcharLiteral(String value)
@@ -5440,16 +5797,18 @@ public abstract class BaseConnectorTest
         return "'" + value.replace("'", "''") + "'";
     }
 
-    @Test(dataProvider = "testDataMappingSmokeTestDataProvider")
-    public void testDataMappingSmokeTest(DataMappingTestSetup dataMappingTestSetup)
+    @Test
+    public void testDataMappingSmokeTest()
     {
-        testDataMapping(dataMappingTestSetup);
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+
+        for (DataMappingTestSetup dataMappingTestSetup : testDataMappingSmokeTestDataProvider()) {
+            testDataMapping(dataMappingTestSetup);
+        }
     }
 
     private void testDataMapping(DataMappingTestSetup dataMappingTestSetup)
     {
-        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
-
         String trinoTypeName = dataMappingTestSetup.getTrinoTypeName();
         String sampleValueLiteral = dataMappingTestSetup.getSampleValueLiteral();
         String highValueLiteral = dataMappingTestSetup.getHighValueLiteral();
@@ -5501,13 +5860,12 @@ public abstract class BaseConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @DataProvider
-    public final Object[][] testDataMappingSmokeTestDataProvider()
+    public final List<DataMappingTestSetup> testDataMappingSmokeTestDataProvider()
     {
         return testDataMappingSmokeTestData().stream()
                 .map(this::filterDataMappingSmokeTestData)
                 .flatMap(Optional::stream)
-                .collect(toDataProvider());
+                .collect(toList());
     }
 
     private List<DataMappingTestSetup> testDataMappingSmokeTestData()
@@ -5550,19 +5908,22 @@ public abstract class BaseConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
-    @Test(dataProvider = "testCaseSensitiveDataMappingProvider")
-    public void testCaseSensitiveDataMapping(DataMappingTestSetup dataMappingTestSetup)
+    @Test
+    public void testCaseSensitiveDataMapping()
     {
-        testDataMapping(dataMappingTestSetup);
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE));
+
+        for (DataMappingTestSetup dataMappingTestSetup : testCaseSensitiveDataMappingProvider()) {
+            testDataMapping(dataMappingTestSetup);
+        }
     }
 
-    @DataProvider
-    public final Object[][] testCaseSensitiveDataMappingProvider()
+    private List<DataMappingTestSetup> testCaseSensitiveDataMappingProvider()
     {
         return testCaseSensitiveDataMappingData().stream()
                 .map(this::filterCaseSensitiveDataMappingTestData)
                 .flatMap(Optional::stream)
-                .collect(toDataProvider());
+                .collect(toList());
     }
 
     protected Optional<DataMappingTestSetup> filterCaseSensitiveDataMappingTestData(DataMappingTestSetup dataMappingTestSetup)
@@ -5580,6 +5941,66 @@ public abstract class BaseConnectorTest
                 .add(new DataMappingTestSetup("char(1)", "'B'", "'a'"))
                 .add(new DataMappingTestSetup("varchar(1)", "'B'", "'a'"))
                 .build();
+    }
+
+    @Test
+    public void testTimestampWithTimeZoneCastToDatePredicate()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
+
+        TestTable table;
+        try {
+            table = new TestTable(
+                    getQueryRunner()::execute,
+                    "timestamptz_to_date",
+                    // These to timestamps are same local time, but different point in times and also different date at UTC time zone
+                    """
+                            (i, t) AS VALUES
+                                ('UTC', TIMESTAMP '2005-09-10 00:12:34.000 UTC'),
+                                ('Warsaw', TIMESTAMP '2005-09-10 00:12:34.000 Europe/Warsaw'),
+                                ('Los Angeles', TIMESTAMP '2005-09-10 00:12:34.000 America/Los_Angeles')""");
+        }
+        catch (QueryFailedException e) {
+            verifyUnsupportedTypeException(e, "timestamp(3) with time zone");
+            return;
+        }
+        try (table) {
+            assertThat(query("SELECT i FROM " + table.getName() + " WHERE CAST(t AS date) = DATE '2005-09-10'"))
+                    .hasCorrectResultsRegardlessOfPushdown()
+                    // Number of matched rows depends on whether the connector preserves the time zone information, or point in time only
+                    .skippingTypesCheck()
+                    .containsAll("VALUES 'UTC', 'Los Angeles'");
+        }
+    }
+
+    @Test
+    public void testTimestampWithTimeZoneCastToTimestampPredicate()
+    {
+        skipTestUnless(hasBehavior(SUPPORTS_CREATE_TABLE_WITH_DATA));
+
+        TestTable table;
+        try {
+            table = new TestTable(
+                    getQueryRunner()::execute,
+                    "timestamptz_to_ts",
+                    // These to timestamps are same local time, but different point in times
+                    """
+                            (i, t) AS VALUES
+                                ('UTC', TIMESTAMP '2005-09-10 13:00:00.000 UTC'),
+                                ('Warsaw', TIMESTAMP '2005-09-10 13:00:00.000 Europe/Warsaw'),
+                                ('Los Angeles', TIMESTAMP '2005-09-10 13:00:00.000 America/Los_Angeles')""");
+        }
+        catch (QueryFailedException e) {
+            verifyUnsupportedTypeException(e, "timestamp(3) with time zone");
+            return;
+        }
+        try (table) {
+            assertThat(query("SELECT i FROM " + table.getName() + " WHERE CAST(t AS timestamp(0)) = TIMESTAMP '2005-09-10 13:00:00'"))
+                    .hasCorrectResultsRegardlessOfPushdown()
+                    // Number of matched rows depends on whether the connector preserves the time zone information, or point in time only
+                    .skippingTypesCheck()
+                    .containsAll("VALUES 'UTC'");
+        }
     }
 
     /**
@@ -6191,14 +6612,22 @@ public abstract class BaseConnectorTest
                 " USING (VALUES ('ALGERIA', 'AFRICA')) s(nation_name, region_name)\n" +
                 " ON (t.nation_name = s.nation_name)\n" +
                 " WHEN MATCHED THEN UPDATE SET region_name = NULL"))
-                .hasMessage("Assigning NULL to non-null MERGE target table column region_name");
+                .hasMessage("NULL value not allowed for NOT NULL column: region_name");
 
         // Show that inserting using a null value fails
         assertThatThrownBy(() -> computeActual(format("MERGE INTO %s t\n", targetTable) +
                 " USING (VALUES ('IMAGINARIA', 'AFRICA')) s(nation_name, region_name)\n" +
                 " ON (t.nation_name = s.nation_name)\n" +
                 " WHEN NOT MATCHED THEN INSERT (nation_name, region_name) VALUES ('IMAGINARIA', NULL)"))
-                .hasMessage("Assigning NULL to non-null MERGE target table column region_name");
+                .hasMessage("NULL value not allowed for NOT NULL column: region_name");
+
+        // Show that inserting using an implicit null value fails
+        assertThatThrownBy(() -> computeActual(format("MERGE INTO %s t\n", targetTable) +
+                " USING (VALUES ('IMAGINARIA', 'AFRICA')) s(nation_name, region_name)\n" +
+                " ON (t.nation_name = s.nation_name)\n" +
+                // The region_name is implicitly assigned null
+                " WHEN NOT MATCHED THEN INSERT (nation_name) VALUES ('IMAGINARIA')"))
+                .hasMessage("NULL value not allowed for NOT NULL column: region_name");
 
         // Show that if the updated value is provided by a function unpredicatably computing null,
         // the merge fails
@@ -6206,7 +6635,7 @@ public abstract class BaseConnectorTest
                 " USING (VALUES ('ALGERIA', 'AFRICA')) s(nation_name, region_name)\n" +
                 " ON (t.nation_name = s.nation_name)\n" +
                 " WHEN MATCHED THEN UPDATE SET region_name = CAST(TRY(5/0) AS VARCHAR)"))
-                .hasMessage("Assigning NULL to non-null MERGE target table column region_name");
+                .hasMessage("NULL value not allowed for NOT NULL column: region_name");
 
         assertUpdate("DROP TABLE " + targetTable);
     }
@@ -6238,15 +6667,14 @@ public abstract class BaseConnectorTest
                 .satisfies(e -> assertThat(getTrinoExceptionCause(e)).hasMessageFindingMatch(expectedMessagePart));
     }
 
-    @Test(dataProvider = "testColumnNameDataProvider")
-    public void testMaterializedViewColumnName(String columnName)
+    @Test
+    public void testMaterializedViewColumnName()
     {
         skipTestUnless(hasBehavior(SUPPORTS_CREATE_MATERIALIZED_VIEW));
 
-        if (!requiresDelimiting(columnName)) {
-            testMaterializedViewColumnName(columnName, false);
+        for (String columnName : testColumnNameDataProvider()) {
+            testMaterializedViewColumnName(columnName, requiresDelimiting(columnName));
         }
-        testMaterializedViewColumnName(columnName, true);
     }
 
     private void testMaterializedViewColumnName(String columnName, boolean delimited)
@@ -6272,6 +6700,178 @@ public abstract class BaseConnectorTest
         assertQuery("SELECT * FROM " + viewName, "VALUES ('sample value', 'abc')");
 
         assertUpdate("DROP MATERIALIZED VIEW " + viewName);
+    }
+
+    @Test
+    public void testCreateFunction()
+    {
+        if (!hasBehavior(SUPPORTS_CREATE_FUNCTION)) {
+            String catalog = getQueryRunner().getDefaultSession().getCatalog().orElseThrow();
+            String schema = getQueryRunner().getDefaultSession().getSchema().orElseThrow();
+            assertQueryFails(
+                    "CREATE FUNCTION " + catalog + "." + schema + ".test_create_function" + randomNameSuffix() + "(x integer) RETURNS bigint COMMENT 't42' RETURN x * 42",
+                    "This connector does not support creating functions");
+            return;
+        }
+
+        String name = "test_" + randomNameSuffix();
+        String name2 = "test_" + randomNameSuffix();
+        String name3 = "test_" + randomNameSuffix();
+
+        assertQueryFails("SHOW CREATE FUNCTION " + name, "line 1:1: Function not found");
+
+        assertUpdate("CREATE FUNCTION " + name + "(x integer) RETURNS bigint COMMENT 't42' RETURN x * 42");
+
+        assertQuery("SELECT " + name + "(99)", "SELECT 4158");
+        assertQueryFails("SELECT " + name + "(2.9)", ".*Unexpected parameters.*");
+
+        assertUpdate("CREATE FUNCTION " + name + "(x double) RETURNS double COMMENT 't88' RETURN x * 8.8");
+
+        assertThat(query("SHOW FUNCTIONS"))
+                .result()
+                .skippingTypesCheck()
+                .containsAll(resultBuilder(getSession())
+                        .row(name, "bigint", "integer", "scalar", true, "t42")
+                        .row(name, "double", "double", "scalar", true, "t88")
+                        .build());
+
+        String integerFunctionSql = """
+                CREATE FUNCTION %s(x integer)
+                RETURNS bigint
+                COMMENT 't42'
+                RETURN (x * 42)
+                """.strip().formatted(name);
+        String doubleFunctionSql = """
+                CREATE FUNCTION %s(x double)
+                RETURNS double
+                COMMENT 't88'
+                RETURN (x * DECIMAL '8.8')
+                """.strip().formatted(name);
+        assertThat(computeActual("SHOW CREATE FUNCTION " + name).getOnlyColumnAsSet())
+                .containsExactlyInAnyOrder(integerFunctionSql, doubleFunctionSql);
+
+        assertQuery("SELECT " + name + "(99)", "SELECT 4158");
+        assertQuery("SELECT " + name + "(2.9)", "SELECT 25.52");
+
+        assertQueryFails("CREATE FUNCTION " + name + "(x int) RETURNS bigint RETURN x", "line 1:1: Function already exists");
+
+        assertQuery("SELECT " + name + "(99)", "SELECT 4158");
+        assertQuery("SELECT " + name + "(2.9)", "SELECT 25.52");
+
+        assertUpdate("CREATE OR REPLACE FUNCTION " + name + "(x bigint) RETURNS bigint RETURN x * 23");
+        assertUpdate("CREATE FUNCTION " + name2 + "(s varchar) RETURNS varchar RETURN 'Hello ' || s");
+
+        assertThat(query("SHOW FUNCTIONS"))
+                .result()
+                .skippingTypesCheck()
+                .containsAll(resultBuilder(getSession())
+                        .row(name, "bigint", "integer", "scalar", true, "t42")
+                        .row(name, "bigint", "bigint", "scalar", true, "")
+                        .row(name, "double", "double", "scalar", true, "t88")
+                        .row(name2, "varchar", "varchar", "scalar", true, "")
+                        .build());
+
+        String bigintFunctionSql = """
+                CREATE FUNCTION %s(x bigint)
+                RETURNS bigint
+                RETURN (x * 23)
+                """.strip().formatted(name);
+        assertThat(computeActual("SHOW CREATE FUNCTION " + name).getOnlyColumnAsSet())
+                .containsExactlyInAnyOrder(integerFunctionSql, doubleFunctionSql, bigintFunctionSql);
+
+        assertQuery("SELECT " + name + "(99)", "SELECT 4158");
+        assertQuery("SELECT " + name + "(cast(99 as bigint))", "SELECT 2277");
+        assertQuery("SELECT " + name + "(2.9)", "SELECT 25.52");
+        assertQuery("SELECT " + name2 + "('world')", "SELECT 'Hello world'");
+
+        assertQuery("SELECT sum(" + name + "(orderkey)) FROM orders", "SELECT sum(orderkey * 23) FROM orders");
+
+        assertUpdate("CREATE FUNCTION " + name3 + "() RETURNS double NOT DETERMINISTIC RETURN random()");
+
+        assertThat(query("SHOW FUNCTIONS"))
+                .result()
+                .skippingTypesCheck()
+                .containsAll(resultBuilder(getSession())
+                        .row(name3, "double", "", "scalar", false, "")
+                        .build());
+
+        assertThat(query("SHOW FUNCTIONS FROM " + computeScalar("SELECT current_path")))
+                .result()
+                .skippingTypesCheck()
+                .matches(resultBuilder(getSession())
+                        .row(name, "bigint", "integer", "scalar", true, "t42")
+                        .row(name, "bigint", "bigint", "scalar", true, "")
+                        .row(name, "double", "double", "scalar", true, "t88")
+                        .row(name2, "varchar", "varchar", "scalar", true, "")
+                        .row(name3, "double", "", "scalar", false, "")
+                        .build());
+
+        assertThat(computeActual("SHOW CREATE FUNCTION " + name3).getOnlyValue())
+                .isEqualTo("""
+                        CREATE FUNCTION %s()
+                        RETURNS double
+                        NOT DETERMINISTIC
+                        RETURN random()
+                        """.strip().formatted(name3));
+
+        assertQueryFails("DROP FUNCTION " + name + "(varchar)", "line 1:1: Function not found");
+        assertUpdate("DROP FUNCTION " + name + "(z bigint)");
+        assertUpdate("DROP FUNCTION " + name + "(double)");
+        assertQueryFails("DROP FUNCTION " + name + "(bigint)", "line 1:1: Function not found");
+        assertUpdate("DROP FUNCTION IF EXISTS " + name + "(bigint)");
+        assertUpdate("DROP FUNCTION " + name + "(int)");
+        assertUpdate("DROP FUNCTION " + name2 + "(varchar)");
+        assertQueryFails("DROP FUNCTION " + name2 + "(varchar)", "line 1:1: Function not found");
+        assertUpdate("DROP FUNCTION " + name3 + "()");
+        assertQueryFails("DROP FUNCTION " + name3 + "()", "line 1:1: Function not found");
+
+        assertThat(query("SHOW FUNCTIONS FROM " + computeScalar("SELECT current_path")))
+                .returnsEmptyResult();
+
+        // verify stored functions cannot see inline functions
+        String myAbs = "my_abs_" + randomNameSuffix();
+        assertUpdate("CREATE FUNCTION " + myAbs + "(x integer) RETURNS integer RETURN abs(x)");
+        // test with inline function first as FunctionManager caches compiled implementations
+        assertQuery("WITH FUNCTION abs(x integer) RETURNS integer RETURN x * 2 SELECT " + myAbs + "(-33)", "SELECT 33");
+        assertQuery("SELECT " + myAbs + "(-33)", "SELECT 33");
+
+        String wrapMyAbs = "wrap_my_abs_" + randomNameSuffix();
+        assertUpdate("CREATE FUNCTION " + wrapMyAbs + "(x integer) RETURNS integer RETURN " + myAbs + "(x)");
+        // test with inline function first as FunctionManager caches compiled implementations
+        assertQuery("WITH FUNCTION " + myAbs + "(x integer) RETURNS integer RETURN x * 2 SELECT " + wrapMyAbs + "(-33)", "SELECT 33");
+        assertQuery("SELECT " + wrapMyAbs + "(-33)", "SELECT 33");
+        assertUpdate("DROP FUNCTION " + myAbs + "(integer)");
+        assertUpdate("DROP FUNCTION " + wrapMyAbs + "(integer)");
+
+        // verify mutually recursive functions are not allowed
+        String recursive1 = "recursive1_" + randomNameSuffix();
+        String recursive2 = "recursive2_" + randomNameSuffix();
+        assertUpdate("CREATE FUNCTION " + recursive1 + "(x integer) RETURNS integer RETURN x");
+        assertUpdate("CREATE FUNCTION " + recursive2 + "(x integer) RETURNS integer RETURN " + recursive1 + "(x)");
+        assertUpdate("CREATE OR REPLACE FUNCTION " + recursive1 + "(x integer) RETURNS integer RETURN " + recursive2 + "(x)");
+        assertQueryFails("SELECT " + recursive1 + "(42)", "Recursive language functions are not supported: " + recursive1 + "\\(integer\\):integer");
+        assertQueryFails("SELECT " + recursive2 + "(42)", "Recursive language functions are not supported: " + recursive2 + "\\(integer\\):integer");
+        assertUpdate("DROP FUNCTION " + recursive1 + "(integer)");
+        assertUpdate("DROP FUNCTION " + recursive2 + "(integer)");
+
+        // verify exception code when function references another, not existing function
+        String wrappingFunction = "wrapping_" + randomNameSuffix();
+        String wrappedFunction = "wrapped_" + randomNameSuffix();
+
+        // wrapped_() not yet registered
+        assertThat(query("CREATE FUNCTION " + wrappingFunction + "() RETURNS integer RETURN " + wrappedFunction + "()")).failure()
+                .hasMessage("line 1:62: Function '" + wrappedFunction + "' not registered")
+                .hasErrorCode(FUNCTION_NOT_FOUND);
+
+        assertUpdate("CREATE FUNCTION " + wrappedFunction + "() RETURNS integer RETURN 42");
+        assertUpdate("CREATE FUNCTION " + wrappingFunction + "() RETURNS integer RETURN " + wrappedFunction + "()");
+        assertQuery("SELECT " + wrappingFunction + "()", "SELECT 42");
+        assertUpdate("DROP FUNCTION " + wrappedFunction + "()");
+
+        // wrapped_() dropped
+        assertThat(query("SELECT " + wrappingFunction + "()")).failure()
+                .hasMessage("line 1:8: Function '" + wrappedFunction + "' not registered")
+                .hasErrorCode(FUNCTION_NOT_FOUND);
     }
 
     @Test
@@ -6445,9 +7045,9 @@ public abstract class BaseConnectorTest
                                     }
                                     assertThat(statsWithoutPushdown.getProcessedInputDataSize()).isGreaterThan(processedDataSizeWithPushdown);
                                 },
-                                results -> assertEquals(results.getOnlyColumnAsSet(), expectedResult.getOnlyColumnAsSet()));
+                                results -> assertThat(results.getOnlyColumnAsSet()).isEqualTo(expectedResult.getOnlyColumnAsSet()));
                     },
-                    results -> assertEquals(results.getOnlyColumnAsSet(), expectedResult.getOnlyColumnAsSet()));
+                    results -> assertThat(results.getOnlyColumnAsSet()).isEqualTo(expectedResult.getOnlyColumnAsSet()));
         }
     }
 
@@ -6478,9 +7078,9 @@ public abstract class BaseConnectorTest
                                         assertThat(statsWithSelectLeafField.getPhysicalInputDataSize()).isEqualTo(statsWithSelectRootField.getPhysicalInputDataSize());
                                     }
                                 },
-                                results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT val + 1 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
+                                results -> assertThat(results.getOnlyColumnAsSet()).isEqualTo(computeActual("SELECT val + 1 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
                     },
-                    results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
+                    results -> assertThat(results.getOnlyColumnAsSet()).isEqualTo(computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
 
             // Verify that the physical input size is the same when reading the root field compared to reading both the root and root.leaf1 fields
             assertQueryStats(
@@ -6495,7 +7095,14 @@ public abstract class BaseConnectorTest
                                 },
                                 results -> assertEqualsIgnoreOrder(results.getMaterializedRows(), computeActual("SELECT ROW(val + 1, val + 2), val + 1 FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getMaterializedRows()));
                     },
-                    results -> assertEquals(results.getOnlyColumnAsSet(), computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
+                    results -> assertThat(results.getOnlyColumnAsSet()).isEqualTo(computeActual("SELECT ROW(val + 1, val + 2) FROM UNNEST(SEQUENCE(1, 10)) AS t(val)").getOnlyColumnAsSet()));
+        }
+    }
+
+    protected static void skipTestUnless(boolean requirement)
+    {
+        if (!requirement) {
+            abort("requirement not met");
         }
     }
 
@@ -6507,9 +7114,9 @@ public abstract class BaseConnectorTest
                     .findAll()
                     .size();
             if (actualCount != expectedCount) {
-                Metadata metadata = getDistributedQueryRunner().getMetadata();
-                FunctionManager functionManager = getDistributedQueryRunner().getFunctionManager();
-                String formattedPlan = textLogicalPlan(plan.getRoot(), plan.getTypes(), metadata, functionManager, StatsAndCosts.empty(), session, 0, false);
+                Metadata metadata = getDistributedQueryRunner().getPlannerContext().getMetadata();
+                FunctionManager functionManager = getDistributedQueryRunner().getPlannerContext().getFunctionManager();
+                String formattedPlan = textLogicalPlan(plan.getRoot(), metadata, functionManager, StatsAndCosts.empty(), session, 0, false);
                 throw new AssertionError(format(
                         "Expected [\n%s\n] partial limit but found [\n%s\n] partial limit. Actual plan is [\n\n%s\n]",
                         expectedCount,
@@ -6552,7 +7159,7 @@ public abstract class BaseConnectorTest
 
     protected Session withoutSmallFileThreshold(Session session)
     {
-        return session;
+        throw new UnsupportedOperationException();
     }
 
     protected static final class DataMappingTestSetup

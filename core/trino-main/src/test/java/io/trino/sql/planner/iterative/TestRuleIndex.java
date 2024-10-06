@@ -17,20 +17,20 @@ package io.trino.sql.planner.iterative;
 import com.google.common.collect.ImmutableSet;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
+import io.trino.sql.ir.Booleans;
 import io.trino.sql.planner.PlanNodeIdAllocator;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.BooleanLiteral;
 import org.junit.jupiter.api.Test;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static java.util.stream.Collectors.toSet;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestRuleIndex
 {
@@ -52,18 +52,12 @@ public class TestRuleIndex
                 .build();
 
         ProjectNode projectNode = planBuilder.project(Assignments.of(), planBuilder.values());
-        FilterNode filterNode = planBuilder.filter(BooleanLiteral.TRUE_LITERAL, planBuilder.values());
+        FilterNode filterNode = planBuilder.filter(Booleans.TRUE, planBuilder.values());
         ValuesNode valuesNode = planBuilder.values();
 
-        assertEquals(
-                ruleIndex.getCandidates(projectNode).collect(toSet()),
-                ImmutableSet.of(projectRule1, projectRule2, anyRule));
-        assertEquals(
-                ruleIndex.getCandidates(filterNode).collect(toSet()),
-                ImmutableSet.of(filterRule, anyRule));
-        assertEquals(
-                ruleIndex.getCandidates(valuesNode).collect(toSet()),
-                ImmutableSet.of(anyRule));
+        assertThat(ruleIndex.getCandidates(projectNode).collect(toSet())).isEqualTo(ImmutableSet.of(projectRule1, projectRule2, anyRule));
+        assertThat(ruleIndex.getCandidates(filterNode).collect(toSet())).isEqualTo(ImmutableSet.of(filterRule, anyRule));
+        assertThat(ruleIndex.getCandidates(valuesNode).collect(toSet())).isEqualTo(ImmutableSet.of(anyRule));
     }
 
     @Test
@@ -79,15 +73,9 @@ public class TestRuleIndex
                 .register(ab)
                 .build();
 
-        assertEquals(
-                ruleIndex.getCandidates(new A() {}).collect(toSet()),
-                ImmutableSet.of(a));
-        assertEquals(
-                ruleIndex.getCandidates(new B() {}).collect(toSet()),
-                ImmutableSet.of(b));
-        assertEquals(
-                ruleIndex.getCandidates(new AB()).collect(toSet()),
-                ImmutableSet.of(ab, a, b));
+        assertThat(ruleIndex.getCandidates(new A() { }).collect(toSet())).isEqualTo(ImmutableSet.of(a));
+        assertThat(ruleIndex.getCandidates(new B() { }).collect(toSet())).isEqualTo(ImmutableSet.of(b));
+        assertThat(ruleIndex.getCandidates(new AB()).collect(toSet())).isEqualTo(ImmutableSet.of(ab, a, b));
     }
 
     private static class NoOpRule<T>

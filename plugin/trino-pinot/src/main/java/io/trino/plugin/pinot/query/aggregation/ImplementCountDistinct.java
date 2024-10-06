@@ -17,6 +17,7 @@ import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
+import io.trino.plugin.pinot.PinotColumnHandle;
 import io.trino.plugin.pinot.query.AggregateExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.expression.Variable;
@@ -30,7 +31,7 @@ import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.basicAg
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.functionName;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.outputType;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.singleArgument;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.variable;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.variable;
 import static io.trino.plugin.pinot.PinotSessionProperties.isCountDistinctPushdownEnabled;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.util.Objects.requireNonNull;
@@ -64,6 +65,7 @@ public class ImplementCountDistinct
         }
         Variable argument = captures.get(ARGUMENT);
         verify(aggregateFunction.getOutputType() == BIGINT);
-        return Optional.of(new AggregateExpression("distinctcount", identifierQuote.apply(argument.getName()), false));
+        PinotColumnHandle column = (PinotColumnHandle) context.getAssignment(argument.getName());
+        return Optional.of(new AggregateExpression("distinctcount", identifierQuote.apply(column.getColumnName()), false));
     }
 }

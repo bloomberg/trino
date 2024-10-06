@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.concurrent.TimeUnit;
 
@@ -28,8 +29,8 @@ import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.INVALID_LITERAL;
 import static io.trino.spi.function.OperatorType.ADD;
 import static io.trino.spi.function.OperatorType.EQUAL;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.SUBTRACT;
@@ -42,8 +43,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.joda.time.DateTimeZone.UTC;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestDate
 {
     private QueryAssertions assertions;
@@ -525,22 +528,22 @@ public class TestDate
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS DATE)", "CAST(NULL AS DATE)"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS DATE)", "CAST(NULL AS DATE)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "DATE '2013-10-27'", "TIMESTAMP '2013-10-27 00:00:00'"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "DATE '2013-10-27'", "TIMESTAMP '2013-10-28 00:00:00'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "DATE '2013-10-27'", "TIMESTAMP '2013-10-27 00:00:00'"))
+        assertThat(assertions.operator(IDENTICAL, "NULL", "DATE '2013-10-27'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "DATE '2013-10-27'", "TIMESTAMP '2013-10-28 00:00:00'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "DATE '2013-10-27'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "DATE '2013-10-27'", "NULL"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "DATE '2013-10-27'", "NULL"))
+                .isEqualTo(false);
     }
 
     @Test

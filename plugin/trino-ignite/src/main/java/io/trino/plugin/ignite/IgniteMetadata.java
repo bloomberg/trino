@@ -14,7 +14,6 @@
 package io.trino.plugin.ignite;
 
 import com.google.common.collect.ImmutableList;
-import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.plugin.jdbc.DefaultJdbcMetadata;
 import io.trino.plugin.jdbc.JdbcClient;
@@ -24,6 +23,7 @@ import io.trino.plugin.jdbc.JdbcQueryEventListener;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.RemoteTableName;
+import io.trino.plugin.jdbc.TimestampTimeZoneDomain;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -35,7 +35,9 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableSchema;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.RetryMode;
+import io.trino.spi.connector.SaveMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.type.Type;
@@ -48,6 +50,7 @@ import java.util.Set;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.connector.RetryMode.NO_RETRIES;
+import static io.trino.spi.connector.SaveMode.REPLACE;
 import static java.util.Objects.requireNonNull;
 
 public class IgniteMetadata
@@ -56,16 +59,19 @@ public class IgniteMetadata
     private static final String IGNITE_DUMMY_ID = "dummy_id";
     private final JdbcClient igniteClient;
 
-    @Inject
-    public IgniteMetadata(JdbcClient igniteClient, Set<JdbcQueryEventListener> jdbcQueryEventListeners)
+    public IgniteMetadata(JdbcClient igniteClient, TimestampTimeZoneDomain timestampTimeZoneDomain, Set<JdbcQueryEventListener> jdbcQueryEventListeners)
     {
-        super(igniteClient, false, jdbcQueryEventListeners);
+        super(igniteClient, timestampTimeZoneDomain, false, jdbcQueryEventListeners);
         this.igniteClient = requireNonNull(igniteClient, "igniteClient is null");
     }
 
     @Override
-    public JdbcTableHandle getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
+    public JdbcTableHandle getTableHandle(ConnectorSession session, SchemaTableName schemaTableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         return igniteClient.getTableHandle(session, schemaTableName)
                 .map(JdbcTableHandle::asPlainTable)
                 .map(JdbcNamedRelationHandle::getRemoteTableName)
@@ -100,8 +106,7 @@ public class IgniteMetadata
 
         RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
         return new IgniteOutputTableHandle(
-                remoteTableName.getSchemaName().orElse(null),
-                remoteTableName.getTableName(),
+                remoteTableName,
                 columnNames.build(),
                 columnTypes.build(),
                 Optional.of(columnJdbcTypeHandles.build()),
@@ -109,7 +114,12 @@ public class IgniteMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle insertHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
     {
         return Optional.empty();
     }
@@ -124,7 +134,8 @@ public class IgniteMetadata
                 igniteClient.getTableProperties(session, handle));
     }
 
-    private List<ColumnMetadata> getColumnMetadata(ConnectorSession session, JdbcTableHandle handle)
+    @Override
+    public List<ColumnMetadata> getColumnMetadata(ConnectorSession session, JdbcTableHandle handle)
     {
         return igniteClient.getColumns(session, handle).stream()
                 .filter(column -> !IGNITE_DUMMY_ID.equalsIgnoreCase(column.getColumnName()))
@@ -144,16 +155,22 @@ public class IgniteMetadata
     }
 
     @Override
-    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
+    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, SaveMode saveMode)
     {
+        if (saveMode == REPLACE) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables");
+        }
         igniteClient.beginCreateTable(session, tableMetadata);
     }
 
     @Override
-    public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode)
+    public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode, boolean replace)
     {
         if (retryMode != NO_RETRIES) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support query retries");
+        }
+        if (replace) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables");
         }
         return igniteClient.beginCreateTable(session, tableMetadata);
     }
@@ -168,6 +185,12 @@ public class IgniteMetadata
     public void setColumnType(ConnectorSession session, ConnectorTableHandle table, ColumnHandle column, Type type)
     {
         throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
+    }
+
+    @Override
+    public void dropNotNullConstraint(ConnectorSession session, ConnectorTableHandle table, ColumnHandle column)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support dropping a not null constraint");
     }
 
     @Override

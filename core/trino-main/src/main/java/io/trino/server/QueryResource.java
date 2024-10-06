@@ -25,6 +25,7 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.security.AccessDeniedException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.ws.rs.DELETE;
+import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.PUT;
@@ -43,6 +44,7 @@ import java.util.Optional;
 
 import static io.trino.connector.system.KillQueryProcedure.createKillQueryException;
 import static io.trino.connector.system.KillQueryProcedure.createPreemptQueryException;
+import static io.trino.execution.QueryStateMachine.pruneQueryInfo;
 import static io.trino.security.AccessControlUtil.checkCanKillQueryOwnedBy;
 import static io.trino.security.AccessControlUtil.checkCanViewQueryOwnedBy;
 import static io.trino.security.AccessControlUtil.filterQueries;
@@ -58,15 +60,13 @@ public class QueryResource
     private final DispatchManager dispatchManager;
     private final AccessControl accessControl;
     private final HttpRequestSessionContextFactory sessionContextFactory;
-    private final Optional<String> alternateHeaderName;
 
     @Inject
-    public QueryResource(DispatchManager dispatchManager, AccessControl accessControl, HttpRequestSessionContextFactory sessionContextFactory, ProtocolConfig protocolConfig)
+    public QueryResource(DispatchManager dispatchManager, AccessControl accessControl, HttpRequestSessionContextFactory sessionContextFactory)
     {
         this.dispatchManager = requireNonNull(dispatchManager, "dispatchManager is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.sessionContextFactory = requireNonNull(sessionContextFactory, "sessionContextFactory is null");
-        this.alternateHeaderName = protocolConfig.getAlternateHeaderName();
     }
 
     @ResourceSecurity(AUTHENTICATED_USER)
@@ -76,7 +76,7 @@ public class QueryResource
         QueryState expectedState = stateFilter == null ? null : QueryState.valueOf(stateFilter.toUpperCase(Locale.ENGLISH));
 
         List<BasicQueryInfo> queries = dispatchManager.getQueries();
-        queries = filterQueries(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, alternateHeaderName), queries, accessControl);
+        queries = filterQueries(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders), queries, accessControl);
 
         ImmutableList.Builder<BasicQueryInfo> builder = ImmutableList.builder();
         for (BasicQueryInfo queryInfo : queries) {
@@ -90,16 +90,17 @@ public class QueryResource
     @ResourceSecurity(AUTHENTICATED_USER)
     @GET
     @Path("{queryId}")
-    public Response getQueryInfo(@PathParam("queryId") QueryId queryId, @Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
+    public Response getQueryInfo(@PathParam("queryId") QueryId queryId, @QueryParam("pruned") @DefaultValue("false") boolean pruned, @Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
     {
         requireNonNull(queryId, "queryId is null");
 
-        Optional<QueryInfo> queryInfo = dispatchManager.getFullQueryInfo(queryId);
+        Optional<QueryInfo> queryInfo = dispatchManager.getFullQueryInfo(queryId)
+                .map(info -> pruned ? pruneQueryInfo(info, info.getVersion()) : info);
         if (queryInfo.isEmpty()) {
-            return Response.status(Status.GONE).build();
+            throw new GoneException();
         }
         try {
-            checkCanViewQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, alternateHeaderName), queryInfo.get().getSession().toIdentity(), accessControl);
+            checkCanViewQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders), queryInfo.get().getSession().toIdentity(), accessControl);
             return Response.ok(queryInfo.get()).build();
         }
         catch (AccessDeniedException e) {
@@ -116,13 +117,13 @@ public class QueryResource
 
         try {
             BasicQueryInfo queryInfo = dispatchManager.getQueryInfo(queryId);
-            checkCanKillQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, alternateHeaderName), queryInfo.getSession().toIdentity(), accessControl);
+            checkCanKillQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders), queryInfo.getSession().toIdentity(), accessControl);
             dispatchManager.cancelQuery(queryId);
         }
         catch (AccessDeniedException e) {
             throw new ForbiddenException();
         }
-        catch (NoSuchElementException ignored) {
+        catch (NoSuchElementException _) {
         }
     }
 
@@ -149,7 +150,7 @@ public class QueryResource
         try {
             BasicQueryInfo queryInfo = dispatchManager.getQueryInfo(queryId);
 
-            checkCanKillQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, alternateHeaderName), queryInfo.getSession().toIdentity(), accessControl);
+            checkCanKillQueryOwnedBy(sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders), queryInfo.getSession().toIdentity(), accessControl);
 
             // check before killing to provide the proper error code (this is racy)
             if (queryInfo.getState().isDone()) {
@@ -164,7 +165,7 @@ public class QueryResource
             throw new ForbiddenException();
         }
         catch (NoSuchElementException e) {
-            return Response.status(Status.GONE).build();
+            throw new GoneException();
         }
     }
 }

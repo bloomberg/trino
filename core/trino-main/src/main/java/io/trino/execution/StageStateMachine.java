@@ -33,7 +33,6 @@ import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.eventlistener.StageGcStatistics;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.PlanNodeId;
-import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.tracing.TrinoAttributes;
 import io.trino.util.Failures;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -103,7 +102,7 @@ public class StageStateMachine
             Map<PlanNodeId, TableInfo> tables,
             Executor executor,
             Tracer tracer,
-            Span querySpan,
+            Span schedulerSpan,
             SplitSchedulerStats schedulerStats)
     {
         this.stageId = requireNonNull(stageId, "stageId is null");
@@ -117,7 +116,7 @@ public class StageStateMachine
         finalStageInfo = new StateMachine<>("final stage " + stageId, executor, Optional.empty());
 
         stageSpan = tracer.spanBuilder("stage")
-                .setParent(Context.current().with(querySpan))
+                .setParent(Context.current().with(schedulerSpan))
                 .setAttribute(TrinoAttributes.QUERY_ID, stageId.getQueryId().toString())
                 .setAttribute(TrinoAttributes.STAGE_ID, stageId.toString())
                 .startSpan();
@@ -194,7 +193,7 @@ public class StageStateMachine
         failureCause.compareAndSet(null, Failures.toFailure(throwable));
         boolean failed = stageState.setIf(FAILED, currentState -> !currentState.isDone());
         if (failed) {
-            log.error(throwable, "Stage %s failed", stageId);
+            log.debug(throwable, "Stage %s failed", stageId);
         }
         else {
             log.debug(throwable, "Failure after stage %s finished", stageId);
@@ -271,6 +270,7 @@ public class StageStateMachine
         int queuedDrivers = 0;
         int runningDrivers = 0;
         int completedDrivers = 0;
+        int blockedDrivers = 0;
 
         double cumulativeUserMemory = 0;
         double failedCumulativeUserMemory = 0;
@@ -285,19 +285,21 @@ public class StageStateMachine
         long physicalInputDataSize = 0;
         long physicalInputPositions = 0;
         long physicalInputReadTime = 0;
+        long physicalWrittenBytes = 0;
 
         long internalNetworkInputDataSize = 0;
         long internalNetworkInputPositions = 0;
 
         long rawInputDataSize = 0;
         long rawInputPositions = 0;
+        long spilledDataSize = 0;
 
         boolean fullyBlocked = true;
         Set<BlockedReason> blockedReasons = new HashSet<>();
 
         for (TaskInfo taskInfo : taskInfos) {
-            TaskState taskState = taskInfo.getTaskStatus().getState();
-            TaskStats taskStats = taskInfo.getStats();
+            TaskState taskState = taskInfo.taskStatus().getState();
+            TaskStats taskStats = taskInfo.stats();
 
             boolean taskFailedOrFailing = taskState == TaskState.FAILED || taskState == TaskState.FAILING;
 
@@ -309,6 +311,7 @@ public class StageStateMachine
             queuedDrivers += taskStats.getQueuedDrivers();
             runningDrivers += taskStats.getRunningDrivers();
             completedDrivers += taskStats.getCompletedDrivers();
+            blockedDrivers += taskStats.getBlockedDrivers();
 
             cumulativeUserMemory += taskStats.getCumulativeUserMemory();
             if (taskFailedOrFailing) {
@@ -334,14 +337,20 @@ public class StageStateMachine
             physicalInputDataSize += taskStats.getPhysicalInputDataSize().toBytes();
             physicalInputPositions += taskStats.getPhysicalInputPositions();
             physicalInputReadTime += taskStats.getPhysicalInputReadTime().roundTo(NANOSECONDS);
+            physicalWrittenBytes += taskStats.getPhysicalWrittenDataSize().toBytes();
 
             internalNetworkInputDataSize += taskStats.getInternalNetworkInputDataSize().toBytes();
             internalNetworkInputPositions += taskStats.getInternalNetworkInputPositions();
 
-            if (fragment.getPartitionedSourceNodes().stream().anyMatch(TableScanNode.class::isInstance)) {
+            if (fragment.containsTableScanNode()) {
                 rawInputDataSize += taskStats.getRawInputDataSize().toBytes();
                 rawInputPositions += taskStats.getRawInputPositions();
             }
+
+            spilledDataSize += taskStats.getPipelines().stream()
+                    .flatMap(pipeline -> pipeline.getOperatorSummaries().stream())
+                    .mapToLong(summary -> summary.getSpilledDataSize().toBytes())
+                    .sum();
         }
 
         OptionalDouble progressPercentage = OptionalDouble.empty();
@@ -362,16 +371,19 @@ public class StageStateMachine
                 queuedDrivers,
                 runningDrivers,
                 completedDrivers,
+                blockedDrivers,
 
                 succinctBytes(physicalInputDataSize),
                 physicalInputPositions,
                 new Duration(physicalInputReadTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
+                succinctBytes(physicalWrittenBytes),
 
                 succinctBytes(internalNetworkInputDataSize),
                 internalNetworkInputPositions,
 
                 succinctBytes(rawInputDataSize),
                 rawInputPositions,
+                succinctBytes(spilledDataSize),
 
                 cumulativeUserMemory,
                 failedCumulativeUserMemory,
@@ -479,7 +491,7 @@ public class StageStateMachine
 
         int maxTaskOperatorSummaries = 0;
         for (TaskInfo taskInfo : taskInfos) {
-            TaskState taskState = taskInfo.getTaskStatus().getState();
+            TaskState taskState = taskInfo.taskStatus().getState();
             if (taskState.isDone()) {
                 completedTasks++;
             }
@@ -492,7 +504,7 @@ public class StageStateMachine
                 failedTasks++;
             }
 
-            TaskStats taskStats = taskInfo.getStats();
+            TaskStats taskStats = taskInfo.stats();
 
             totalDrivers += taskStats.getTotalDrivers();
             queuedDrivers += taskStats.getQueuedDrivers();
@@ -532,8 +544,8 @@ public class StageStateMachine
 
             inputBlockedTime += taskStats.getInputBlockedTime().roundTo(NANOSECONDS);
 
-            bufferedDataSize += taskInfo.getOutputBuffers().getTotalBufferedBytes();
-            taskInfo.getOutputBuffers().getUtilization().ifPresent(bufferUtilizationHistograms::add);
+            bufferedDataSize += taskInfo.outputBuffers().getTotalBufferedBytes();
+            taskInfo.outputBuffers().getUtilization().ifPresent(bufferUtilizationHistograms::add);
             outputDataSize += taskStats.getOutputDataSize().toBytes();
             outputPositions += taskStats.getOutputPositions();
 
@@ -676,6 +688,22 @@ public class StageStateMachine
                 failureInfo);
     }
 
+    public BasicStageInfo getBasicStageInfo(Supplier<Iterable<TaskInfo>> taskInfosSupplier)
+    {
+        Optional<StageInfo> finalStageInfo = this.finalStageInfo.get();
+        if (finalStageInfo.isPresent()) {
+            return new BasicStageInfo(finalStageInfo.get());
+        }
+
+        return new BasicStageInfo(
+                stageId,
+                stageState.get(),
+                fragment.getPartitioning().isCoordinatorOnly(),
+                getBasicStageStats(taskInfosSupplier),
+                ImmutableList.of(),
+                ImmutableList.copyOf(taskInfosSupplier.get()));
+    }
+
     private static List<OperatorStats> combineTaskOperatorSummaries(List<TaskInfo> taskInfos, int maxTaskOperatorSummaries)
     {
         // Group each unique pipelineId + operatorId combination into lists
@@ -684,7 +712,7 @@ public class StageStateMachine
         int taskInfoCount = taskInfos.size();
         LongFunction<List<OperatorStats>> statsListCreator = key -> new ArrayList<>(taskInfoCount);
         for (TaskInfo taskInfo : taskInfos) {
-            for (PipelineStats pipeline : taskInfo.getStats().getPipelines()) {
+            for (PipelineStats pipeline : taskInfo.stats().getPipelines()) {
                 // Place the pipelineId in the high bits of the combinedKey mask
                 long pipelineKeyMask = Integer.toUnsignedLong(pipeline.getPipelineId()) << 32;
                 for (OperatorStats operator : pipeline.getOperatorSummaries()) {

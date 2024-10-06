@@ -15,6 +15,7 @@ package io.trino.spi.function;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.DoNotCall;
 import io.trino.spi.Experimental;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
@@ -104,7 +105,7 @@ public class Signature
                 Objects.equals(this.longVariableConstraints, other.longVariableConstraints) &&
                 Objects.equals(this.returnType, other.returnType) &&
                 Objects.equals(this.argumentTypes, other.argumentTypes) &&
-                Objects.equals(this.variableArity, other.variableArity);
+                this.variableArity == other.variableArity;
     }
 
     @Override
@@ -210,6 +211,12 @@ public class Signature
             return this;
         }
 
+        public Builder longVariable(String name)
+        {
+            this.longVariableConstraints.add(new LongVariableConstraint(name, name));
+            return this;
+        }
+
         public Builder argumentType(Type type)
         {
             return argumentType(type.getTypeSignature());
@@ -239,13 +246,9 @@ public class Signature
         }
     }
 
-    /**
-     * This method is only visible for JSON deserialization.
-     *
-     * @deprecated use builder
-     */
-    @Deprecated
     @JsonCreator
+    @DoNotCall // For JSON deserialization only
+    @Deprecated // Discourage usages in SPI consumers
     public static Signature fromJson(
             @JsonProperty("typeVariableConstraints") List<TypeVariableConstraint> typeVariableConstraints,
             @JsonProperty("longVariableConstraints") List<LongVariableConstraint> longVariableConstraints,

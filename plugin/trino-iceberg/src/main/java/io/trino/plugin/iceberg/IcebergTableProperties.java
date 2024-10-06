@@ -47,8 +47,9 @@ public class IcebergTableProperties
     public static final String SORTED_BY_PROPERTY = "sorted_by";
     public static final String LOCATION_PROPERTY = "location";
     public static final String FORMAT_VERSION_PROPERTY = "format_version";
-    public static final String ORC_BLOOM_FILTER_COLUMNS = "orc_bloom_filter_columns";
-    public static final String ORC_BLOOM_FILTER_FPP = "orc_bloom_filter_fpp";
+    public static final String ORC_BLOOM_FILTER_COLUMNS_PROPERTY = "orc_bloom_filter_columns";
+    public static final String ORC_BLOOM_FILTER_FPP_PROPERTY = "orc_bloom_filter_fpp";
+    public static final String PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY = "parquet_bloom_filter_columns";
     public static final String EXTRA_PROPERTIES = "extra_properties";
     public static final Set<String> ILLEGAL_EXTRA_PROPERTIES = ImmutableSet.of(
             FILE_FORMAT_PROPERTY,
@@ -104,7 +105,7 @@ public class IcebergTableProperties
                         IcebergTableProperties::validateFormatVersion,
                         false))
                 .add(new PropertyMetadata<>(
-                        ORC_BLOOM_FILTER_COLUMNS,
+                        ORC_BLOOM_FILTER_COLUMNS_PROPERTY,
                         "ORC Bloom filter index columns",
                         new ArrayType(VARCHAR),
                         List.class,
@@ -116,12 +117,24 @@ public class IcebergTableProperties
                                 .collect(toImmutableList()),
                         value -> value))
                 .add(doubleProperty(
-                        ORC_BLOOM_FILTER_FPP,
+                        ORC_BLOOM_FILTER_FPP_PROPERTY,
                         "ORC Bloom filter false positive probability",
                         orcWriterConfig.getDefaultBloomFilterFpp(),
                         IcebergTableProperties::validateOrcBloomFilterFpp,
                         false))
                 .add(new PropertyMetadata<>(
+                        PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY,
+                        "Parquet Bloom filter index columns",
+                        new ArrayType(VARCHAR),
+                        List.class,
+                        ImmutableList.of(),
+                        false,
+                        value -> ((List<?>) value).stream()
+                                .map(String.class::cast)
+                                .map(name -> name.toLowerCase(ENGLISH))
+                                .collect(toImmutableList()),
+                        value -> value))
+                 .add(new PropertyMetadata<>(
                         EXTRA_PROPERTIES,
                         "Extra table properties",
                         new MapType(VARCHAR, VARCHAR, typeManager.getTypeOperators()),
@@ -186,13 +199,13 @@ public class IcebergTableProperties
 
     public static List<String> getOrcBloomFilterColumns(Map<String, Object> tableProperties)
     {
-        List<String> orcBloomFilterColumns = (List<String>) tableProperties.get(ORC_BLOOM_FILTER_COLUMNS);
+        List<String> orcBloomFilterColumns = (List<String>) tableProperties.get(ORC_BLOOM_FILTER_COLUMNS_PROPERTY);
         return orcBloomFilterColumns == null ? ImmutableList.of() : ImmutableList.copyOf(orcBloomFilterColumns);
     }
 
     public static Double getOrcBloomFilterFpp(Map<String, Object> tableProperties)
     {
-        return (Double) tableProperties.get(ORC_BLOOM_FILTER_FPP);
+        return (Double) tableProperties.get(ORC_BLOOM_FILTER_FPP_PROPERTY);
     }
 
     private static void validateOrcBloomFilterFpp(double fpp)
@@ -202,6 +215,12 @@ public class IcebergTableProperties
         }
     }
 
+    public static List<String> getParquetBloomFilterColumns(Map<String, Object> tableProperties)
+    {
+        List<String> parquetBloomFilterColumns = (List<String>) tableProperties.get(PARQUET_BLOOM_FILTER_COLUMNS_PROPERTY);
+        return parquetBloomFilterColumns == null ? ImmutableList.of() : ImmutableList.copyOf(parquetBloomFilterColumns);
+    }
+  
     public static Optional<Map<String, String>> getExtraProperties(Map<String, Object> tableProperties)
     {
         return Optional.ofNullable((Map<String, String>) tableProperties.get(EXTRA_PROPERTIES));

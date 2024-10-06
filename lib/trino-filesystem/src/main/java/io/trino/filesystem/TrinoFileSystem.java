@@ -13,7 +13,13 @@
  */
 package io.trino.filesystem;
 
+import com.google.common.base.Throwables;
+import io.airlift.units.Duration;
+import io.trino.filesystem.encryption.EncryptionKey;
+
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
@@ -59,6 +65,18 @@ public interface TrinoFileSystem
     TrinoInputFile newInputFile(Location location);
 
     /**
+     * Creates an encrypted TrinoInputFile which can be used to read the encrypted file data.
+     * The file location path cannot be empty, and must not end with a slash or whitespace.
+     *
+     * @throws IllegalArgumentException if location is not valid for this file system
+     * @throws UnsupportedOperationException if server side encryption is not supported
+     */
+    default TrinoInputFile newEncryptedInputFile(Location location, EncryptionKey key)
+    {
+        throw new UnsupportedOperationException("Server side encryption is not supported");
+    }
+
+    /**
      * Creates a TrinoInputFile with a predeclared length which can be used to read the file data.
      * The length will be returned from {@link TrinoInputFile#length()} and the actual file length
      * will never be checked. The file location path cannot be empty, and must not end with a slash
@@ -69,6 +87,46 @@ public interface TrinoFileSystem
     TrinoInputFile newInputFile(Location location, long length);
 
     /**
+     * Creates an encrypted TrinoInputFile with a predeclared length which can be used to read
+     * the file encrypted data. The length will be returned from {@link TrinoInputFile#length()} and
+     * the actual file length will never be checked.
+     * The file location path cannot be empty, and must not end with a slash or whitespace.
+     *
+     * @throws IllegalArgumentException if location is not valid for this file system
+     * @throws UnsupportedOperationException if server side encryption is not supported
+     */
+    default TrinoInputFile newEncryptedInputFile(Location location, long length, EncryptionKey key)
+    {
+        throw new UnsupportedOperationException("Server side encryption is not supported");
+    }
+
+    /**
+     * Creates a TrinoInputFile with a predeclared length and lastModifiedTime which can be used to read the file data.
+     * The length will be returned from {@link TrinoInputFile#length()} and the actual file length
+     * will never be checked. The lastModified will be returned from {@link TrinoInputFile#lastModified()} and the
+     * actual file last modified time will never be checked. The file location path cannot be empty, and must not end
+     * with a slash or whitespace.
+     *
+     * @throws IllegalArgumentException if location is not valid for this file system
+     */
+    TrinoInputFile newInputFile(Location location, long length, Instant lastModified);
+
+    /**
+     * Creates an encrypted TrinoInputFile with a predeclared length and lastModifiedTime which can be used to read
+     * the encrypted file data. The length will be returned from {@link TrinoInputFile#length()} and the actual file
+     * length will never be checked. The lastModified will be returned from {@link TrinoInputFile#lastModified()}
+     * and the actual file last modified time will never be checked.
+     * The file location path cannot be empty, and must not end with a slash or whitespace.
+     *
+     * @throws IllegalArgumentException if location is not valid for this file system
+     * @throws UnsupportedOperationException if server side encryption is not supported
+     */
+    default TrinoInputFile newEncryptedInputFile(Location location, long length, Instant lastModified, EncryptionKey key)
+    {
+        throw new UnsupportedOperationException("Server side encryption is not supported");
+    }
+
+    /**
      * Creates a TrinoOutputFile which can be used to create or overwrite the file. The file
      * location path cannot be empty, and must not end with a slash or whitespace.
      *
@@ -77,11 +135,23 @@ public interface TrinoFileSystem
     TrinoOutputFile newOutputFile(Location location);
 
     /**
-     * Deletes the specified file. The file location path cannot be empty, and must not end with
-     * a slash or whitespace. If the file is a director, an exception is raised.
+     * Creates an encrypted TrinoOutputFile which can be used to create or overwrite the file.
+     * The file location path cannot be empty, and must not end with a slash or whitespace.
      *
      * @throws IllegalArgumentException if location is not valid for this file system
-     * @throws IOException if the file does not exist (optional) or was not deleted
+     * @throws UnsupportedOperationException if server side encryption is not supported
+     */
+    default TrinoOutputFile newEncryptedOutputFile(Location location, EncryptionKey key)
+    {
+        throw new UnsupportedOperationException("Server side encryption is not supported");
+    }
+
+    /**
+     * Deletes the specified file. The file location path cannot be empty, and must not end with
+     * a slash or whitespace. If the file is a directory, an exception is raised. If the file does
+     * not exist, this method is a noop.
+     *
+     * @throws IllegalArgumentException if location is not valid for this file system
      */
     void deleteFile(Location location)
             throws IOException;
@@ -90,9 +160,9 @@ public interface TrinoFileSystem
      * Delete specified files. This operation is <b>not</b> required to be atomic, so if an error
      * occurs, all, some, or, none of the files may be deleted. This operation may be faster than simply
      * looping over the locations as some file systems support batch delete operations natively.
+     * If a file does not exist, it is ignored.
      *
      * @throws IllegalArgumentException if location is not valid for this file system
-     * @throws IOException if a file does not exist (optional) or was not deleted
      */
     default void deleteFiles(Collection<Location> locations)
             throws IOException
@@ -127,6 +197,8 @@ public interface TrinoFileSystem
      * to be atomic, but it is required that if an error occurs, the source, target, or both
      * must exist with the data from the source.  This operation may or may not preserve the
      * last modified time.
+     * <p>
+     * For file systems which do not support rename (e.g. S3), this operation fails.
      *
      * @throws IllegalArgumentException if either location is not valid for this file system
      */
@@ -145,7 +217,9 @@ public interface TrinoFileSystem
      * that start with the location are listed. In the rare case that a blob exists with the
      * exact name of the prefix, it is not included in the results.
      * <p>
-     * The returned FileEntry locations will start with the specified location exactly.
+     * The returned FileEntry locations will start with the specified location exactly
+     * and are lexicographically sorted (except for local HDFS which has the system-dependant
+     * ordering).
      *
      * @param location the directory to list
      * @throws IllegalArgumentException if location is not valid for this file system
@@ -155,13 +229,13 @@ public interface TrinoFileSystem
 
     /**
      * Checks if a directory exists at the specified location. For all file system types,
-     * this returns <tt>true</tt> if the location is empty (the root of the file system)
+     * this returns {@code true} if the location is empty (the root of the file system)
      * or if any files exist within the directory, as determined by {@link #listFiles(Location)}.
      * Otherwise:
      * <ul>
-     * <li>For hierarchical file systems, this returns <tt>true</tt> if the
-     *     location is an empty directory, else it returns <tt>false</tt>.
-     * <li>For non-hierarchical file systems, an <tt>Optional.empty()</tt> is returned,
+     * <li>For hierarchical file systems, this returns {@code true} if the
+     *     location is an empty directory, else it returns {@code false}.
+     * <li>For non-hierarchical file systems, an {@code Optional.empty()} is returned,
      *     indicating that the file system has no concept of an empty directory.
      * </ul>
      *
@@ -194,8 +268,8 @@ public interface TrinoFileSystem
 
     /**
      * Lists all directories that are direct descendants of the specified directory.
-     * The location can be empty, which lists all directories at the root of the file system,
-     * otherwise the location otherwise the location must end with a slash.
+     * If the path is empty, all directories at the root of the file system are returned.
+     * Otherwise, the path must end with a slash.
      * If the location does not exist, an empty set is returned.
      * <p>
      * For hierarchical file systems, if the path is not a directory, an exception is raised.
@@ -207,4 +281,66 @@ public interface TrinoFileSystem
      */
     Set<Location> listDirectories(Location location)
             throws IOException;
+
+    /**
+     * Creates a temporary directory for the target path. The directory will be created
+     * using the (possibly absolute) prefix such that the directory can be renamed to
+     * the target path. The relative prefix will be used if the target path does not
+     * support the temporary prefix (which is typically absolute).
+     * <p>
+     * The temporary directory is not created for non-hierarchical file systems or for
+     * target paths that do not support renaming, and an empty optional is returned.
+     *
+     * @throws IllegalArgumentException If the target path is not valid for this file system.
+     */
+    Optional<Location> createTemporaryDirectory(Location targetPath, String temporaryPrefix, String relativePrefix)
+            throws IOException;
+
+    /**
+     * Returns the direct pre-signed URI location for the given storage location.
+     * <p></p>
+     * Pre-signed URIs allow for retrieval of the files directly from the storage location.
+     * This is useful for large files where the server would be a bottleneck.
+     *
+     * @throws UnsupportedOperationException if the pre-signed URIs are not supported
+     * @return the pre-signed URI to the storage location or `Optional.empty()`
+     *         if pre-signed URI cannot be generated.
+     */
+    default Optional<UriLocation> preSignedUri(Location location, Duration ttl)
+            throws IOException
+    {
+        throw new UnsupportedOperationException("Pre-signed URIs are not supported by " + getClass().getSimpleName());
+    }
+
+    /**
+     * Returns the direct encrypted pre-signed URI location for the given storage location.
+     * <p>
+     * Pre-signed URIs allow for retrieval of the files directly from the storage location.
+     * This is useful for large files where the server would be a bottleneck.
+     *
+     * @throws UnsupportedOperationException if the pre-signed URIs are not supported
+     * @return the pre-signed URI to the storage location or `Optional.empty()`
+     *         if pre-signed URI cannot be generated.
+     */
+    default Optional<UriLocation> encryptedPreSignedUri(Location location, Duration ttl, EncryptionKey key)
+            throws IOException
+    {
+        throw new UnsupportedOperationException("Encrypted pre-signed URIs are not supported by " + getClass().getSimpleName());
+    }
+
+    /**
+     * Checks whether given exception is unrecoverable, so that further retries won't help
+     * <p>
+     * By default, all third party (AWS, Azure, GCP) SDKs will retry appropriate exceptions
+     * (either client side IO errors, or 500/503), so there is no need to retry those additionally.
+     * <p>
+     * If any custom retry behavior is needed, it is advised to change SDK's retry handlers,
+     * rather than introducing outer retry loop, which combined with SDKs default retries,
+     * could lead to prolonged, unnecessary retries
+     */
+    static boolean isUnrecoverableException(Throwable throwable)
+    {
+        return Throwables.getCausalChain(throwable).stream()
+                .anyMatch(t -> t instanceof TrinoFileSystemException || t instanceof FileNotFoundException || t instanceof UnsupportedOperationException);
+    }
 }

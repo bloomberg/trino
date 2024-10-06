@@ -15,13 +15,12 @@ package io.trino.plugin.jdbc;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
-import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.predicate.TupleDomain;
 
-import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.instanceSize;
@@ -68,21 +67,11 @@ public class JdbcSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return additionalPredicate
+                .map(value -> ImmutableMap.of("additionalPredicate", value))
+                .orElseGet(ImmutableMap::of);
     }
 
     @Override

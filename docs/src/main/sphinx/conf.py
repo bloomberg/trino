@@ -81,6 +81,7 @@ extensions = [
     'issue',
     'sphinx_copybutton',
     'redirects',
+    'sphinxcontrib.jquery'
 ]
 
 redirects_file = 'redirects.txt'
@@ -102,10 +103,6 @@ highlight_language = 'sql'
 
 default_role = 'backquote'
 
-rst_epilog = """
-.. |trino_server_release| replace:: ``trino-server-{release}``
-""".replace('{release}', release)
-
 # Any replace that is inside of a code block should be added here
 # https://stackoverflow.com/questions/8821511/substitutions-inside-sphinx-code-blocks-arent-replaced
 
@@ -119,6 +116,10 @@ myst_enable_extensions = [
     "substitution"
 ]
 
+myst_substitutions = {
+    "breaking": "<a href='../release.html#breaking-changes' title='Breaking change'>⚠️ Breaking change:</a>"
+}
+
 # -- Options for HTML output ---------------------------------------------------
 
 html_theme = 'sphinx_material'
@@ -128,6 +129,7 @@ html_static_path = ['static']
 html_title = '%s %s Documentation' % (project, release)
 
 html_logo = 'images/trino.svg'
+html_baseurl = 'https://trino.io/docs/current/'
 
 html_permalinks = True
 html_permalinks_icon = '#'
@@ -139,7 +141,7 @@ html_sidebars = {
 }
 
 html_theme_options = {
-    'base_url': 'https://trino.io/docs/current/',
+    'base_url': html_baseurl,
     'globaltoc_depth': -1,
     'theme_color': '2196f3',
     'color_primary': '',  # set in CSS
@@ -147,8 +149,15 @@ html_theme_options = {
     'repo_url': 'https://github.com/trinodb/trino',
     'repo_name': 'Trino',
     'version_json': '../versions.json',
+    'nav_previous_text': 'Previous',
+    'nav_next_text': 'Next',
+    'search_placeholder_text': 'Search'
 }
 
 html_css_files = [
     'trino.css',
+]
+
+suppress_warnings = [
+    'config.cache'
 ]

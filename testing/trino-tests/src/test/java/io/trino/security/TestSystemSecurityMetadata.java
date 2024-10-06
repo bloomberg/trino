@@ -21,10 +21,13 @@ import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
+@Execution(SAME_THREAD) // TestingSystemSecurityMetadata is shared mutable state
 public class TestSystemSecurityMetadata
         extends AbstractTestQueryFramework
 {
@@ -49,7 +52,7 @@ public class TestSystemSecurityMetadata
                             .setBinding()
                             .toInstance(securityMetadata);
                 })
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .build();
     }
 

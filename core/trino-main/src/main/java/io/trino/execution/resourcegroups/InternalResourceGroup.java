@@ -34,7 +34,6 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -131,7 +130,6 @@ public class InternalResourceGroup
     private ResourceUsage cachedResourceUsage = new ResourceUsage(0, 0);
     @GuardedBy("root")
     private long lastStartMillis;
-    @GuardedBy("root")
     private final CounterStat timeBetweenStartsSec = new CounterStat();
 
     public InternalResourceGroup(String name, BiConsumer<InternalResourceGroup, Boolean> jmxExportListener, Executor executor)
@@ -139,7 +137,7 @@ public class InternalResourceGroup
         this(Optional.empty(), name, jmxExportListener, executor);
     }
 
-    protected InternalResourceGroup(Optional<InternalResourceGroup> parent, String name, BiConsumer<InternalResourceGroup, Boolean> jmxExportListener, Executor executor)
+    private InternalResourceGroup(Optional<InternalResourceGroup> parent, String name, BiConsumer<InternalResourceGroup, Boolean> jmxExportListener, Executor executor)
     {
         this.parent = requireNonNull(parent, "parent is null");
         this.jmxExportListener = requireNonNull(jmxExportListener, "jmxExportListener is null");
@@ -314,6 +312,19 @@ public class InternalResourceGroup
         }
     }
 
+    @Managed
+    public long getCpuUsageMillis()
+    {
+        return getResourceUsageSnapshot().getCpuUsageMillis();
+    }
+
+    @Managed
+    public long getMemoryUsageBytes()
+    {
+        return getResourceUsageSnapshot().getMemoryUsageBytes();
+    }
+
+    @Managed
     @Override
     public long getSoftMemoryLimitBytes()
     {
@@ -331,6 +342,14 @@ public class InternalResourceGroup
             if (canRunMore() != oldCanRun) {
                 updateEligibility();
             }
+        }
+    }
+
+    @Managed
+    public long getSoftCpuLimitMillis()
+    {
+        synchronized (root) {
+            return softCpuLimitMillis;
         }
     }
 
@@ -357,6 +376,14 @@ public class InternalResourceGroup
         }
     }
 
+    @Managed
+    public long getHardCpuLimitMillis()
+    {
+        synchronized (root) {
+            return hardCpuLimitMillis;
+        }
+    }
+
     @Override
     public Duration getHardCpuLimit()
     {
@@ -380,6 +407,7 @@ public class InternalResourceGroup
         }
     }
 
+    @Managed
     @Override
     public long getCpuQuotaGenerationMillisPerSecond()
     {
@@ -397,6 +425,7 @@ public class InternalResourceGroup
         }
     }
 
+    @Managed
     @Override
     public int getSoftConcurrencyLimit()
     {
@@ -467,6 +496,7 @@ public class InternalResourceGroup
         return timeBetweenStartsSec;
     }
 
+    @Managed
     @Override
     public int getSchedulingWeight()
     {
@@ -487,6 +517,7 @@ public class InternalResourceGroup
         }
     }
 
+    @Managed
     @Override
     public SchedulingPolicy getSchedulingPolicy()
     {
@@ -745,11 +776,10 @@ public class InternalResourceGroup
 
             updateEligibility();
             root.triggerProcessQueuedQueries();
-            return;
         }
     }
 
-    protected ResourceUsage updateResourceUsageAndGetDelta()
+    private ResourceUsage updateResourceUsageAndGetDelta()
     {
         checkState(Thread.holdsLock(root), "Must hold lock to refresh stats");
         synchronized (root) {
@@ -775,9 +805,7 @@ public class InternalResourceGroup
             }
             else {
                 // Intermediate resource group
-                for (Iterator<InternalResourceGroup> iterator = dirtySubGroups.iterator(); iterator.hasNext(); ) {
-                    InternalResourceGroup subGroup = iterator.next();
-
+                for (InternalResourceGroup subGroup : dirtySubGroups) {
                     ResourceUsage subGroupUsageDelta = subGroup.updateResourceUsageAndGetDelta();
                     groupUsageDelta = groupUsageDelta.add(subGroupUsageDelta);
                     cachedResourceUsage = cachedResourceUsage.add(subGroupUsageDelta);
@@ -792,7 +820,7 @@ public class InternalResourceGroup
         }
     }
 
-    protected void internalGenerateCpuQuota(long elapsedSeconds)
+    private void internalGenerateCpuQuota(long elapsedSeconds)
     {
         checkState(Thread.holdsLock(root), "Must hold lock to generate cpu quota");
         synchronized (root) {
@@ -818,7 +846,7 @@ public class InternalResourceGroup
         }
     }
 
-    protected boolean internalStartNext()
+    private boolean internalStartNext()
     {
         checkState(Thread.holdsLock(root), "Must hold lock to find next query");
         synchronized (root) {
@@ -856,17 +884,21 @@ public class InternalResourceGroup
 
     private void addOrUpdateSubGroup(Queue<InternalResourceGroup> queue, InternalResourceGroup group)
     {
-        if (schedulingPolicy == WEIGHTED_FAIR) {
-            ((WeightedFairQueue<InternalResourceGroup>) queue).addOrUpdate(group, new Usage(group.getSchedulingWeight(), group.getRunningQueries()));
-        }
-        else {
-            ((UpdateablePriorityQueue<InternalResourceGroup>) queue).addOrUpdate(group, getSubGroupSchedulingPriority(schedulingPolicy, group));
+        synchronized (root) {
+            if (schedulingPolicy == WEIGHTED_FAIR) {
+                ((WeightedFairQueue<InternalResourceGroup>) queue).addOrUpdate(group, new Usage(group.getSchedulingWeight(), group.getRunningQueries()));
+            }
+            else {
+                ((UpdateablePriorityQueue<InternalResourceGroup>) queue).addOrUpdate(group, getSubGroupSchedulingPriority(schedulingPolicy, group));
+            }
         }
     }
 
     private void addOrUpdateSubGroup(InternalResourceGroup group)
     {
-        addOrUpdateSubGroup(eligibleSubGroups, group);
+        synchronized (root) {
+            addOrUpdateSubGroup(eligibleSubGroups, group);
+        }
     }
 
     private static long getSubGroupSchedulingPriority(SchedulingPolicy policy, InternalResourceGroup group)
@@ -879,11 +911,13 @@ public class InternalResourceGroup
 
     private long computeSchedulingWeight()
     {
-        if (runningQueries.size() + descendantRunningQueries >= softConcurrencyLimit) {
-            return schedulingWeight;
-        }
+        synchronized (root) {
+            if (runningQueries.size() + descendantRunningQueries >= softConcurrencyLimit) {
+                return schedulingWeight;
+            }
 
-        return (long) Integer.MAX_VALUE * schedulingWeight;
+            return (long) Integer.MAX_VALUE * schedulingWeight;
+        }
     }
 
     private boolean isEligibleToStartNext()
@@ -954,7 +988,7 @@ public class InternalResourceGroup
     ResourceUsage getResourceUsageSnapshot()
     {
         synchronized (root) {
-            return cachedResourceUsage.clone();
+            return cachedResourceUsage;
         }
     }
 
@@ -972,10 +1006,10 @@ public class InternalResourceGroup
         if (this == o) {
             return true;
         }
-        if (!(o instanceof InternalResourceGroup)) {
+        // FIXME: InternalResourceGroup should be final. Supports subclassing for test purposes.
+        if (!(o instanceof InternalResourceGroup that)) {
             return false;
         }
-        InternalResourceGroup that = (InternalResourceGroup) o;
         return Objects.equals(id, that.id);
     }
 

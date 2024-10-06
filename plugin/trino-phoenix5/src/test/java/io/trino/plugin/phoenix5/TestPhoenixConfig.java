@@ -13,8 +13,9 @@
  */
 package io.trino.plugin.phoenix5;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,7 +33,7 @@ public class TestPhoenixConfig
     {
         assertRecordedDefaults(recordDefaults(PhoenixConfig.class)
                 .setConnectionUrl(null)
-                .setResourceConfigFiles("")
+                .setResourceConfigFiles(ImmutableList.of())
                 .setMaxScansPerSplit(20)
                 .setReuseConnection(true));
     }
@@ -52,7 +53,7 @@ public class TestPhoenixConfig
 
         PhoenixConfig expected = new PhoenixConfig()
                 .setConnectionUrl("jdbc:phoenix:localhost:2181:/hbase")
-                .setResourceConfigFiles(configFile.toString())
+                .setResourceConfigFiles(ImmutableList.of(configFile.toString()))
                 .setMaxScansPerSplit(1)
                 .setReuseConnection(false);
 

@@ -149,6 +149,7 @@ databases:
   spark:
     host: spark
     jdbc_driver_class: org.apache.hive.jdbc.HiveDriver
+    jdbc_jar: /docker/jdbc/hive-jdbc.jar
     jdbc_url: jdbc:hive2://${databases.spark.host}:10213
     jdbc_user: hive
     jdbc_password: na
@@ -171,6 +172,7 @@ databases:
 
   delta:
       jdbc_driver_class: org.apache.hive.jdbc.HiveDriver
+      jdbc_jar: /docker/jdbc/hive-jdbc.jar
       schema: default
       prepare_statement:
           - USE ${databases.delta.schema}
@@ -188,6 +190,14 @@ databases:
       jdbc_url: jdbc:hive2://spark:10213
       jdbc_user: hive
       jdbc_password: na
+
+  exasol:
+    jdbc_driver_class: com.exasol.jdbc.EXADriver
+    jdbc_url: jdbc:exa:exasol:8563;validateservercertificate=0
+    jdbc_user: sys
+    jdbc_password: exasol
+    jdbc_pooling: true
+    table_manager_type: jdbc
 
 tests:
   hdfs:

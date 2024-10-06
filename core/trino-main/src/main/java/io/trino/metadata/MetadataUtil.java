@@ -15,13 +15,13 @@ package io.trino.metadata;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Lists;
 import io.trino.Session;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
@@ -107,7 +107,7 @@ public final class MetadataUtil
     public static CatalogHandle getRequiredCatalogHandle(Metadata metadata, Session session, Node node, String catalogName)
     {
         return metadata.getCatalogHandle(session, catalogName)
-                .orElseThrow(() -> semanticException(CATALOG_NOT_FOUND, node, "Catalog '%s' does not exist", catalogName));
+                .orElseThrow(() -> semanticException(CATALOG_NOT_FOUND, node, "Catalog '%s' not found", catalogName));
     }
 
     public static CatalogSchemaName createCatalogSchemaName(Session session, Node node, Optional<QualifiedName> schema)
@@ -144,7 +144,7 @@ public final class MetadataUtil
             throw new TrinoException(SYNTAX_ERROR, format("Too many dots in table name: %s", name));
         }
 
-        List<String> parts = Lists.reverse(name.getParts());
+        List<String> parts = name.getParts().reversed();
         String objectName = parts.get(0);
         String schemaName = (parts.size() > 1) ? parts.get(1) : session.getSchema().orElseThrow(() ->
                 semanticException(MISSING_SCHEMA_NAME, node, "Schema must be specified when session schema is not set"));
@@ -154,44 +154,38 @@ public final class MetadataUtil
         return new QualifiedObjectName(catalogName, schemaName, objectName);
     }
 
+    public static EntityKindAndName createEntityKindAndName(String entityKind, QualifiedName name)
+    {
+        return new EntityKindAndName(entityKind, name.getParts());
+    }
+
     public static TrinoPrincipal createPrincipal(Session session, GrantorSpecification specification)
     {
-        GrantorSpecification.Type type = specification.getType();
-        switch (type) {
-            case PRINCIPAL:
-                return createPrincipal(specification.getPrincipal().get());
-            case CURRENT_USER:
-                return new TrinoPrincipal(USER, session.getIdentity().getUser());
-            case CURRENT_ROLE:
-                // TODO: will be implemented once the "SET ROLE" statement is introduced
-                throw new UnsupportedOperationException("CURRENT_ROLE is not yet supported");
-        }
-        throw new IllegalArgumentException("Unsupported type: " + type);
+        GrantorSpecification.Type type = specification.type();
+        return switch (type) {
+            case PRINCIPAL -> createPrincipal(specification.principal().get());
+            case CURRENT_USER -> new TrinoPrincipal(USER, session.getIdentity().getUser());
+            // TODO: will be implemented once the "SET ROLE" statement is introduced
+            case CURRENT_ROLE -> throw new UnsupportedOperationException("CURRENT_ROLE is not yet supported");
+        };
     }
 
     public static TrinoPrincipal createPrincipal(PrincipalSpecification specification)
     {
-        PrincipalSpecification.Type type = specification.getType();
-        switch (type) {
-            case UNSPECIFIED:
-            case USER:
-                return new TrinoPrincipal(USER, specification.getName().getValue());
-            case ROLE:
-                return new TrinoPrincipal(ROLE, specification.getName().getValue());
-        }
-        throw new IllegalArgumentException("Unsupported type: " + type);
+        PrincipalSpecification.Type type = specification.type();
+        return switch (type) {
+            case UNSPECIFIED, USER -> new TrinoPrincipal(USER, specification.name().getValue());
+            case ROLE -> new TrinoPrincipal(ROLE, specification.name().getValue());
+        };
     }
 
     public static PrincipalSpecification createPrincipal(TrinoPrincipal principal)
     {
         PrincipalType type = principal.getType();
-        switch (type) {
-            case USER:
-                return new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier(principal.getName()));
-            case ROLE:
-                return new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier(principal.getName()));
-        }
-        throw new IllegalArgumentException("Unsupported type: " + type);
+        return switch (type) {
+            case USER -> new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier(principal.getName()));
+            case ROLE -> new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier(principal.getName()));
+        };
     }
 
     public static boolean tableExists(Metadata metadata, Session session, String table)

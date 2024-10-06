@@ -8,18 +8,36 @@
     See the <a href="https://trino.io/docs/current/">User Manual</a> for deployment instructions and end user documentation.
 </p>
 <p align="center">
-   <a href="https://trino.io/download.html">
-       <img src="https://img.shields.io/maven-central/v/io.trino/trino-server.svg?label=Trino" alt="Trino download" />
-   </a>
-   <a href="https://trino.io/slack.html">
-       <img src="https://img.shields.io/static/v1?logo=slack&logoColor=959DA5&label=Slack&labelColor=333a41&message=join%20conversation&color=3AC358" alt="Trino Slack" />
-   </a>
-   <a href="https://trino.io/trino-the-definitive-guide.html">
-       <img src="https://img.shields.io/badge/Trino%3A%20The%20Definitive%20Guide-download-brightgreen" alt="Trino: The Definitive Guide book download" />
-   </a>
+  <a href="https://trino.io/download.html" style="text-decoration: none">
+    <img src="https://img.shields.io/maven-central/v/io.trino/trino-server.svg?label=Trino" alt="Trino download" />
+  </a>
+  <a href="https://github.com/jvm-repo-rebuild/reproducible-central/blob/master/content/io/trino/README.md" style="text-decoration: none">
+    <img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/jvm-repo-rebuild/reproducible-central/master/content/io/trino/badge.json" alt="Reproducible builds supported" />
+  </a>
+  <a href="https://trino.io/slack.html"  style="text-decoration: none">
+    <img src="https://img.shields.io/static/v1?logo=slack&logoColor=959DA5&label=Slack&labelColor=333a41&message=join%20conversation&color=3AC358" alt="Trino Slack" />
+  </a>
+  <a href="https://trino.io/trino-the-definitive-guide.html"  style="text-decoration: none">
+    <img src="https://img.shields.io/badge/Trino%3A%20The%20Definitive%20Guide-download-brightgreen" alt="Trino: The Definitive Guide book download" />
+  </a>
 </p>
 
 ## Development
+
+Learn about development for all Trino organization projects:
+
+* [Vision](https://trino.io/development/vision)
+* [Contribution process](https://trino.io/development/process#contribution-process)
+* [Pull request and commit guidelines](https://trino.io/development/process#pull-request-and-commit-guidelines-)
+* [Release note guidelines](https://trino.io/development/process#release-note-guidelines-)
+
+Further information in the [development section of the
+website](https://trino.io/development) includes different roles, like
+contributors, reviewers, and maintainers, related processes, and other aspects.
+
+See [the Trino developer guide](https://trino.io/docs/current/develop.html) for
+information about the SPI, implementing connectors and other plugins plugins,
+the client protocol, writing tests and other lower level details.
 
 See [DEVELOPMENT](.github/DEVELOPMENT.md) for information about code style,
 development process, and guidelines.
@@ -31,11 +49,15 @@ See [CONTRIBUTING](.github/CONTRIBUTING.md) for contribution requirements.
 See the project [security policy](.github/SECURITY.md) for
 information about reporting vulnerabilities.
 
+Trino supports [reproducible builds](https://reproducible-builds.org) as of version 449.
+
 ## Build requirements
 
 * Mac OS X or Linux
-* Java 17.0.4+, 64-bit
+* Java 22.0.0+, 64-bit
 * Docker
+  * Turn SELinux or other systems disabling write access to the local checkout
+    off, to allow containers to mount parts of the Trino source tree
 
 ## Building Trino
 
@@ -68,8 +90,8 @@ After opening the project in IntelliJ, double check that the Java SDK is
 properly configured for the project:
 
 * Open the File menu and select Project Structure
-* In the SDKs section, ensure that JDK 17 is selected (create one if none exist)
-* In the Project section, ensure the Project language level is set to 17
+* In the SDKs section, ensure that JDK 22 is selected (create one if none exist)
+* In the Project section, ensure the Project language level is set to 22
 
 ### Running a testing server
 

@@ -25,6 +25,7 @@ import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.sql.planner.Plan;
@@ -249,6 +250,12 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
+    public boolean isInfoPruned()
+    {
+        return false;
+    }
+
+    @Override
     public QueryId getQueryId()
     {
         return stateMachine.getQueryId();
@@ -261,9 +268,15 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
-    public Plan getQueryPlan()
+    public ResultQueryInfo getResultQueryInfo()
     {
-        throw new UnsupportedOperationException();
+        return stateMachine.getFinalQueryInfo().map(ResultQueryInfo::new).orElseGet(() -> stateMachine.updateResultQueryInfo(Optional.empty(), Optional::empty));
+    }
+
+    @Override
+    public Optional<Plan> getQueryPlan()
+    {
+        return Optional.empty();
     }
 
     @Override

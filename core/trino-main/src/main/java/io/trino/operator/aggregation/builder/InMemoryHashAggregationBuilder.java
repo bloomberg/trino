@@ -19,6 +19,7 @@ import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 import io.trino.array.IntBigArray;
+import io.trino.operator.FlatHashStrategyCompiler;
 import io.trino.operator.GroupByHash;
 import io.trino.operator.OperatorContext;
 import io.trino.operator.TransformWork;
@@ -32,7 +33,6 @@ import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.type.Type;
-import io.trino.sql.gen.JoinCompiler;
 import io.trino.sql.planner.plan.AggregationNode.Step;
 import it.unimi.dsi.fastutil.ints.AbstractIntIterator;
 import it.unimi.dsi.fastutil.ints.IntIterator;
@@ -69,7 +69,7 @@ public class InMemoryHashAggregationBuilder
             Optional<Integer> hashChannel,
             OperatorContext operatorContext,
             Optional<DataSize> maxPartialMemory,
-            JoinCompiler joinCompiler,
+            FlatHashStrategyCompiler hashStrategyCompiler,
             UpdateMemory updateMemory)
     {
         this(aggregatorFactories,
@@ -81,7 +81,7 @@ public class InMemoryHashAggregationBuilder
                 operatorContext,
                 maxPartialMemory,
                 Optional.empty(),
-                joinCompiler,
+                hashStrategyCompiler,
                 updateMemory);
     }
 
@@ -95,11 +95,11 @@ public class InMemoryHashAggregationBuilder
             OperatorContext operatorContext,
             Optional<DataSize> maxPartialMemory,
             Optional<Integer> unspillIntermediateChannelOffset,
-            JoinCompiler joinCompiler,
+            FlatHashStrategyCompiler hashStrategyCompiler,
             UpdateMemory updateMemory)
     {
         if (hashChannel.isPresent()) {
-            this.groupByOutputTypes = ImmutableList.<Type>builder()
+            this.groupByOutputTypes = ImmutableList.<Type>builderWithExpectedSize(groupByTypes.size() + 1)
                     .addAll(groupByTypes)
                     .add(BIGINT)
                     .build();
@@ -119,15 +119,15 @@ public class InMemoryHashAggregationBuilder
                 groupByTypes,
                 hashChannel.isPresent(),
                 expectedGroups,
-                joinCompiler,
+                hashStrategyCompiler,
                 updateMemory);
         this.partial = step.isOutputPartial();
         this.maxPartialMemory = maxPartialMemory.map(dataSize -> OptionalLong.of(dataSize.toBytes())).orElseGet(OptionalLong::empty);
         this.updateMemory = requireNonNull(updateMemory, "updateMemory is null");
 
         // wrapper each function with an aggregator
-        ImmutableList.Builder<GroupedAggregator> builder = ImmutableList.builder();
         requireNonNull(aggregatorFactories, "aggregatorFactories is null");
+        ImmutableList.Builder<GroupedAggregator> builder = ImmutableList.builderWithExpectedSize(aggregatorFactories.size());
         for (int i = 0; i < aggregatorFactories.size(); i++) {
             AggregatorFactory accumulatorFactory = aggregatorFactories.get(i);
             if (unspillIntermediateChannelOffset.isPresent()) {
@@ -147,10 +147,10 @@ public class InMemoryHashAggregationBuilder
     public Work<?> processPage(Page page)
     {
         if (groupedAggregators.isEmpty()) {
-            return groupByHash.addPage(page.getColumns(groupByChannels));
+            return groupByHash.addPage(page.getLoadedPage(groupByChannels));
         }
         return new TransformWork<>(
-                groupByHash.getGroupIds(page.getColumns(groupByChannels)),
+                groupByHash.getGroupIds(page.getLoadedPage(groupByChannels)),
                 groupByIdBlock -> {
                     int groupCount = groupByHash.getGroupCount();
                     for (GroupedAggregator groupedAggregator : groupedAggregators) {
@@ -333,7 +333,7 @@ public class InMemoryHashAggregationBuilder
 
     public static List<Type> toTypes(List<? extends Type> groupByType, List<AggregatorFactory> factories, Optional<Integer> hashChannel)
     {
-        ImmutableList.Builder<Type> types = ImmutableList.builder();
+        ImmutableList.Builder<Type> types = ImmutableList.builderWithExpectedSize(groupByType.size() + (hashChannel.isPresent() ? 1 : 0) + factories.size());
         types.addAll(groupByType);
         if (hashChannel.isPresent()) {
             types.add(BIGINT);

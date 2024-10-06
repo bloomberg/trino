@@ -59,7 +59,7 @@ import static java.lang.Math.min;
 import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 
-public class SortingFileWriter
+public final class SortingFileWriter
         implements FileWriter
 {
     private static final Logger log = Logger.get(SortingFileWriter.class);
@@ -104,7 +104,7 @@ public class SortingFileWriter
         this.sortOrders = ImmutableList.copyOf(requireNonNull(sortOrders, "sortOrders is null"));
         this.outputWriter = requireNonNull(outputWriter, "outputWriter is null");
         this.sortBuffer = new SortBuffer(maxMemory, types, sortFields, sortOrders, pageSorter);
-        this.tempFileSinkFactory = tempFileSinkFactory;
+        this.tempFileSinkFactory = requireNonNull(tempFileSinkFactory, "tempFileSinkFactory is null");
         this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
     }
 

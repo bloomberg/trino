@@ -19,17 +19,21 @@ import io.trino.connector.MockConnectorFactory;
 import io.trino.spi.Plugin;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.testing.DistributedQueryRunner;
+import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.io.IOException;
 
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestConnectorEventListener
 {
     private final EventsCollector generatedEvents = new EventsCollector();
@@ -42,7 +46,9 @@ public class TestConnectorEventListener
             throws Exception
     {
         closer = Closer.create();
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(TEST_SESSION).setNodeCount(1).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(TEST_SESSION)
+                .setWorkerCount(0)
+                .build();
         closer.register(queryRunner);
 
         queryRunner.installPlugin(new Plugin()

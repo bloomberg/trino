@@ -13,17 +13,13 @@
  */
 package io.trino.plugin.deltalake;
 
-import io.trino.Session;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 
 import java.nio.file.Files;
-import java.util.HashMap;
-import java.util.Map;
+import java.nio.file.Path;
 
-import static io.trino.plugin.deltalake.DeltaLakeConnectorFactory.CONNECTOR_NAME;
-import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
-import static io.trino.testing.TestingSession.testSessionBuilder;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 
 public class TestDeltaLakeTableWithCustomLocationUsingHiveMetastore
         extends BaseDeltaLakeTableWithCustomLocation
@@ -32,26 +28,12 @@ public class TestDeltaLakeTableWithCustomLocationUsingHiveMetastore
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        Session session = testSessionBuilder()
-                .setCatalog(CATALOG_NAME)
-                .setSchema(SCHEMA)
+        Path catalogDir = Files.createTempDirectory("catalog-dir");
+        closeAfterClass(() -> deleteRecursively(catalogDir, ALLOW_INSECURE));
+
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("hive.metastore.catalog.dir", catalogDir.toUri().toString())
+                .addDeltaProperty("delta.unique-table-location", "true")
                 .build();
-
-        DistributedQueryRunner.Builder<?> builder = DistributedQueryRunner.builder(session);
-        DistributedQueryRunner queryRunner = builder.build();
-
-        Map<String, String> connectorProperties = new HashMap<>();
-        metastoreDir = Files.createTempDirectory("test_delta_lake").toFile();
-        metastore = createTestingFileHiveMetastore(metastoreDir);
-        connectorProperties.putIfAbsent("delta.unique-table-location", "true");
-        connectorProperties.putIfAbsent("hive.metastore", "file");
-        connectorProperties.putIfAbsent("hive.metastore.catalog.dir", metastoreDir.getPath());
-
-        queryRunner.installPlugin(new TestingDeltaLakePlugin());
-        queryRunner.createCatalog(CATALOG_NAME, CONNECTOR_NAME, connectorProperties);
-
-        queryRunner.execute("CREATE SCHEMA " + SCHEMA);
-
-        return queryRunner;
     }
 }

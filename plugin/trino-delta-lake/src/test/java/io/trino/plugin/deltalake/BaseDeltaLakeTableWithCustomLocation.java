@@ -15,13 +15,13 @@ package io.trino.plugin.deltalake;
 
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.Table;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.Table;
+import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedRow;
 import org.junit.jupiter.api.Test;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
@@ -31,25 +31,20 @@ import static io.trino.plugin.hive.TableType.MANAGED_TABLE;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 public abstract class BaseDeltaLakeTableWithCustomLocation
         extends AbstractTestQueryFramework
 {
-    protected static final String SCHEMA = "test_tables_with_custom_location" + randomNameSuffix();
-    protected static final String CATALOG_NAME = "delta_with_custom_location";
-    protected File metastoreDir;
-    protected HiveMetastore metastore;
-
     @Test
     public void testTableHasUuidSuffixInLocation()
     {
+        String schema = getSession().getSchema().orElseThrow();
         String tableName = "table_with_uuid" + randomNameSuffix();
         assertQuerySucceeds(format("CREATE TABLE %s AS SELECT 1 as val", tableName));
-        Optional<Table> table = metastore.getTable(SCHEMA, tableName);
-        assertTrue(table.isPresent(), "Table should exists");
+        Optional<Table> table = metastore().getTable(schema, tableName);
+        assertThat(table.isPresent())
+                .describedAs("Table should exists")
+                .isTrue();
         String location = table.get().getStorage().getLocation();
         assertThat(location).matches(format(".*%s-[0-9a-f]{32}", tableName));
     }
@@ -58,21 +53,38 @@ public abstract class BaseDeltaLakeTableWithCustomLocation
     public void testCreateAndDrop()
             throws IOException
     {
+        String schema = getSession().getSchema().orElseThrow();
         String tableName = "test_create_and_drop" + randomNameSuffix();
         assertQuerySucceeds(format("CREATE TABLE %s AS SELECT 1 as val", tableName));
-        Table table = metastore.getTable(SCHEMA, tableName).orElseThrow();
+        Table table = metastore().getTable(schema, tableName).orElseThrow();
         assertThat(table.getTableType()).isEqualTo(MANAGED_TABLE.name());
 
         Location tableLocation = Location.of(table.getStorage().getLocation());
         TrinoFileSystem fileSystem = HDFS_FILE_SYSTEM_FACTORY.create(getSession().toConnectorSession());
-        assertTrue(fileSystem.listFiles(tableLocation).hasNext(), "The directory corresponding to the table storage location should exist");
+        assertThat(fileSystem.listFiles(tableLocation).hasNext())
+                .describedAs("The directory corresponding to the table storage location should exist")
+                .isTrue();
         List<MaterializedRow> materializedRows = computeActual("SELECT \"$path\" FROM " + tableName).getMaterializedRows();
-        assertEquals(materializedRows.size(), 1);
+        assertThat(materializedRows.size()).isEqualTo(1);
         Location filePath = Location.of((String) materializedRows.get(0).getField(0));
-        assertTrue(fileSystem.listFiles(filePath).hasNext(), "The data file should exist");
+        assertThat(fileSystem.listFiles(filePath).hasNext())
+                .describedAs("The data file should exist")
+                .isTrue();
         assertQuerySucceeds(format("DROP TABLE %s", tableName));
-        assertFalse(metastore.getTable(SCHEMA, tableName).isPresent(), "Table should be dropped");
-        assertFalse(fileSystem.listFiles(filePath).hasNext(), "The data file should have been removed");
-        assertFalse(fileSystem.listFiles(tableLocation).hasNext(), "The directory corresponding to the dropped Delta Lake table should be removed");
+        assertThat(metastore().getTable(schema, tableName).isPresent())
+                .describedAs("Table should be dropped")
+                .isFalse();
+        assertThat(fileSystem.listFiles(filePath).hasNext())
+                .describedAs("The data file should have been removed")
+                .isFalse();
+        assertThat(fileSystem.listFiles(tableLocation).hasNext())
+                .describedAs("The directory corresponding to the dropped Delta Lake table should be removed")
+                .isFalse();
+    }
+
+    protected HiveMetastore metastore()
+    {
+        return TestingDeltaLakeUtils.getConnectorService(getQueryRunner(), HiveMetastoreFactory.class)
+                .createMetastore(Optional.empty());
     }
 }

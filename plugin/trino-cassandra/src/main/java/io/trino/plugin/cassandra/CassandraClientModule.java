@@ -33,6 +33,7 @@ import io.opentelemetry.instrumentation.cassandra.v4_4.CassandraTelemetry;
 import io.trino.plugin.cassandra.ptf.Query;
 import io.trino.spi.TrinoException;
 import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.procedure.Procedure;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeId;
 import io.trino.spi.type.TypeManager;
@@ -54,9 +55,9 @@ import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.json.JsonBinder.jsonBinder;
 import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.plugin.base.ssl.SslUtils.createSSLContext;
 import static io.trino.plugin.cassandra.CassandraErrorCode.CASSANDRA_SSL_INITIALIZATION_FAILURE;
-import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class CassandraClientModule
@@ -83,12 +84,15 @@ public class CassandraClientModule
         binder.bind(CassandraPartitionManager.class).in(Scopes.SINGLETON);
         binder.bind(CassandraSessionProperties.class).in(Scopes.SINGLETON);
         newSetBinder(binder, ConnectorTableFunction.class).addBinding().toProvider(Query.class).in(Scopes.SINGLETON);
+        newSetBinder(binder, Procedure.class).addBinding().toProvider(ExecuteProcedure.class).in(Scopes.SINGLETON);
         binder.bind(CassandraTypeManager.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(CassandraClientConfig.class);
 
         jsonCodecBinder(binder).bindListJsonCodec(ExtraColumnMetadata.class);
         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
+
+        closingBinder(binder).registerCloseable(CassandraSession.class);
     }
 
     public static final class TypeDeserializer
@@ -150,8 +154,8 @@ public class CassandraClientModule
             }
         }
 
-        driverConfigLoaderBuilder.withDuration(DefaultDriverOption.REQUEST_TIMEOUT, Duration.ofMillis(toIntExact(config.getClientReadTimeout().toMillis())));
-        driverConfigLoaderBuilder.withDuration(DefaultDriverOption.CONNECTION_CONNECT_TIMEOUT, Duration.ofMillis(toIntExact(config.getClientConnectTimeout().toMillis())));
+        driverConfigLoaderBuilder.withDuration(DefaultDriverOption.REQUEST_TIMEOUT, config.getClientReadTimeout().toJavaTime());
+        driverConfigLoaderBuilder.withDuration(DefaultDriverOption.CONNECTION_CONNECT_TIMEOUT, config.getClientConnectTimeout().toJavaTime());
         if (config.getClientSoLinger() != null) {
             driverConfigLoaderBuilder.withInt(DefaultDriverOption.SOCKET_LINGER_INTERVAL, config.getClientSoLinger());
         }

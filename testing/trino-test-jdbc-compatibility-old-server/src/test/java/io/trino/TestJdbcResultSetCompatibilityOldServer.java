@@ -40,8 +40,7 @@ import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 @Test(singleThreaded = true)
 public class TestJdbcResultSetCompatibilityOldServer
@@ -74,8 +73,8 @@ public class TestJdbcResultSetCompatibilityOldServer
             ImmutableList.Builder<String> testedTrinoVersions = ImmutableList.builder();
             int testVersion = currentVersion - 1; // last release version
             for (int i = 0; i < NUMBER_OF_TESTED_VERSIONS; i++) {
-                if (testVersion == 404) {
-                    // 404 release was skipped.
+                if (testVersion == 456) {
+                    // 456 release was skipped.
                     testVersion--;
                 }
                 if (testVersion < FIRST_VERSION) {
@@ -109,9 +108,11 @@ public class TestJdbcResultSetCompatibilityOldServer
         // verify that version reported by Trino server matches requested one.
         try (ConnectedStatement statementWrapper = newStatement()) {
             try (ResultSet rs = statementWrapper.getStatement().executeQuery("SELECT node_version FROM system.runtime.nodes")) {
-                assertTrue(rs.next());
+                assertThat(rs.next()).isTrue();
                 String actualTrinoVersion = rs.getString(1);
-                assertEquals(actualTrinoVersion, getTestedTrinoVersion(), "Trino server version reported by container does not match expected one");
+                assertThat(actualTrinoVersion)
+                        .describedAs("Trino server version reported by container does not match expected one")
+                        .isEqualTo(getTestedTrinoVersion());
             }
         }
         catch (SQLException e) {
@@ -136,12 +137,6 @@ public class TestJdbcResultSetCompatibilityOldServer
             throws SQLException
     {
         return DriverManager.getConnection(trinoContainer.getJdbcUrl(), "test", null);
-    }
-
-    @Override
-    protected int getTestedServerVersion()
-    {
-        return parseInt(getTestedTrinoVersion());
     }
 
     @Override

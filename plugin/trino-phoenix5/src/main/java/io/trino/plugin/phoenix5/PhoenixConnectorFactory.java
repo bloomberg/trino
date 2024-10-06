@@ -17,8 +17,8 @@ import com.google.inject.Injector;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.json.JsonModule;
 import io.opentelemetry.api.OpenTelemetry;
-import io.trino.plugin.base.CatalogName;
 import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
@@ -52,7 +52,7 @@ public class PhoenixConnectorFactory
         requireNonNull(requiredConfig, "requiredConfig is null");
         checkStrictSpiVersionMatch(context, this);
 
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             Bootstrap app = new Bootstrap(
                     new JsonModule(),
                     new PhoenixClientModule(catalogName),

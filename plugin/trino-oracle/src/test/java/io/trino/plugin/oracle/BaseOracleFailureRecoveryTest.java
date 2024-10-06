@@ -14,23 +14,20 @@
 package io.trino.plugin.oracle;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.jdbc.BaseJdbcFailureRecoveryTest;
 import io.trino.testing.QueryRunner;
-import io.trino.testng.services.Flaky;
 import io.trino.tpch.TpchTable;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static io.trino.plugin.oracle.OracleQueryRunner.createOracleQueryRunner;
-import static io.trino.plugin.oracle.TestingOracleServer.TEST_PASS;
-import static io.trino.plugin.oracle.TestingOracleServer.TEST_USER;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public abstract class BaseOracleFailureRecoveryTest
         extends BaseJdbcFailureRecoveryTest
@@ -44,42 +41,33 @@ public abstract class BaseOracleFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
-        TestingOracleServer oracleServer = new TestingOracleServer();
-        return createOracleQueryRunner(
-                closeAfterClass(oracleServer),
-                configProperties,
-                coordinatorProperties,
-                ImmutableMap.<String, String>builder()
-                        .put("connection-url", oracleServer.getJdbcUrl())
-                        .put("connection-user", TEST_USER)
-                        .put("connection-password", TEST_PASS)
-                        .buildOrThrow(),
-                requiredTpchTables,
-                runner -> {
+        TestingOracleServer oracleServer = closeAfterClass(new TestingOracleServer());
+        return OracleQueryRunner.builder(oracleServer)
+                .setExtraProperties(configProperties)
+                .setCoordinatorProperties(coordinatorProperties)
+                .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", ImmutableMap.of(
                             "exchange.base-directories", System.getProperty("java.io.tmpdir") + "/trino-local-file-system-exchange-manager"));
-                });
+                })
+                .setInitialTables(requiredTpchTables)
+                .setAdditionalModule(failureInjectionModule)
+                .build();
     }
 
-    @Override
-    @Flaky(issue = "https://github.com/trinodb/trino/issues/16277", match = "There should be no remaining tmp_trino tables that are queryable")
-    @Test(dataProvider = "parallelTests")
-    public void testParallel(Runnable runnable)
-    {
-        super.testParallel(runnable);
-    }
-
+    @Test
     @Override
     protected void testUpdateWithSubquery()
     {
         assertThatThrownBy(super::testUpdateWithSubquery).hasMessageContaining("Unexpected Join over for-update table scan");
-        throw new SkipException("skipped");
+        abort("skipped");
     }
 
+    @Test
     @Override
     protected void testUpdate()
     {
@@ -93,5 +81,13 @@ public abstract class BaseOracleFailureRecoveryTest
                 .withSetupQuery(setupQuery)
                 .withCleanupQuery(cleanupQuery)
                 .isCoordinatorOnly();
+    }
+
+    @Override
+    protected boolean checkNoRemainingTmpTables()
+    {
+        // we could not ensure that tmp tables are always promptly removed in Oracle.
+        // checking if tmp_trino tables are deleted immediatelly after DML operation renders test flaky.
+        return false;
     }
 }

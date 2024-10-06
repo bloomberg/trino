@@ -15,6 +15,7 @@ package io.trino.server;
 
 import com.google.common.base.StandardSystemProperty;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.FormatMethod;
 import com.sun.management.UnixOperatingSystemMXBean;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -26,13 +27,19 @@ import java.lang.management.ManagementFactory;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
+import static java.util.regex.Pattern.quote;
 
 final class TrinoSystemRequirements
 {
@@ -41,13 +48,20 @@ final class TrinoSystemRequirements
 
     private TrinoSystemRequirements() {}
 
-    public static void verifyJvmRequirements()
+    public static void verifySystemRequirements()
+    {
+        verifyJvmRequirements();
+        verifySystemTimeIsReasonable();
+    }
+
+    private static void verifyJvmRequirements()
     {
         verifyJavaVersion();
         verify64BitJvm();
         verifyOsArchitecture();
         verifyByteOrder();
         verifyUsingG1Gc();
+        verifyJdk8329528Workaround();
         verifyFileDescriptor();
         verifySlice();
         verifyUtf8();
@@ -93,7 +107,7 @@ final class TrinoSystemRequirements
 
     private static void verifyJavaVersion()
     {
-        Version required = Version.parse("17.0.3");
+        Version required = Version.parse("22.0.1");
 
         if (Runtime.version().compareTo(required) < 0) {
             failRequirement("Trino requires Java %s at minimum (found %s)", required, Runtime.version());
@@ -114,6 +128,17 @@ final class TrinoSystemRequirements
         catch (RuntimeException e) {
             // This should never happen since we have verified the OS and JVM above
             failRequirement("Cannot read garbage collector information: %s", e);
+        }
+    }
+
+    private static void verifyJdk8329528Workaround()
+    {
+        if (Runtime.version().compareTo(Version.parse("22.0.2")) < 0) {
+            Optional<String> collectionsKeepPinned = getJvmConfigurationFlag("XX:G1NumCollectionsKeepPinned");
+            int requiredValue = 10000000;
+            if (collectionsKeepPinned.isEmpty() || parseInt(collectionsKeepPinned.get()) < requiredValue) {
+                failRequirement("Trino requires -XX:+UnlockDiagnosticVMOptions -XX:G1NumCollectionsKeepPinned=%d on Java versions lower than 22.0.2 due to JDK-8329528", requiredValue);
+            }
         }
     }
 
@@ -165,20 +190,40 @@ final class TrinoSystemRequirements
      * Perform a sanity check to make sure that the year is reasonably current, to guard against
      * issues in third party libraries.
      */
-    public static void verifySystemTimeIsReasonable()
+    private static void verifySystemTimeIsReasonable()
     {
         int currentYear = DateTime.now().year().get();
-        if (currentYear < 2022) {
+        if (currentYear < 2024) {
             failRequirement("Trino requires the system time to be current (found year %s)", currentYear);
         }
     }
 
+    private static Optional<String> getJvmConfigurationFlag(String flag)
+    {
+        Pattern pattern = Pattern.compile("-%s=(.*)".formatted(quote(flag)), Pattern.DOTALL);
+        Optional<String> matched = Optional.empty();
+        List<String> matching = new ArrayList<>(1);
+        for (String argument : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
+            Matcher matcher = pattern.matcher(argument);
+            if (matcher.matches()) {
+                matched = Optional.of(matcher.group(1));
+                matching.add(argument);
+            }
+        }
+        if (matching.size() > 1) {
+            failRequirement("Multiple JVM configuration flags matched %s: %s", pattern.pattern(), matching);
+        }
+        return matched;
+    }
+
+    @FormatMethod
     private static void failRequirement(String format, Object... args)
     {
         System.err.println("ERROR: " + format(format, args));
         System.exit(100);
     }
 
+    @FormatMethod
     private static void warnRequirement(String format, Object... args)
     {
         System.err.println("WARNING: " + format(format, args));

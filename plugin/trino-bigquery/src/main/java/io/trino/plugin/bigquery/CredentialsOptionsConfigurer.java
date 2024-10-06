@@ -18,6 +18,7 @@ import com.google.auth.Credentials;
 import com.google.auth.oauth2.ServiceAccountCredentials;
 import com.google.cloud.bigquery.BigQueryOptions;
 import com.google.cloud.bigquery.storage.v1.BigQueryReadSettings;
+import com.google.cloud.bigquery.storage.v1.BigQueryWriteSettings;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.inject.Inject;
 import io.trino.spi.connector.ConnectorSession;
@@ -30,12 +31,14 @@ public class CredentialsOptionsConfigurer
         implements BigQueryOptionsConfigurer
 {
     private final BigQueryCredentialsSupplier credentialsSupplier;
-    private final Optional<String> parentProjectId;
+    private final Optional<String> configProjectId;
+    private final Optional<String> configParentProjectId;
 
     @Inject
     public CredentialsOptionsConfigurer(BigQueryConfig bigQueryConfig, BigQueryCredentialsSupplier credentialsSupplier)
     {
-        this.parentProjectId = requireNonNull(bigQueryConfig, "bigQueryConfig is null").getParentProjectId();
+        this.configProjectId = bigQueryConfig.getProjectId();
+        this.configParentProjectId = bigQueryConfig.getParentProjectId();
         this.credentialsSupplier = requireNonNull(credentialsSupplier, "credentialsSupplier is null");
     }
 
@@ -43,9 +46,11 @@ public class CredentialsOptionsConfigurer
     public BigQueryOptions.Builder configure(BigQueryOptions.Builder builder, ConnectorSession session)
     {
         Optional<Credentials> credentials = credentialsSupplier.getCredentials(session);
-        String billingProjectId = calculateBillingProjectId(parentProjectId, credentials);
+        String projectId = resolveProjectId(configProjectId, credentials);
         credentials.ifPresent(builder::setCredentials);
-        builder.setProjectId(billingProjectId);
+        builder.setProjectId(projectId);
+        // Quota project id is different name for parent project id, both indicates project used for quota and billing purposes.
+        configParentProjectId.ifPresent(builder::setQuotaProjectId);
         return builder;
     }
 
@@ -58,12 +63,20 @@ public class CredentialsOptionsConfigurer
         return builder;
     }
 
+    @Override
+    public BigQueryWriteSettings.Builder configure(BigQueryWriteSettings.Builder builder, ConnectorSession session)
+    {
+        Optional<Credentials> credentials = credentialsSupplier.getCredentials(session);
+        credentials.ifPresent(value -> builder.setCredentialsProvider(FixedCredentialsProvider.create(value)));
+        return builder;
+    }
+
     // Note that at this point the config has been validated, which means that option 2 or option 3 will always be valid
     @VisibleForTesting
-    static String calculateBillingProjectId(Optional<String> configParentProjectId, Optional<Credentials> credentials)
+    static String resolveProjectId(Optional<String> configProjectId, Optional<Credentials> credentials)
     {
         // 1. Get from configuration
-        return configParentProjectId
+        return configProjectId
                 // 2. Get from the provided credentials, but only ServiceAccountCredentials contains the project id.
                 // All other credentials types (User, AppEngine, GCE, CloudShell, etc.) take it from the environment
                 .orElseGet(() -> credentials

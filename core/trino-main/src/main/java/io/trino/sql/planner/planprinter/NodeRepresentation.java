@@ -13,8 +13,6 @@
  */
 package io.trino.sql.planner.planprinter;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.FormatMethod;
 import io.trino.cost.LocalCostEstimate;
@@ -22,17 +20,13 @@ import io.trino.cost.PlanCostEstimate;
 import io.trino.cost.PlanNodeStatsAndCostSummary;
 import io.trino.cost.PlanNodeStatsEstimate;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
-import io.trino.sql.planner.plan.PlanFragmentId;
 import io.trino.sql.planner.plan.PlanNodeId;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -42,9 +36,9 @@ public class NodeRepresentation
     private final String name;
     private final String type;
     private final Map<String, String> descriptor;
-    private final List<TypedSymbol> outputs;
+    private final List<Symbol> outputs;
     private final List<PlanNodeId> children;
-    private final List<PlanFragmentId> remoteSources;
+    private final List<PlanNodeId> initialChildren;
     private final Optional<PlanNodeStats> stats;
     private final List<PlanNodeStatsEstimate> estimatedStats;
     private final List<PlanCostEstimate> estimatedCost;
@@ -57,13 +51,14 @@ public class NodeRepresentation
             String name,
             String type,
             Map<String, String> descriptor,
-            List<TypedSymbol> outputs,
+            List<Symbol> outputs,
             Optional<PlanNodeStats> stats,
             List<PlanNodeStatsEstimate> estimatedStats,
             List<PlanCostEstimate> estimatedCost,
             Optional<PlanNodeStatsAndCostSummary> reorderJoinStatsAndCost,
             List<PlanNodeId> children,
-            List<PlanFragmentId> remoteSources)
+            // This is used in the case of adaptive plan node
+            List<PlanNodeId> initialChildren)
     {
         this.id = requireNonNull(id, "id is null");
         this.name = requireNonNull(name, "name is null");
@@ -75,7 +70,7 @@ public class NodeRepresentation
         this.estimatedCost = requireNonNull(estimatedCost, "estimatedCost is null");
         this.reorderJoinStatsAndCost = requireNonNull(reorderJoinStatsAndCost, "reorderJoinStatsAndCost is null");
         this.children = requireNonNull(children, "children is null");
-        this.remoteSources = requireNonNull(remoteSources, "remoteSources is null");
+        this.initialChildren = requireNonNull(initialChildren, "initialChildren is null");
 
         checkArgument(estimatedCost.size() == estimatedStats.size(), "size of cost and stats list does not match");
     }
@@ -111,7 +106,7 @@ public class NodeRepresentation
         return descriptor;
     }
 
-    public List<TypedSymbol> getOutputs()
+    public List<Symbol> getOutputs()
     {
         return outputs;
     }
@@ -121,9 +116,9 @@ public class NodeRepresentation
         return children;
     }
 
-    public List<PlanFragmentId> getRemoteSources()
+    public List<PlanNodeId> getInitialChildren()
     {
-        return remoteSources;
+        return initialChildren;
     }
 
     public List<String> getDetails()
@@ -151,7 +146,7 @@ public class NodeRepresentation
         return reorderJoinStatsAndCost;
     }
 
-    public List<PlanNodeStatsAndCostSummary> getEstimates(TypeProvider typeProvider)
+    public List<PlanNodeStatsAndCostSummary> getEstimates()
     {
         if (getEstimatedStats().stream().allMatch(PlanNodeStatsEstimate::isOutputRowCountUnknown) &&
                 getEstimatedCost().stream().allMatch(c -> c.getRootNodeLocalCostEstimate().equals(LocalCostEstimate.unknown()))) {
@@ -163,68 +158,14 @@ public class NodeRepresentation
             PlanNodeStatsEstimate stats = getEstimatedStats().get(i);
             LocalCostEstimate cost = getEstimatedCost().get(i).getRootNodeLocalCostEstimate();
 
-            List<Symbol> outputSymbols = getOutputs().stream()
-                    .map(NodeRepresentation.TypedSymbol::getSymbol)
-                    .collect(toImmutableList());
-
             estimates.add(new PlanNodeStatsAndCostSummary(
                     stats.getOutputRowCount(),
-                    stats.getOutputSizeInBytes(outputSymbols, typeProvider),
+                    stats.getOutputSizeInBytes(getOutputs()),
                     cost.getCpuCost(),
                     cost.getMaxMemory(),
                     cost.getNetworkCost()));
         }
 
         return estimates.build();
-    }
-
-    public static class TypedSymbol
-    {
-        private final Symbol symbol;
-        private final String type;
-
-        @JsonCreator
-        public TypedSymbol(@JsonProperty("symbol") Symbol symbol, @JsonProperty("type") String type)
-        {
-            this.symbol = symbol;
-            this.type = type;
-        }
-
-        @JsonProperty
-        public Symbol getSymbol()
-        {
-            return symbol;
-        }
-
-        @JsonProperty
-        public String getType()
-        {
-            return type;
-        }
-
-        public static TypedSymbol typedSymbol(String symbol, String type)
-        {
-            return new TypedSymbol(new Symbol(symbol), type);
-        }
-
-        @Override
-        public boolean equals(Object o)
-        {
-            if (this == o) {
-                return true;
-            }
-            if (!(o instanceof TypedSymbol)) {
-                return false;
-            }
-            TypedSymbol that = (TypedSymbol) o;
-            return symbol.equals(that.symbol)
-                    && type.equals(that.type);
-        }
-
-        @Override
-        public int hashCode()
-        {
-            return Objects.hash(symbol, type);
-        }
     }
 }

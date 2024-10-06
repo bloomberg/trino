@@ -17,8 +17,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.type.TypeInfo;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.type.TypeInfo;
 import io.trino.plugin.hive.util.HiveBucketing.BucketingVersion;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
@@ -40,11 +40,12 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Lists.newArrayList;
+import static io.trino.metastore.HiveType.HIVE_TIMESTAMP;
 import static io.trino.plugin.hive.HiveTestUtils.toNativeContainerValue;
-import static io.trino.plugin.hive.HiveType.HIVE_TIMESTAMP;
 import static io.trino.plugin.hive.util.HiveBucketing.BucketingVersion.BUCKETING_V1;
 import static io.trino.plugin.hive.util.HiveBucketing.BucketingVersion.BUCKETING_V2;
 import static io.trino.plugin.hive.util.HiveBucketing.getHiveBuckets;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getTypeSignature;
 import static io.trino.spi.type.TimestampType.createTimestampType;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
@@ -54,8 +55,8 @@ import static java.util.Arrays.asList;
 import static java.util.Map.Entry;
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils.getStandardJavaObjectInspectorFromTypeInfo;
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils.getTypeInfoFromTypeString;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestHiveBucketing
 {
@@ -63,8 +64,8 @@ public class TestHiveBucketing
     public void testHashingCompare()
     {
         assertBucketEquals("string", "Trino rocks", 1132136730, -399107423);
-        assertEquals(HiveBucketing.getBucketNumber(1132136730, 4), 2);
-        assertEquals(HiveBucketing.getBucketNumber(-399107423, 4), 1);
+        assertThat(HiveBucketing.getBucketNumber(1132136730, 4)).isEqualTo(2);
+        assertThat(HiveBucketing.getBucketNumber(-399107423, 4)).isEqualTo(1);
 
         assertBucketEquals("boolean", null, 0, 0);
         assertBucketEquals("boolean", true, 1, 1);
@@ -232,7 +233,7 @@ public class TestHiveBucketing
                 .map(HiveType::getTypeInfo)
                 .collect(toImmutableList());
         List<Type> trinoTypes = hiveTypes.stream()
-                .map(type -> type.getType(TESTING_TYPE_MANAGER))
+                .map(type -> TESTING_TYPE_MANAGER.getType(getTypeSignature(type)))
                 .collect(toImmutableList());
 
         ImmutableList.Builder<List<NullableValue>> values = ImmutableList.builder();
@@ -244,9 +245,9 @@ public class TestHiveBucketing
                     .collect(toImmutableList()));
         }
 
-        assertEquals(getHiveBuckets(BUCKETING_V1, bucketCount, hiveTypeInfos, values.build()), expectedBucketsV1);
+        assertThat(getHiveBuckets(BUCKETING_V1, bucketCount, hiveTypeInfos, values.build())).isEqualTo(expectedBucketsV1);
 
-        assertEquals(getHiveBuckets(BUCKETING_V2, bucketCount, hiveTypeInfos, values.build()), expectedBucketsV2);
+        assertThat(getHiveBuckets(BUCKETING_V2, bucketCount, hiveTypeInfos, values.build())).isEqualTo(expectedBucketsV2);
     }
 
     private static void assertBucketEquals(String hiveTypeString, Object hiveValue, int expectedHashCodeV1, int expectedHashCodeV2)
@@ -276,13 +277,15 @@ public class TestHiveBucketing
                 .map(HiveType::getTypeInfo)
                 .collect(toImmutableList());
 
-        assertEquals(computeTrino(bucketingVersion, hiveTypeStrings, hiveValues, hiveTypes, hiveTypeInfos), expectedHashCode);
-        assertEquals(computeHive(bucketingVersion, hiveTypeStrings, hiveValues, hiveTypeInfos), expectedHashCode);
+        assertThat(computeTrino(bucketingVersion, hiveTypeStrings, hiveValues, hiveTypes, hiveTypeInfos)).isEqualTo(expectedHashCode);
+        assertThat(computeHive(bucketingVersion, hiveTypeStrings, hiveValues, hiveTypeInfos)).isEqualTo(expectedHashCode);
 
         for (int bucketCount : new int[] {1, 2, 500, 997}) {
             int actual = HiveBucketing.getBucketNumber(expectedHashCode, bucketCount);
             int expected = ObjectInspectorUtils.getBucketNumber(expectedHashCode, bucketCount);
-            assertEquals(actual, expected, "bucketCount " + bucketCount);
+            assertThat(actual)
+                    .describedAs("bucketCount " + bucketCount)
+                    .isEqualTo(expected);
         }
     }
 
@@ -306,7 +309,7 @@ public class TestHiveBucketing
         Object[] nativeContainerValues = new Object[hiveValues.size()];
         for (int i = 0; i < hiveTypeStrings.size(); i++) {
             Object hiveValue = hiveValues.get(i);
-            Type type = hiveTypes.get(i).getType(TESTING_TYPE_MANAGER);
+            Type type = TESTING_TYPE_MANAGER.getType(getTypeSignature(hiveTypes.get(i)));
 
             BlockBuilder blockBuilder = type.createBlockBuilder(null, 3);
             // prepend 2 nulls to make sure position is respected when HiveBucketing function
@@ -321,7 +324,9 @@ public class TestHiveBucketing
         ImmutableList<Block> blockList = blockListBuilder.build();
         int result1 = bucketingVersion.getBucketHashCode(hiveTypeInfos, new Page(blockList.toArray(new Block[blockList.size()])), 2);
         int result2 = bucketingVersion.getBucketHashCode(hiveTypeInfos, nativeContainerValues);
-        assertEquals(result1, result2, "overloads of getBucketHashCode produced different result");
+        assertThat(result1)
+                .describedAs("overloads of getBucketHashCode produced different result")
+                .isEqualTo(result2);
         return result1;
     }
 

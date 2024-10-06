@@ -23,7 +23,6 @@ benchmark_outputs
 *.class
 .checkstyle
 .mvn/timing.properties
-.mvn/maven.config
 node_modules
 product-test-reports
 .vscode/
@@ -33,3 +32,5 @@ product-test-reports
 .github/test-pt-matrix.yaml
 .github/bin/redshift/.cluster-identifier
 **/dependency-reduced-pom.xml
+core/trino-web-ui/src/main/resources/webapp/dist/
+.node

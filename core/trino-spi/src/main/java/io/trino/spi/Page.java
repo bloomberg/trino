@@ -70,6 +70,9 @@ public final class Page
 
     private Page(boolean blocksCopyRequired, int positionCount, Block[] blocks)
     {
+        if (positionCount < 0) {
+            throw new IllegalArgumentException(format("positionCount (%s) is negative", positionCount));
+        }
         requireNonNull(blocks, "blocks is null");
         this.positionCount = positionCount;
         if (blocks.length == 0) {
@@ -100,7 +103,11 @@ public final class Page
         if (sizeInBytes < 0) {
             sizeInBytes = 0;
             for (Block block : blocks) {
-                sizeInBytes += block.getLoadedBlock().getSizeInBytes();
+                long blockSizeInBytes = block.getLoadedBlock().getSizeInBytes();
+                if (blockSizeInBytes < 0) {
+                    throw new IllegalStateException(format("Block sizeInBytes is negative (%s)", blockSizeInBytes));
+                }
+                sizeInBytes += blockSizeInBytes;
             }
             this.sizeInBytes = sizeInBytes;
         }

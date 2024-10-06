@@ -23,6 +23,7 @@ import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
 import com.google.common.collect.Ordering;
+import io.airlift.concurrent.MoreFutures;
 import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
@@ -34,7 +35,6 @@ import io.trino.type.SqlIntervalDayTime;
 import io.trino.type.SqlIntervalYearMonth;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Timeout;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -49,20 +49,17 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.IntStream;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.SystemSessionProperties.IGNORE_DOWNSTREAM_PREFERENCES;
-import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
-import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
-import static io.trino.SystemSessionProperties.LATE_MATERIALIZATION;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
-import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
 import static io.trino.sql.tree.ExplainType.Type.DISTRIBUTED;
 import static io.trino.sql.tree.ExplainType.Type.IO;
 import static io.trino.sql.tree.ExplainType.Type.LOGICAL;
@@ -71,17 +68,20 @@ import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static io.trino.tests.QueryTemplate.parameter;
 import static io.trino.tests.QueryTemplate.queryTemplate;
-import static io.trino.type.UnknownType.UNKNOWN;
+import static io.trino.tpch.TpchTable.CUSTOMER;
+import static io.trino.tpch.TpchTable.LINE_ITEM;
+import static io.trino.tpch.TpchTable.NATION;
+import static io.trino.tpch.TpchTable.ORDERS;
+import static io.trino.tpch.TpchTable.PART;
+import static io.trino.tpch.TpchTable.PART_SUPPLIER;
+import static io.trino.tpch.TpchTable.REGION;
+import static io.trino.tpch.TpchTable.SUPPLIER;
 import static java.lang.String.format;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNotEquals;
-import static org.testng.Assert.assertTrue;
 
 public abstract class AbstractTestEngineOnlyQueries
         extends AbstractTestQueryFramework
@@ -126,13 +126,15 @@ public abstract class AbstractTestEngineOnlyQueries
                     99.0,
                     false));
 
+    protected static final List<TpchTable<?>> REQUIRED_TPCH_TABLES = List.of(CUSTOMER, LINE_ITEM, NATION, ORDERS, PART, PART_SUPPLIER, REGION, SUPPLIER);
+
     @Test
     public void testDateLiterals()
     {
         Session chicago = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("America/Chicago")).build();
         Session kathmandu = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("Asia/Kathmandu")).build();
 
-        assertEquals(computeScalar("SELECT DATE '2013-03-22'"), LocalDate.of(2013, 3, 22));
+        assertThat(computeScalar("SELECT DATE '2013-03-22'")).isEqualTo(LocalDate.of(2013, 3, 22));
         assertQuery("SELECT DATE '2013-03-22'");
         assertQuery(chicago, "SELECT DATE '2013-03-22'");
         assertQuery(kathmandu, "SELECT DATE '2013-03-22'");
@@ -144,8 +146,8 @@ public abstract class AbstractTestEngineOnlyQueries
         Session chicago = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("America/Chicago")).build();
         Session kathmandu = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("Asia/Kathmandu")).build();
 
-        assertEquals(computeScalar("SELECT TIME '3:04:05'"), LocalTime.of(3, 4, 5, 0));
-        assertEquals(computeScalar("SELECT TIME '3:04:05.123'"), LocalTime.of(3, 4, 5, 123_000_000));
+        assertThat(computeScalar("SELECT TIME '3:04:05'")).isEqualTo(LocalTime.of(3, 4, 5, 0));
+        assertThat(computeScalar("SELECT TIME '3:04:05.123'")).isEqualTo(LocalTime.of(3, 4, 5, 123_000_000));
         assertQuery("SELECT TIME '3:04:05'");
         assertQuery("SELECT TIME '0:04:05'");
 
@@ -156,10 +158,10 @@ public abstract class AbstractTestEngineOnlyQueries
     @Test
     public void testTimeWithTimeZoneLiterals()
     {
-        assertEquals(computeScalar("SELECT TIME '01:02:03.400+00:00'"), OffsetTime.of(1, 2, 3, 400_000_000, ZoneOffset.ofHoursMinutes(0, 0)));
-        assertEquals(computeScalar("SELECT TIME '3:04:05 +06:00'"), OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(6, 0)));
-        assertEquals(computeScalar("SELECT TIME '3:04:05 +05:07'"), OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(5, 7)));
-        assertEquals(computeScalar("SELECT TIME '3:04:05 +03:00'"), OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(3, 0)));
+        assertThat(computeScalar("SELECT TIME '01:02:03.400+00:00'")).isEqualTo(OffsetTime.of(1, 2, 3, 400_000_000, ZoneOffset.ofHoursMinutes(0, 0)));
+        assertThat(computeScalar("SELECT TIME '3:04:05 +06:00'")).isEqualTo(OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(6, 0)));
+        assertThat(computeScalar("SELECT TIME '3:04:05 +05:07'")).isEqualTo(OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(5, 7)));
+        assertThat(computeScalar("SELECT TIME '3:04:05 +03:00'")).isEqualTo(OffsetTime.of(3, 4, 5, 0, ZoneOffset.ofHoursMinutes(3, 0)));
     }
 
     @Test
@@ -168,8 +170,8 @@ public abstract class AbstractTestEngineOnlyQueries
         Session chicago = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("America/Chicago")).build();
         Session kathmandu = Session.builder(getSession()).setTimeZoneKey(TimeZoneKey.getTimeZoneKey("Asia/Kathmandu")).build();
 
-        assertEquals(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05'"), LocalDateTime.of(1960, 1, 22, 3, 4, 5));
-        assertEquals(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05.123'"), LocalDateTime.of(1960, 1, 22, 3, 4, 5, 123_000_000));
+        assertThat(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05'")).isEqualTo(LocalDateTime.of(1960, 1, 22, 3, 4, 5));
+        assertThat(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05.123'")).isEqualTo(LocalDateTime.of(1960, 1, 22, 3, 4, 5, 123_000_000));
         assertQuery("SELECT TIMESTAMP '1960-01-22 3:04:05'");
         assertQuery("SELECT TIMESTAMP '1960-01-22 3:04:05.123'");
         assertQuery(chicago, "SELECT TIMESTAMP '1960-01-22 3:04:05.123'");
@@ -179,7 +181,7 @@ public abstract class AbstractTestEngineOnlyQueries
     @Test
     public void testTimestampWithTimeZoneLiterals()
     {
-        assertEquals(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05 +06:00'"), ZonedDateTime.of(1960, 1, 22, 3, 4, 5, 0, ZoneOffset.ofHoursMinutes(6, 0)));
+        assertThat(computeScalar("SELECT TIMESTAMP '1960-01-22 3:04:05 +06:00'")).isEqualTo(ZonedDateTime.of(1960, 1, 22, 3, 4, 5, 0, ZoneOffset.ofHoursMinutes(6, 0)));
     }
 
     @Test
@@ -189,21 +191,21 @@ public abstract class AbstractTestEngineOnlyQueries
         checkState(ZoneId.systemDefault().getRules().getValidOffsets(localTimeThatDidNotExist).isEmpty(), "This test assumes certain JVM time zone");
         // This tests that both Trino runner and H2 can return TIMESTAMP value that never happened in JVM's zone (e.g. is not representable using java.sql.Timestamp)
         @Language("SQL") String sql = DateTimeFormatter.ofPattern("'SELECT TIMESTAMP '''uuuu-MM-dd HH:mm:ss.SSS''").format(localTimeThatDidNotExist);
-        assertEquals(computeScalar(sql), localTimeThatDidNotExist); // this tests Trino and the QueryRunner
+        assertThat(computeScalar(sql)).isEqualTo(localTimeThatDidNotExist); // this tests Trino and the QueryRunner
         assertQuery(sql); // this tests H2QueryRunner
 
         LocalDate localDateThatDidNotHaveMidnight = LocalDate.of(1970, 1, 1);
         checkState(ZoneId.systemDefault().getRules().getValidOffsets(localDateThatDidNotHaveMidnight.atStartOfDay()).isEmpty(), "This test assumes certain JVM time zone");
         // This tests that both Trino runner and H2 can return DATE value for a day which midnight never happened in JVM's zone (e.g. is not exactly representable using java.sql.Date)
         sql = DateTimeFormatter.ofPattern("'SELECT DATE '''uuuu-MM-dd''").format(localDateThatDidNotHaveMidnight);
-        assertEquals(computeScalar(sql), localDateThatDidNotHaveMidnight); // this tests Trino and the QueryRunner
+        assertThat(computeScalar(sql)).isEqualTo(localDateThatDidNotHaveMidnight); // this tests Trino and the QueryRunner
         assertQuery(sql); // this tests H2QueryRunner
 
         LocalTime localTimeThatDidNotOccurOn19700101 = LocalTime.of(0, 10);
         checkState(ZoneId.systemDefault().getRules().getValidOffsets(localTimeThatDidNotOccurOn19700101.atDate(LocalDate.ofEpochDay(0))).isEmpty(), "This test assumes certain JVM time zone");
         checkState(!Objects.equals(java.sql.Time.valueOf(localTimeThatDidNotOccurOn19700101).toLocalTime(), localTimeThatDidNotOccurOn19700101), "This test assumes certain JVM time zone");
         sql = DateTimeFormatter.ofPattern("'SELECT TIME '''HH:mm:ss''").format(localTimeThatDidNotOccurOn19700101);
-        assertEquals(computeScalar(sql), localTimeThatDidNotOccurOn19700101); // this tests Trino and the QueryRunner
+        assertThat(computeScalar(sql)).isEqualTo(localTimeThatDidNotOccurOn19700101); // this tests Trino and the QueryRunner
         assertQuery(sql); // this tests H2QueryRunner
     }
 
@@ -211,21 +213,21 @@ public abstract class AbstractTestEngineOnlyQueries
     public void testNodeRoster()
     {
         List<MaterializedRow> result = computeActual("SELECT * FROM system.runtime.nodes").getMaterializedRows();
-        assertEquals(result.size(), getNodeCount());
+        assertThat(result.size()).isEqualTo(getNodeCount());
     }
 
     @Test
     public void testTransactionsTable()
     {
         List<MaterializedRow> result = computeActual("SELECT * FROM system.runtime.transactions").getMaterializedRows();
-        assertTrue(result.size() >= 1); // At least one row for the current transaction.
+        assertThat(result.size() >= 1).isTrue(); // At least one row for the current transaction.
     }
 
     @Test
     public void testCountOnInternalTables()
     {
         List<MaterializedRow> rows = computeActual("SELECT count(*) FROM system.runtime.nodes").getMaterializedRows();
-        assertEquals(((Long) rows.get(0).getField(0)).longValue(), getNodeCount());
+        assertThat(((Long) rows.get(0).getField(0)).longValue()).isEqualTo(getNodeCount());
     }
 
     @Test
@@ -238,12 +240,12 @@ public abstract class AbstractTestEngineOnlyQueries
     public void testSelectLargeInterval()
     {
         MaterializedResult result = computeActual("SELECT INTERVAL '30' DAY");
-        assertEquals(result.getRowCount(), 1);
-        assertEquals(result.getMaterializedRows().get(0).getField(0), new SqlIntervalDayTime(30, 0, 0, 0, 0));
+        assertThat(result.getRowCount()).isEqualTo(1);
+        assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(new SqlIntervalDayTime(30, 0, 0, 0, 0));
 
         result = computeActual("SELECT INTERVAL '" + Short.MAX_VALUE + "' YEAR");
-        assertEquals(result.getRowCount(), 1);
-        assertEquals(result.getMaterializedRows().get(0).getField(0), new SqlIntervalYearMonth(Short.MAX_VALUE, 0));
+        assertThat(result.getRowCount()).isEqualTo(1);
+        assertThat(result.getMaterializedRows().get(0).getField(0)).isEqualTo(new SqlIntervalYearMonth(Short.MAX_VALUE, 0));
     }
 
     @Test
@@ -472,7 +474,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT NULL, NULL INTERSECT SELECT NULL, NULL FROM nation");
 
         MaterializedResult emptyResult = computeActual("SELECT 100 INTERSECT (SELECT regionkey FROM nation WHERE nationkey <10)");
-        assertEquals(emptyResult.getMaterializedRows().size(), 0);
+        assertThat(emptyResult.getMaterializedRows().size()).isEqualTo(0);
     }
 
     @Test
@@ -529,7 +531,7 @@ public abstract class AbstractTestEngineOnlyQueries
                         "EXCEPT (SELECT * FROM (VALUES 1) EXCEPT SELECT * FROM (VALUES 1))");
 
         MaterializedResult emptyResult = computeActual("SELECT 0 EXCEPT (SELECT regionkey FROM nation WHERE nationkey <10)");
-        assertEquals(emptyResult.getMaterializedRows().size(), 0);
+        assertThat(emptyResult.getMaterializedRows().size()).isEqualTo(0);
     }
 
     @Test
@@ -576,31 +578,44 @@ public abstract class AbstractTestEngineOnlyQueries
                 "VALUES 1504375");
     }
 
+    /**
+     * Regression test for <a href="https://github.com/trinodb/trino/issues/21630">#21630</a>
+     */
+    @Test
+    public void testMultipleConcurrentQueries()
+            throws Exception
+    {
+        try (ExecutorService executor = Executors.newCachedThreadPool()) {
+            executor.invokeAll(nCopies(4,
+                            () -> {
+                                testAssignUniqueId();
+                                return null;
+                            }))
+                    .forEach(MoreFutures::getDone);
+        }
+    }
+
     @Test
     public void testAtTimeZone()
     {
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE INTERVAL '07:09' hour to minute"), zonedDateTime("2012-10-30 18:09:00.000 +07:09"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Oral'"), zonedDateTime("2012-10-30 16:00:00.000 Asia/Oral"));
-        assertEquals(computeScalar("SELECT MIN(x) AT TIME ZONE 'America/Chicago' FROM (VALUES TIMESTAMP '1970-01-01 00:01:00+00:00') t(x)"), zonedDateTime("1969-12-31 18:01:00.000 America/Chicago"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE '+07:09'"), zonedDateTime("2012-10-30 18:09:00.000 +07:09"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00 UTC' AT TIME ZONE 'America/Los_Angeles'"), zonedDateTime("2012-10-30 18:00:00.000 America/Los_Angeles"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles'"), zonedDateTime("2012-10-30 04:00:00.000 America/Los_Angeles"));
-        assertEquals(computeActual("SELECT x AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)").getOnlyColumnAsSet(),
-                ImmutableSet.of(zonedDateTime("1969-12-31 16:01:00.000 America/Los_Angeles")));
-        assertEquals(computeActual("SELECT x AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00', TIMESTAMP '1970-01-01 08:01:00', TIMESTAMP '1969-12-31 16:01:00') t(x)").getOnlyColumn().collect(toList()),
-                ImmutableList.of(zonedDateTime("1970-01-01 03:01:00.000 America/Los_Angeles"), zonedDateTime("1970-01-01 11:01:00.000 America/Los_Angeles"), zonedDateTime("1969-12-31 19:01:00.000 America/Los_Angeles")));
-        assertEquals(computeScalar("SELECT min(x) AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)"),
-                zonedDateTime("1969-12-31 16:01:00.000 America/Los_Angeles"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE INTERVAL '07:09' hour to minute")).isEqualTo(zonedDateTime("2012-10-30 18:09:00.000 +07:09"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Oral'")).isEqualTo(zonedDateTime("2012-10-30 16:00:00.000 Asia/Oral"));
+        assertThat(computeScalar("SELECT MIN(x) AT TIME ZONE 'America/Chicago' FROM (VALUES TIMESTAMP '1970-01-01 00:01:00+00:00') t(x)")).isEqualTo(zonedDateTime("1969-12-31 18:01:00.000 America/Chicago"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE '+07:09'")).isEqualTo(zonedDateTime("2012-10-30 18:09:00.000 +07:09"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00 UTC' AT TIME ZONE 'America/Los_Angeles'")).isEqualTo(zonedDateTime("2012-10-30 18:00:00.000 America/Los_Angeles"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles'")).isEqualTo(zonedDateTime("2012-10-30 04:00:00.000 America/Los_Angeles"));
+        assertThat(computeActual("SELECT x AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)").getOnlyColumnAsSet()).isEqualTo(ImmutableSet.of(zonedDateTime("1969-12-31 16:01:00.000 America/Los_Angeles")));
+        assertThat(computeActual("SELECT x AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00', TIMESTAMP '1970-01-01 08:01:00', TIMESTAMP '1969-12-31 16:01:00') t(x)").getOnlyColumn().collect(toList())).isEqualTo(ImmutableList.of(zonedDateTime("1970-01-01 03:01:00.000 America/Los_Angeles"), zonedDateTime("1970-01-01 11:01:00.000 America/Los_Angeles"), zonedDateTime("1969-12-31 19:01:00.000 America/Los_Angeles")));
+        assertThat(computeScalar("SELECT min(x) AT TIME ZONE 'America/Los_Angeles' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)")).isEqualTo(zonedDateTime("1969-12-31 16:01:00.000 America/Los_Angeles"));
 
         // with chained AT TIME ZONE
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'"), zonedDateTime("2012-10-30 11:00:00.000 UTC"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Tokyo' AT TIME ZONE 'America/Los_Angeles'"), zonedDateTime("2012-10-30 04:00:00.000 America/Los_Angeles"));
-        assertEquals(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'Asia/Shanghai'"), zonedDateTime("2012-10-30 19:00:00.000 Asia/Shanghai"));
-        assertEquals(computeScalar("SELECT min(x) AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)"),
-                zonedDateTime("1970-01-01 00:01:00.000 UTC"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC'")).isEqualTo(zonedDateTime("2012-10-30 11:00:00.000 UTC"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Tokyo' AT TIME ZONE 'America/Los_Angeles'")).isEqualTo(zonedDateTime("2012-10-30 04:00:00.000 America/Los_Angeles"));
+        assertThat(computeScalar("SELECT TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'Asia/Shanghai'")).isEqualTo(zonedDateTime("2012-10-30 19:00:00.000 Asia/Shanghai"));
+        assertThat(computeScalar("SELECT min(x) AT TIME ZONE 'America/Los_Angeles' AT TIME ZONE 'UTC' FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1969-12-31 16:01:00-08:00') t(x)")).isEqualTo(zonedDateTime("1970-01-01 00:01:00.000 UTC"));
 
         // with AT TIME ZONE in VALUES
-        assertEquals(computeScalar("SELECT * FROM (VALUES TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Oral')"), zonedDateTime("2012-10-30 16:00:00.000 Asia/Oral"));
+        assertThat(computeScalar("SELECT * FROM (VALUES TIMESTAMP '2012-10-31 01:00' AT TIME ZONE 'Asia/Oral')")).isEqualTo(zonedDateTime("2012-10-30 16:00:00.000 Asia/Oral"));
     }
 
     @Test
@@ -619,10 +634,8 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT 1 in (1, NULL, 3)", "values true");
         assertQuery("SELECT 2 in (1, NULL, 3)", "values null");
         assertQuery("SELECT x FROM (values DATE '1970-01-01', DATE '1970-01-03') t(x) WHERE x IN (DATE '1970-01-01')", "values DATE '1970-01-01'");
-        assertEquals(
-                computeActual("SELECT x FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1970-01-01 00:01:00+08:00') t(x) WHERE x IN (TIMESTAMP '1970-01-01 00:01:00+00:00')")
-                        .getOnlyColumn().collect(toList()),
-                ImmutableList.of(zonedDateTime("1970-01-01 00:01:00.000 UTC"), zonedDateTime("1970-01-01 08:01:00.000 +08:00")));
+        assertThat(computeActual("SELECT x FROM (values TIMESTAMP '1970-01-01 00:01:00+00:00', TIMESTAMP '1970-01-01 08:01:00+08:00', TIMESTAMP '1970-01-01 00:01:00+08:00') t(x) WHERE x IN (TIMESTAMP '1970-01-01 00:01:00+00:00')")
+                .getOnlyColumn().collect(toList())).isEqualTo(ImmutableList.of(zonedDateTime("1970-01-01 00:01:00.000 UTC"), zonedDateTime("1970-01-01 08:01:00.000 +08:00")));
         assertQuery("SELECT COUNT(*) FROM (values 1) t(x) WHERE x IN (null, 0)", "SELECT 0");
         assertQuery("SELECT d IN (DECIMAL '2.0', DECIMAL '30.0') FROM (VALUES (2.0E0)) t(d)", "SELECT true"); // coercion with type only coercion inside IN list
         assertQuery("SELECT REAL '-0.0' IN (VALUES REAL '1.0', REAL '0.0')", "SELECT true");
@@ -880,7 +893,7 @@ public abstract class AbstractTestEngineOnlyQueries
     public void testComplexCast()
     {
         Session session = Session.builder(getSession())
-                .setSystemProperty(SystemSessionProperties.OPTIMIZE_DISTINCT_AGGREGATIONS, "true")
+                .setSystemProperty(SystemSessionProperties.DISTINCT_AGGREGATIONS_STRATEGY, "pre_aggregate")
                 .build();
         // This is optimized using CAST(null AS interval day to second) which may be problematic to deserialize on worker
         assertQuery(session, "WITH t(a, b) AS (VALUES (1, INTERVAL '1' SECOND)) " +
@@ -1054,7 +1067,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQueryFails(
                 session,
                 "EXECUTE my_query USING 2, 99999999999999999999",
-                "\\Qline 1:1: Invalid numeric literal: 99999999999999999999\\E");
+                "\\Qline 1:27: Invalid numeric literal: 99999999999999999999\\E");
     }
 
     @Test
@@ -1118,7 +1131,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQueryFails(
                 session,
                 "EXECUTE my_query USING 2, 99999999999999999999",
-                "\\Qline 1:1: Invalid numeric literal: 99999999999999999999\\E");
+                "\\Qline 1:27: Invalid numeric literal: 99999999999999999999\\E");
     }
 
     @Test
@@ -1177,7 +1190,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQueryFails(
                 session,
                 "EXECUTE my_query USING 2, 99999999999999999999",
-                "\\Qline 1:1: Invalid numeric literal: 99999999999999999999\\E");
+                "\\Qline 1:27: Invalid numeric literal: 99999999999999999999\\E");
     }
 
     @Test
@@ -1382,8 +1395,9 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SELECT * FROM nation")
                 .build();
         assertThat(query(session, "DESCRIBE INPUT my_query"))
-                .hasOutputTypes(List.of(UNKNOWN, UNKNOWN))
-                .returnsEmptyResult();
+                .result()
+                .hasTypes(List.of(BIGINT, VARCHAR))
+                .isEmpty();
     }
 
     @Test
@@ -1624,8 +1638,8 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQueryFails("SELECT ARRAY[42]['x']", "\\Qline 1:8: Cannot use varchar(1) for subscript of array(integer)\\E");
         assertQueryFails("SELECT 'a' BETWEEN 3 AND 'z'", "\\Qline 1:12: Cannot check if varchar(1) is BETWEEN integer and varchar(1)\\E");
         assertQueryFails("SELECT 'a' NOT BETWEEN 3 AND 'z'", "\\Qline 1:12: Cannot check if varchar(1) is BETWEEN integer and varchar(1)\\E");
-        assertQueryFails("SELECT 8 IS DISTINCT FROM 'x'", "\\Qline 1:10: Cannot check if integer is distinct from varchar(1)\\E");
-        assertQueryFails("SELECT 8 IS NOT DISTINCT FROM 'x'", "\\Qline 1:10: Cannot check if integer is distinct from varchar(1)\\E");
+        assertQueryFails("SELECT 8 IS DISTINCT FROM 'x'", "\\Qline 1:10: Cannot check if integer is identical to varchar(1)\\E");
+        assertQueryFails("SELECT 8 IS NOT DISTINCT FROM 'x'", "\\Qline 1:10: Cannot check if integer is identical to varchar(1)\\E");
     }
 
     @Test
@@ -1665,7 +1679,7 @@ public abstract class AbstractTestEngineOnlyQueries
         for (int i = 0; i < 3; i++) {
             MaterializedResult results = computeActual(format("SELECT shuffle(ARRAY %s) FROM orders LIMIT 10", expected));
             List<MaterializedRow> rows = results.getMaterializedRows();
-            assertEquals(rows.size(), 10);
+            assertThat(rows.size()).isEqualTo(10);
 
             for (MaterializedRow row : rows) {
                 @SuppressWarnings("unchecked")
@@ -1677,7 +1691,9 @@ public abstract class AbstractTestEngineOnlyQueries
                 distinctResults.add(actual);
             }
         }
-        assertTrue(distinctResults.size() >= 24, "shuffle must produce at least 24 distinct results");
+        assertThat(distinctResults.size() >= 24)
+                .describedAs("shuffle must produce at least 24 distinct results")
+                .isTrue();
     }
 
     @Test
@@ -1728,7 +1744,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1002L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1740,7 +1756,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1024L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1752,7 +1768,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1014L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1815,7 +1831,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1001L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1827,7 +1843,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(new Object[] {null})
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1873,7 +1889,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1002L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1902,7 +1918,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1001L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1931,7 +1947,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(new Object[] {null})
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1941,7 +1957,7 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult expected = resultBuilder(getSession(), BIGINT)
                 .row(0L)
                 .build();
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1951,7 +1967,7 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult expected = resultBuilder(getSession(), BIGINT)
                 .row(0L)
                 .build();
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1961,7 +1977,7 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult expected = resultBuilder(getSession(), BIGINT)
                 .row(1002L)
                 .build();
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1973,7 +1989,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1002L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1985,7 +2001,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1024L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1997,7 +2013,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1014L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -2060,7 +2076,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1001L)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -2072,7 +2088,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(new Object[] {null})
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -2160,12 +2176,12 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult actual = computeActual("VALUES (0E0/0E0, 1E0/0E0, -1E0/0E0)");
 
         List<MaterializedRow> rows = actual.getMaterializedRows();
-        assertEquals(rows.size(), 1);
+        assertThat(rows.size()).isEqualTo(1);
 
         MaterializedRow row = rows.get(0);
-        assertTrue(((Double) row.getField(0)).isNaN());
-        assertEquals(row.getField(1), Double.POSITIVE_INFINITY);
-        assertEquals(row.getField(2), Double.NEGATIVE_INFINITY);
+        assertThat(((Double) row.getField(0)).isNaN()).isTrue();
+        assertThat(row.getField(1)).isEqualTo(Double.POSITIVE_INFINITY);
+        assertThat(row.getField(2)).isEqualTo(Double.NEGATIVE_INFINITY);
     }
 
     @Test
@@ -2174,10 +2190,10 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult actual = computeActual("VALUES (current_timestamp, now())");
 
         List<MaterializedRow> rows = actual.getMaterializedRows();
-        assertEquals(rows.size(), 1);
+        assertThat(rows.size()).isEqualTo(1);
 
         MaterializedRow row = rows.get(0);
-        assertEquals(row.getField(0), row.getField(1));
+        assertThat(row.getField(0)).isEqualTo(row.getField(1));
     }
 
     @Test
@@ -2189,7 +2205,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(1)
                 .build();
 
-        assertEquals(actual.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(actual.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -2233,6 +2249,11 @@ public abstract class AbstractTestEngineOnlyQueries
                         "FROM (VALUES (1, CAST(5 AS DOUBLE)), (1, 6), (1, 7), (2, 8), (2, 9), (3, 10)) AS t(x, y) " +
                         "GROUP BY x",
                 "VALUES (1, CAST(5 AS DOUBLE) + 6 + 7), (2, 8 + 9), (3, 10)");
+        assertQuery(
+                "SELECT x, reduce_agg(y, '', (a, b) -> a || b, (a, b) -> a || b) " +
+                        "FROM (VALUES ('1', '5'), ('1', '6'), ('1', '7'), ('2', '8'), ('2', '9'), ('3', '10')) AS t(x, y) " +
+                        "GROUP BY x",
+                "VALUES ('1', '567'), ('2', '89'), ('3', '10')");
     }
 
     @Test
@@ -2268,9 +2289,9 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         MaterializedResult actual = computeActual("SELECT nan(), infinity(), -infinity()");
         MaterializedRow row = getOnlyElement(actual.getMaterializedRows());
-        assertEquals(row.getField(0), Double.NaN);
-        assertEquals(row.getField(1), Double.POSITIVE_INFINITY);
-        assertEquals(row.getField(2), Double.NEGATIVE_INFINITY);
+        assertThat(row.getField(0)).isEqualTo(Double.NaN);
+        assertThat(row.getField(1)).isEqualTo(Double.POSITIVE_INFINITY);
+        assertThat(row.getField(2)).isEqualTo(Double.NEGATIVE_INFINITY);
     }
 
     @Test
@@ -2429,7 +2450,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 "   FROM orders\n" +
                 ") WHERE NOT rn <= 10");
         MaterializedResult all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
-        assertEquals(actual.getMaterializedRows().size(), all.getMaterializedRows().size() - 10);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(all.getMaterializedRows().size() - 10);
         assertContains(all, actual);
 
         actual = computeActual("" +
@@ -2438,7 +2459,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 "   FROM orders\n" +
                 ") WHERE rn - 5 <= 10");
         all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
-        assertEquals(actual.getMaterializedRows().size(), 15);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(15);
         assertContains(all, actual);
     }
 
@@ -2449,25 +2470,25 @@ public abstract class AbstractTestEngineOnlyQueries
                 "SELECT row_number() OVER (PARTITION BY orderstatus) rn, orderstatus\n" +
                 "FROM orders\n" +
                 "LIMIT 10");
-        assertEquals(actual.getMaterializedRows().size(), 10);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(10);
 
         actual = computeActual("" +
                 "SELECT row_number() OVER (PARTITION BY orderstatus ORDER BY orderkey) rn\n" +
                 "FROM orders\n" +
                 "LIMIT 10");
-        assertEquals(actual.getMaterializedRows().size(), 10);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(10);
 
         actual = computeActual("" +
                 "SELECT row_number() OVER () rn, orderstatus\n" +
                 "FROM orders\n" +
                 "LIMIT 10");
-        assertEquals(actual.getMaterializedRows().size(), 10);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(10);
 
         actual = computeActual("" +
                 "SELECT row_number() OVER (ORDER BY orderkey) rn\n" +
                 "FROM orders\n" +
                 "LIMIT 10");
-        assertEquals(actual.getMaterializedRows().size(), 10);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(10);
     }
 
     @Test
@@ -2555,7 +2576,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .row(2, 1L)
                 .row(2, 2L)
                 .build();
-        assertEquals(actual.getMaterializedRows().size(), 2);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(2);
         assertContains(expected, actual);
     }
 
@@ -2568,7 +2589,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 "   FROM orders\n" +
                 ") WHERE rn <= 5 AND orderstatus != 'Z'");
         MaterializedResult all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
-        assertEquals(actual.getMaterializedRows().size(), 5);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(5);
         assertContains(all, actual);
 
         actual = computeActual("" +
@@ -2578,7 +2599,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 ") WHERE rn < 5");
         all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
 
-        assertEquals(actual.getMaterializedRows().size(), 4);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(4);
         assertContains(all, actual);
 
         actual = computeActual("" +
@@ -2588,7 +2609,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 ") LIMIT 5");
         all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
 
-        assertEquals(actual.getMaterializedRows().size(), 5);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(5);
         assertContains(all, actual);
     }
 
@@ -2603,7 +2624,7 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult all = computeExpected("SELECT orderkey, orderstatus FROM orders", actual.getTypes());
 
         // there are 3 DISTINCT orderstatus, so expect 15 rows.
-        assertEquals(actual.getMaterializedRows().size(), 15);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(15);
         assertContains(all, actual);
 
         // Test for unreferenced outputs
@@ -2615,7 +2636,7 @@ public abstract class AbstractTestEngineOnlyQueries
         all = computeExpected("SELECT orderkey FROM orders", actual.getTypes());
 
         // there are 3 distinct orderstatus, so expect 15 rows.
-        assertEquals(actual.getMaterializedRows().size(), 15);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(15);
         assertContains(all, actual);
     }
 
@@ -3083,37 +3104,41 @@ public abstract class AbstractTestEngineOnlyQueries
                 .map(row -> row.getField(0))
                 .distinct()
                 .count();
-        assertTrue(distinctCount >= 8, "rand() must produce different rows");
+        assertThat(distinctCount >= 8)
+                .describedAs("rand() must produce different rows")
+                .isTrue();
 
         materializedResult = computeActual("SELECT apply(1, x -> x + rand()) FROM orders LIMIT 10");
         distinctCount = materializedResult.getMaterializedRows().stream()
                 .map(row -> row.getField(0))
                 .distinct()
                 .count();
-        assertTrue(distinctCount >= 8, "rand() must produce different rows");
+        assertThat(distinctCount >= 8)
+                .describedAs("rand() must produce different rows")
+                .isTrue();
     }
 
     @Test
     public void testNonDeterministicFilter()
     {
         MaterializedResult materializedResult = computeActual("SELECT u FROM ( SELECT if(rand() > 0.5, 0, 1) AS u ) WHERE u <> u");
-        assertEquals(materializedResult.getRowCount(), 0);
+        assertThat(materializedResult.getRowCount()).isEqualTo(0);
 
         materializedResult = computeActual("SELECT u, v FROM ( SELECT if(rand() > 0.5, 0, 1) AS u, 4*4 AS v ) WHERE u <> u and v > 10");
-        assertEquals(materializedResult.getRowCount(), 0);
+        assertThat(materializedResult.getRowCount()).isEqualTo(0);
 
         materializedResult = computeActual("SELECT u, v, w FROM ( SELECT if(rand() > 0.5, 0, 1) AS u, 4*4 AS v, 'abc' AS w ) WHERE v > 10");
-        assertEquals(materializedResult.getRowCount(), 1);
+        assertThat(materializedResult.getRowCount()).isEqualTo(1);
     }
 
     @Test
     public void testNonDeterministicProjection()
     {
         MaterializedResult materializedResult = computeActual("SELECT r, r + 1 FROM (SELECT rand(100) r FROM orders) LIMIT 10");
-        assertEquals(materializedResult.getRowCount(), 10);
+        assertThat(materializedResult.getRowCount()).isEqualTo(10);
         for (MaterializedRow materializedRow : materializedResult) {
-            assertEquals(materializedRow.getFieldCount(), 2);
-            assertEquals(((Number) materializedRow.getField(0)).intValue() + 1, materializedRow.getField(1));
+            assertThat(materializedRow.getFieldCount()).isEqualTo(2);
+            assertThat(((Number) materializedRow.getField(0)).intValue() + 1).isEqualTo(materializedRow.getField(1));
         }
     }
 
@@ -3528,23 +3553,23 @@ public abstract class AbstractTestEngineOnlyQueries
             List<Double> totalPrices = Ordering.natural().sortedCopy(totalPriceByStatus.get(status));
 
             // verify real rank of returned value is within 0.05% of requested rank
-            assertTrue(orderKey >= orderKeys.get((int) (0.9985 * orderKeys.size())));
-            assertTrue(orderKey <= orderKeys.get((int) (0.9995 * orderKeys.size())));
+            assertThat(orderKey >= orderKeys.get((int) (0.9985 * orderKeys.size()))).isTrue();
+            assertThat(orderKey <= orderKeys.get((int) (0.9995 * orderKeys.size()))).isTrue();
 
-            assertTrue(orderKeyWeighted >= orderKeys.get((int) (0.9985 * orderKeys.size())));
-            assertTrue(orderKeyWeighted <= orderKeys.get((int) (0.9995 * orderKeys.size())));
+            assertThat(orderKeyWeighted >= orderKeys.get((int) (0.9985 * orderKeys.size()))).isTrue();
+            assertThat(orderKeyWeighted <= orderKeys.get((int) (0.9995 * orderKeys.size()))).isTrue();
 
-            assertTrue(orderKeyFractionalWeighted >= orderKeys.get((int) (0.9985 * orderKeys.size())));
-            assertTrue(orderKeyFractionalWeighted <= orderKeys.get((int) (0.9995 * orderKeys.size())));
+            assertThat(orderKeyFractionalWeighted >= orderKeys.get((int) (0.9985 * orderKeys.size()))).isTrue();
+            assertThat(orderKeyFractionalWeighted <= orderKeys.get((int) (0.9995 * orderKeys.size()))).isTrue();
 
-            assertTrue(totalPrice >= totalPrices.get((int) (0.9985 * totalPrices.size())));
-            assertTrue(totalPrice <= totalPrices.get((int) (0.9995 * totalPrices.size())));
+            assertThat(totalPrice >= totalPrices.get((int) (0.9985 * totalPrices.size()))).isTrue();
+            assertThat(totalPrice <= totalPrices.get((int) (0.9995 * totalPrices.size()))).isTrue();
 
-            assertTrue(totalPriceWeighted >= totalPrices.get((int) (0.9985 * totalPrices.size())));
-            assertTrue(totalPriceWeighted <= totalPrices.get((int) (0.9995 * totalPrices.size())));
+            assertThat(totalPriceWeighted >= totalPrices.get((int) (0.9985 * totalPrices.size()))).isTrue();
+            assertThat(totalPriceWeighted <= totalPrices.get((int) (0.9995 * totalPrices.size()))).isTrue();
 
-            assertTrue(totalPriceFractionalWeighted >= totalPrices.get((int) (0.9985 * totalPrices.size())));
-            assertTrue(totalPriceFractionalWeighted <= totalPrices.get((int) (0.9995 * totalPrices.size())));
+            assertThat(totalPriceFractionalWeighted >= totalPrices.get((int) (0.9985 * totalPrices.size()))).isTrue();
+            assertThat(totalPriceFractionalWeighted <= totalPrices.get((int) (0.9995 * totalPrices.size()))).isTrue();
         }
     }
 
@@ -3618,8 +3643,9 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult actual = computeActual("SELECT x FROM " + values + " OFFSET 2 ROWS");
         MaterializedResult all = computeExpected("SELECT x FROM " + values, actual.getTypes());
 
-        assertEquals(actual.getMaterializedRows().size(), 2);
-        assertNotEquals(actual.getMaterializedRows().get(0), actual.getMaterializedRows().get(1));
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(2);
+        assertThat(actual.getMaterializedRows().get(0))
+                .isNotEqualTo(actual.getMaterializedRows().get(1));
         assertContains(all, actual);
     }
 
@@ -3631,7 +3657,7 @@ public abstract class AbstractTestEngineOnlyQueries
         MaterializedResult actual = computeActual("SELECT x FROM " + values + " OFFSET 2 ROWS FETCH NEXT ROW ONLY");
         MaterializedResult all = computeExpected("SELECT x FROM " + values, actual.getTypes());
 
-        assertEquals(actual.getMaterializedRows().size(), 1);
+        assertThat(actual.getMaterializedRows().size()).isEqualTo(1);
         assertContains(all, actual);
     }
 
@@ -3702,7 +3728,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQuery("SELECT * FROM region r, LATERAL (SELECT r.*)", "SELECT *, * FROM region");
         assertQuery("SELECT * FROM region r, LATERAL (SELECT r.* LIMIT 2)", "SELECT *, * FROM region");
         assertQuery("SELECT r.name, t.a FROM region r, LATERAL (SELECT r.* LIMIT 2) t(a, b, c)", "SELECT name, regionkey FROM region");
-        assertQueryFails("SELECT * FROM region r, LATERAL (SELECT r.* LIMIT 0)", UNSUPPORTED_CORRELATED_SUBQUERY_ERROR_MSG);
+        assertQuery("SELECT * FROM region r, LATERAL (SELECT r.* LIMIT 0)", "SELECT *, * FROM region LIMIT 0");
         assertQuery("SELECT * FROM region r, LATERAL (SELECT r.* WHERE true)", "SELECT *, * FROM region");
         assertQuery("SELECT region.* FROM region, LATERAL (SELECT region.*) region", "SELECT *, * FROM region");
         assertQueryFails("SELECT * FROM region r, LATERAL (SELECT r.* WHERE false)", UNSUPPORTED_CORRELATED_SUBQUERY_ERROR_MSG);
@@ -5348,20 +5374,19 @@ public abstract class AbstractTestEngineOnlyQueries
                 getQueryRunner().getSessionPropertyManager(),
                 getSession().getPreparedStatements(),
                 getSession().getProtocolHeaders(),
-                getSession().getExchangeEncryptionKey());
+                getSession().getExchangeEncryptionKey(),
+                getSession().getQueryDataEncoding());
         MaterializedResult result = computeActual(session, "SHOW SESSION");
 
         ImmutableMap<String, MaterializedRow> properties = Maps.uniqueIndex(result.getMaterializedRows(), input -> {
-            assertEquals(input.getFieldCount(), 5);
+            assertThat(input.getFieldCount()).isEqualTo(5);
             return (String) input.getField(0);
         });
 
-        assertEquals(properties.get("test_string"), new MaterializedRow(1, "test_string", "foo string", "test default", "varchar", "test string property"));
-        assertEquals(properties.get("test_long"), new MaterializedRow(1, "test_long", "424242", "42", "bigint", "test long property"));
-        assertEquals(properties.get(TESTING_CATALOG + ".connector_string"),
-                new MaterializedRow(1, TESTING_CATALOG + ".connector_string", "bar string", "connector default", "varchar", "connector string property"));
-        assertEquals(properties.get(TESTING_CATALOG + ".connector_long"),
-                new MaterializedRow(1, TESTING_CATALOG + ".connector_long", "11", "33", "bigint", "connector long property"));
+        assertThat(properties.get("test_string")).isEqualTo(new MaterializedRow(1, "test_string", "foo string", "test default", "varchar", "test string property"));
+        assertThat(properties.get("test_long")).isEqualTo(new MaterializedRow(1, "test_long", "424242", "42", "bigint", "test long property"));
+        assertThat(properties.get(TESTING_CATALOG + ".connector_string")).isEqualTo(new MaterializedRow(1, TESTING_CATALOG + ".connector_string", "bar string", "connector default", "varchar", "connector string property"));
+        assertThat(properties.get(TESTING_CATALOG + ".connector_long")).isEqualTo(new MaterializedRow(1, TESTING_CATALOG + ".connector_long", "11", "33", "bigint", "connector long property"));
     }
 
     @Test
@@ -5369,35 +5394,35 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         MaterializedResult result = computeActual("SET SESSION test_string = 'bar'");
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of("test_string", "bar"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of("test_string", "bar"));
 
         result = computeActual(format("SET SESSION %s.connector_long = 999", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_long", "999"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_long", "999"));
 
         result = computeActual(format("SET SESSION %s.connector_string = 'baz'", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_string", "baz"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_string", "baz"));
 
         result = computeActual(format("SET SESSION %s.connector_string = 'ban' || 'ana'", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_string", "banana"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_string", "banana"));
 
         result = computeActual(format("SET SESSION %s.connector_long = 444", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_long", "444"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_long", "444"));
 
         result = computeActual(format("SET SESSION %s.connector_long = 111 + 111", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_long", "222"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_long", "222"));
 
         result = computeActual(format("SET SESSION %s.connector_boolean = 111 < 3", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_boolean", "false"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_boolean", "false"));
 
         result = computeActual(format("SET SESSION %s.connector_double = 11.1", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getSetSessionProperties(), ImmutableMap.of(TESTING_CATALOG + ".connector_double", "11.1"));
+        assertThat(result.getSetSessionProperties()).isEqualTo(ImmutableMap.of(TESTING_CATALOG + ".connector_double", "11.1"));
     }
 
     @Test
@@ -5405,11 +5430,11 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         MaterializedResult result = computeActual(getSession(), "RESET SESSION test_string");
         assertNoRelationalResult(result);
-        assertEquals(result.getResetSessionProperties(), ImmutableSet.of("test_string"));
+        assertThat(result.getResetSessionProperties()).isEqualTo(ImmutableSet.of("test_string"));
 
         result = computeActual(getSession(), format("RESET SESSION %s.connector_string", TESTING_CATALOG));
         assertNoRelationalResult(result);
-        assertEquals(result.getResetSessionProperties(), ImmutableSet.of(TESTING_CATALOG + ".connector_string"));
+        assertThat(result.getResetSessionProperties()).isEqualTo(ImmutableSet.of(TESTING_CATALOG + ".connector_string"));
     }
 
     @Test
@@ -5429,7 +5454,7 @@ public abstract class AbstractTestEngineOnlyQueries
         assertThat(result.getOnlyColumnAsSet()).containsAll(expectedTables);
 
         assertQueryFails("SHOW TABLES FROM UNKNOWN", "line 1:1: Schema 'unknown' does not exist");
-        assertQueryFails("SHOW TABLES FROM UNKNOWNCATALOG.UNKNOWNSCHEMA", "line 1:1: Catalog 'unknowncatalog' does not exist");
+        assertQueryFails("SHOW TABLES FROM UNKNOWNCATALOG.UNKNOWNSCHEMA", "line 1:1: Catalog 'unknowncatalog' not found");
     }
 
     @Test
@@ -5801,10 +5826,10 @@ public abstract class AbstractTestEngineOnlyQueries
                 ")\n" +
                 "WHERE rand() > 0.5");
         MaterializedRow row = getOnlyElement(materializedResult.getMaterializedRows());
-        assertEquals(row.getFieldCount(), 1);
+        assertThat(row.getFieldCount()).isEqualTo(1);
         long count = (Long) row.getField(0);
         // Technically non-deterministic unit test but has essentially a next to impossible chance of a false positive
-        assertTrue(count > 0 && count < 1000);
+        assertThat(count > 0 && count < 1000).isTrue();
     }
 
     @Test
@@ -5820,10 +5845,10 @@ public abstract class AbstractTestEngineOnlyQueries
                 ")\n" +
                 "WHERE rand() > 0.5");
         MaterializedRow row = getOnlyElement(materializedResult.getMaterializedRows());
-        assertEquals(row.getFieldCount(), 1);
+        assertThat(row.getFieldCount()).isEqualTo(1);
         long count = (Long) row.getField(0);
         // Technically non-deterministic unit test but has essentially a next to impossible chance of a false positive
-        assertTrue(count > 0 && count < 1000);
+        assertThat(count > 0 && count < 1000).isTrue();
     }
 
     @Test
@@ -5940,7 +5965,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -5948,7 +5973,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (FORMAT GRAPHVIZ) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getGraphvizExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getGraphvizExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -5956,7 +5981,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE LOGICAL) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, LOGICAL));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, LOGICAL));
     }
 
     @Test
@@ -5975,7 +6000,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE IO) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, IO));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, IO));
     }
 
     @Test
@@ -5983,7 +6008,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE LOGICAL, FORMAT TEXT) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, LOGICAL));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, LOGICAL));
     }
 
     @Test
@@ -5991,7 +6016,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE LOGICAL, FORMAT GRAPHVIZ) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getGraphvizExplainPlan(query, LOGICAL));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getGraphvizExplainPlan(query, LOGICAL));
     }
 
     @Test
@@ -5999,7 +6024,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE DISTRIBUTED) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -6007,7 +6032,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE DISTRIBUTED, FORMAT TEXT) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -6015,7 +6040,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN (TYPE DISTRIBUTED, FORMAT GRAPHVIZ) " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getGraphvizExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getGraphvizExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -6023,7 +6048,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "EXPLAIN SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -6031,7 +6056,7 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         String query = "EXPLAIN ANALYZE SELECT * FROM orders";
         MaterializedResult result = computeActual("EXPLAIN " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan(query, DISTRIBUTED));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan(query, DISTRIBUTED));
     }
 
     @Test
@@ -6067,14 +6092,14 @@ public abstract class AbstractTestEngineOnlyQueries
     private void assertExplainDdl(String query, String expected)
     {
         MaterializedResult result = computeActual("EXPLAIN " + query);
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), expected);
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(expected);
     }
 
     @Test
     public void testExplainValidate()
     {
         MaterializedResult result = computeActual("EXPLAIN (TYPE VALIDATE) SELECT 1");
-        assertEquals(result.getOnlyValue(), true);
+        assertThat(result.getOnlyValue()).isEqualTo(true);
     }
 
     @Test
@@ -6090,7 +6115,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SELECT * FROM orders")
                 .build();
         MaterializedResult result = computeActual(session, "EXPLAIN (TYPE LOGICAL) EXECUTE my_query");
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan("SELECT * FROM orders", LOGICAL));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan("SELECT * FROM orders", LOGICAL));
     }
 
     @Test
@@ -6100,7 +6125,7 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SELECT * FROM orders WHERE orderkey < ?")
                 .build();
         MaterializedResult result = computeActual(session, "EXPLAIN (TYPE LOGICAL) EXECUTE my_query USING 7");
-        assertEquals(getOnlyElement(result.getOnlyColumnAsSet()), getExplainPlan("SELECT * FROM orders WHERE orderkey < 7", LOGICAL));
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo(getExplainPlan("SELECT * FROM orders WHERE orderkey < 7", LOGICAL));
     }
 
     @Test
@@ -6110,10 +6135,8 @@ public abstract class AbstractTestEngineOnlyQueries
                 .addPreparedStatement("my_query", "SET SESSION foo = ?")
                 .build();
         MaterializedResult result = computeActual(session, "EXPLAIN (TYPE LOGICAL) EXECUTE my_query USING 7");
-        assertEquals(
-                getOnlyElement(result.getOnlyColumnAsSet()),
-                "SET SESSION foo = ?\n" +
-                        "Parameters: [7]");
+        assertThat(getOnlyElement(result.getOnlyColumnAsSet())).isEqualTo("SET SESSION foo = ?\n" +
+                "Parameters: [7]");
     }
 
     @Test
@@ -6124,9 +6147,10 @@ public abstract class AbstractTestEngineOnlyQueries
         assertQueryFails("SHOW TABLES LIKE 't$_%' ESCAPE '$$'", "Escape string must be a single character");
 
         Set<Object> allTables = computeActual("SHOW TABLES FROM information_schema").getOnlyColumnAsSet();
-        assertEquals(allTables, computeActual("SHOW TABLES FROM information_schema LIKE '%_%'").getOnlyColumnAsSet());
+        assertThat(allTables).isEqualTo(computeActual("SHOW TABLES FROM information_schema LIKE '%_%'").getOnlyColumnAsSet());
         Set<Object> result = computeActual("SHOW TABLES FROM information_schema LIKE '%$_%' ESCAPE '$'").getOnlyColumnAsSet();
-        assertNotEquals(allTables, result);
+        assertThat(allTables)
+                .isNotEqualTo(result);
         assertThat(result).contains("table_privileges").allMatch(schemaName -> ((String) schemaName).contains("_"));
     }
 
@@ -6134,14 +6158,14 @@ public abstract class AbstractTestEngineOnlyQueries
     public void testShowCatalogs()
     {
         MaterializedResult result = computeActual("SHOW CATALOGS");
-        assertTrue(result.getOnlyColumnAsSet().contains(getSession().getCatalog().get()));
+        assertThat(result.getOnlyColumnAsSet()).contains(getSession().getCatalog().get());
     }
 
     @Test
     public void testShowCatalogsLike()
     {
         MaterializedResult result = computeActual(format("SHOW CATALOGS LIKE '%s'", getSession().getCatalog().get()));
-        assertEquals(result.getOnlyColumnAsSet(), ImmutableSet.of(getSession().getCatalog().get()));
+        assertThat(result.getOnlyColumnAsSet()).isEqualTo(ImmutableSet.of(getSession().getCatalog().get()));
     }
 
     @Test
@@ -6149,67 +6173,60 @@ public abstract class AbstractTestEngineOnlyQueries
     {
         MaterializedResult result = computeActual("SHOW FUNCTIONS");
         ImmutableMultimap<String, MaterializedRow> functions = Multimaps.index(result.getMaterializedRows(), input -> {
-            assertEquals(input.getFieldCount(), 6);
+            assertThat(input.getFieldCount()).isEqualTo(6);
             return (String) input.getField(0);
         });
 
-        assertTrue(functions.containsKey("avg"), "Expected function names " + functions + " to contain 'avg'");
-        assertEquals(functions.get("avg").asList().size(), 6);
-        assertEquals(functions.get("avg").asList().get(0).getField(1), "decimal(p,s)");
-        assertEquals(functions.get("avg").asList().get(0).getField(2), "decimal(p,s)");
-        assertEquals(functions.get("avg").asList().get(0).getField(3), "aggregate");
-        assertEquals(functions.get("avg").asList().get(1).getField(1), "double");
-        assertEquals(functions.get("avg").asList().get(1).getField(2), "bigint");
-        assertEquals(functions.get("avg").asList().get(1).getField(3), "aggregate");
-        assertEquals(functions.get("avg").asList().get(2).getField(1), "double");
-        assertEquals(functions.get("avg").asList().get(2).getField(2), "double");
-        assertEquals(functions.get("avg").asList().get(2).getField(3), "aggregate");
-        assertEquals(functions.get("avg").asList().get(3).getField(1), "interval day to second");
-        assertEquals(functions.get("avg").asList().get(3).getField(2), "interval day to second");
-        assertEquals(functions.get("avg").asList().get(3).getField(3), "aggregate");
-        assertEquals(functions.get("avg").asList().get(4).getField(1), "interval year to month");
-        assertEquals(functions.get("avg").asList().get(4).getField(2), "interval year to month");
-        assertEquals(functions.get("avg").asList().get(4).getField(3), "aggregate");
-        assertEquals(functions.get("avg").asList().get(5).getField(1), "real");
-        assertEquals(functions.get("avg").asList().get(5).getField(2), "real");
-        assertEquals(functions.get("avg").asList().get(5).getField(3), "aggregate");
+        assertThat(functions.containsKey("avg"))
+                .describedAs("Expected function names " + functions + " to contain 'avg'")
+                .isTrue();
+        assertThat(functions.get("avg").asList().size()).isEqualTo(6);
+        assertThat(functions.get("avg").asList().get(0).getField(1)).isEqualTo("decimal(p,s)");
+        assertThat(functions.get("avg").asList().get(0).getField(2)).isEqualTo("decimal(p,s)");
+        assertThat(functions.get("avg").asList().get(0).getField(3)).isEqualTo("aggregate");
+        assertThat(functions.get("avg").asList().get(1).getField(1)).isEqualTo("double");
+        assertThat(functions.get("avg").asList().get(1).getField(2)).isEqualTo("bigint");
+        assertThat(functions.get("avg").asList().get(1).getField(3)).isEqualTo("aggregate");
+        assertThat(functions.get("avg").asList().get(2).getField(1)).isEqualTo("double");
+        assertThat(functions.get("avg").asList().get(2).getField(2)).isEqualTo("double");
+        assertThat(functions.get("avg").asList().get(2).getField(3)).isEqualTo("aggregate");
+        assertThat(functions.get("avg").asList().get(3).getField(1)).isEqualTo("interval day to second");
+        assertThat(functions.get("avg").asList().get(3).getField(2)).isEqualTo("interval day to second");
+        assertThat(functions.get("avg").asList().get(3).getField(3)).isEqualTo("aggregate");
+        assertThat(functions.get("avg").asList().get(4).getField(1)).isEqualTo("interval year to month");
+        assertThat(functions.get("avg").asList().get(4).getField(2)).isEqualTo("interval year to month");
+        assertThat(functions.get("avg").asList().get(4).getField(3)).isEqualTo("aggregate");
+        assertThat(functions.get("avg").asList().get(5).getField(1)).isEqualTo("real");
+        assertThat(functions.get("avg").asList().get(5).getField(2)).isEqualTo("real");
+        assertThat(functions.get("avg").asList().get(5).getField(3)).isEqualTo("aggregate");
 
-        assertTrue(functions.containsKey("abs"), "Expected function names " + functions + " to contain 'abs'");
-        assertEquals(functions.get("abs").asList().get(0).getField(3), "scalar");
-        assertEquals(functions.get("abs").asList().get(0).getField(4), true);
+        assertThat(functions.containsKey("abs"))
+                .describedAs("Expected function names " + functions + " to contain 'abs'")
+                .isTrue();
+        assertThat(functions.get("abs").asList().get(0).getField(3)).isEqualTo("scalar");
+        assertThat(functions.get("abs").asList().get(0).getField(4)).isEqualTo(true);
 
-        assertTrue(functions.containsKey("rand"), "Expected function names " + functions + " to contain 'rand'");
-        assertEquals(functions.get("rand").asList().get(0).getField(3), "scalar");
-        assertEquals(functions.get("rand").asList().get(0).getField(4), false);
+        assertThat(functions.containsKey("rand"))
+                .describedAs("Expected function names " + functions + " to contain 'rand'")
+                .isTrue();
+        assertThat(functions.get("rand").asList().get(0).getField(3)).isEqualTo("scalar");
+        assertThat(functions.get("rand").asList().get(0).getField(4)).isEqualTo(false);
 
-        assertTrue(functions.containsKey("rank"), "Expected function names " + functions + " to contain 'rank'");
-        assertEquals(functions.get("rank").asList().get(0).getField(3), "window");
+        assertThat(functions.containsKey("rank"))
+                .describedAs("Expected function names " + functions + " to contain 'rank'")
+                .isTrue();
+        assertThat(functions.get("rank").asList().get(0).getField(3)).isEqualTo("window");
 
-        assertTrue(functions.containsKey("rank"), "Expected function names " + functions + " to contain 'split_part'");
-        assertEquals(functions.get("split_part").asList().get(0).getField(1), "varchar(x)");
-        assertEquals(functions.get("split_part").asList().get(0).getField(2), "varchar(x), varchar(y), bigint");
-        assertEquals(functions.get("split_part").asList().get(0).getField(3), "scalar");
+        assertThat(functions.containsKey("rank"))
+                .describedAs("Expected function names " + functions + " to contain 'split_part'")
+                .isTrue();
+        assertThat(functions.get("split_part").asList().get(0).getField(1)).isEqualTo("varchar(x)");
+        assertThat(functions.get("split_part").asList().get(0).getField(2)).isEqualTo("varchar(x), varchar(y), bigint");
+        assertThat(functions.get("split_part").asList().get(0).getField(3)).isEqualTo("scalar");
 
-        assertFalse(functions.containsKey("like"), "Expected function names " + functions + " not to contain 'like'");
-    }
-
-    @Test
-    public void testLargePivot()
-    {
-        int arrayConstructionLimit = 254;
-
-        MaterializedResult result = computeActual(pivotQuery(arrayConstructionLimit));
-        assertThat(result.getRowCount())
-                .as("row count")
-                .isEqualTo(arrayConstructionLimit);
-
-        MaterializedRow row = result.getMaterializedRows().get(0);
-        assertThat(row.getFieldCount())
-                .as("field count")
-                .isEqualTo(arrayConstructionLimit + 2);
-
-        // Verify that arrayConstructionLimit is the current limit so that the test stays relevant and prevents regression if we improve in the future.
-        assertQueryFails(pivotQuery(arrayConstructionLimit + 1), "Too many arguments for array constructor");
+        assertThat(functions.containsKey("like"))
+                .describedAs("Expected function names " + functions + " not to contain 'like'")
+                .isFalse();
     }
 
     private static String pivotQuery(int columnsCount)
@@ -6227,18 +6244,6 @@ public abstract class AbstractTestEngineOnlyQueries
                 .collect(joining(", "));
 
         return format("SELECT * FROM (SELECT %s FROM region LIMIT 1) a(%s) INNER JOIN unnest(ARRAY[%s], ARRAY[%2$s]) b(b1, b2) ON true", fields, columns, literals);
-    }
-
-    @Test
-    @Timeout(30)
-    public void testLateMaterializationOuterJoin()
-    {
-        Session session = Session.builder(getSession())
-                .setSystemProperty(LATE_MATERIALIZATION, "true")
-                .setSystemProperty(JOIN_REORDERING_STRATEGY, NONE.toString())
-                .setSystemProperty(JOIN_DISTRIBUTION_TYPE, BROADCAST.toString())
-                .build();
-        assertQuery(session, "SELECT * FROM (SELECT * FROM nation WHERE nationkey < -1) a RIGHT JOIN nation b ON a.nationkey = b.nationkey");
     }
 
     /**
@@ -6589,28 +6594,164 @@ public abstract class AbstractTestEngineOnlyQueries
     public void testColumnNames()
     {
         MaterializedResult showFunctionsResult = computeActual("SHOW FUNCTIONS");
-        assertEquals(showFunctionsResult.getColumnNames(), ImmutableList.of("Function", "Return Type", "Argument Types", "Function Type", "Deterministic", "Description"));
+        assertThat(showFunctionsResult.getColumnNames()).isEqualTo(ImmutableList.of("Function", "Return Type", "Argument Types", "Function Type", "Deterministic", "Description"));
 
         MaterializedResult showCatalogsResult = computeActual("SHOW CATALOGS");
-        assertEquals(showCatalogsResult.getColumnNames(), ImmutableList.of("Catalog"));
+        assertThat(showCatalogsResult.getColumnNames()).isEqualTo(ImmutableList.of("Catalog"));
 
         MaterializedResult selectAllResult = computeActual("SELECT * FROM nation");
-        assertEquals(selectAllResult.getColumnNames(), ImmutableList.of("nationkey", "name", "regionkey", "comment"));
+        assertThat(selectAllResult.getColumnNames()).isEqualTo(ImmutableList.of("nationkey", "name", "regionkey", "comment"));
 
         MaterializedResult selectResult = computeActual("SELECT nationkey, regionkey FROM nation");
-        assertEquals(selectResult.getColumnNames(), ImmutableList.of("nationkey", "regionkey"));
+        assertThat(selectResult.getColumnNames()).isEqualTo(ImmutableList.of("nationkey", "regionkey"));
 
         MaterializedResult selectJsonArrayResult = computeActual("SELECT json_array(name, regionkey) from nation");
-        assertEquals(selectJsonArrayResult.getColumnNames(), ImmutableList.of("_col0"));
+        assertThat(selectJsonArrayResult.getColumnNames()).isEqualTo(ImmutableList.of("_col0"));
 
         MaterializedResult selectJsonArrayAsResult = computeActual("SELECT json_array(name, regionkey) result from nation");
-        assertEquals(selectJsonArrayAsResult.getColumnNames(), ImmutableList.of("result"));
+        assertThat(selectJsonArrayAsResult.getColumnNames()).isEqualTo(ImmutableList.of("result"));
 
         MaterializedResult showColumnResult = computeActual("SHOW COLUMNS FROM nation");
-        assertEquals(showColumnResult.getColumnNames(), ImmutableList.of("Column", "Type", "Extra", "Comment"));
+        assertThat(showColumnResult.getColumnNames()).isEqualTo(ImmutableList.of("Column", "Type", "Extra", "Comment"));
 
         MaterializedResult showCreateTableResult = computeActual("SHOW CREATE TABLE nation");
-        assertEquals(showCreateTableResult.getColumnNames(), ImmutableList.of("Create Table"));
+        assertThat(showCreateTableResult.getColumnNames()).isEqualTo(ImmutableList.of("Create Table"));
+    }
+
+    @Test
+    public void testInlineSqlFunctions()
+    {
+        assertThat(query("""
+                WITH FUNCTION abc(x integer) RETURNS integer RETURN x * 2
+                SELECT abc(21)
+                """))
+                .matches("VALUES 42");
+        assertThat(query("""
+                WITH FUNCTION abc(x integer) RETURNS integer RETURN abs(x)
+                SELECT abc(-21)
+                """))
+                .matches("VALUES 21");
+
+        assertThat(query("""
+                WITH
+                  FUNCTION abc(x integer) RETURNS integer RETURN x * 2,
+                  FUNCTION xyz(x integer) RETURNS integer RETURN abc(x) + 1
+                SELECT xyz(21)
+                """))
+                .matches("VALUES 43");
+
+        assertThat(query("""
+                WITH
+                  FUNCTION my_pow(n int, p int)
+                  RETURNS int
+                  BEGIN
+                    DECLARE r int DEFAULT n;
+                    top: LOOP
+                      IF p <= 1 THEN
+                        LEAVE top;
+                      END IF;
+                      SET r = r * n;
+                      SET p = p - 1;
+                    END LOOP;
+                    RETURN r;
+                  END
+                SELECT my_pow(2, 8)
+                """))
+                .matches("VALUES 256");
+
+        // invoke function on data from connector to prevent constant folding on the coordinator
+        assertThat(query("""
+                WITH
+                  FUNCTION my_pow(n int, p int)
+                  RETURNS int
+                  BEGIN
+                    DECLARE r int DEFAULT n;
+                    top: LOOP
+                      IF p <= 1 THEN
+                        LEAVE top;
+                      END IF;
+                      SET r = r * n;
+                      SET p = p - 1;
+                    END LOOP;
+                    RETURN r;
+                  END
+                SELECT my_pow(CAST(nationkey AS integer), CAST(regionkey AS integer)) FROM nation WHERE nationkey IN (1,2,3,5,8)
+                """))
+                .matches("VALUES 1, 2, 3, 5, 64");
+
+        // function with dereference
+        assertThat(query("""
+                WITH FUNCTION get(input row(varchar))
+                    RETURNS varchar
+                    RETURN input[1]
+                SELECT get(ROW('abc'))
+                """))
+                .matches("VALUES VARCHAR 'abc'");
+
+        // validations for inline functions
+        assertQueryFails("WITH FUNCTION a.b() RETURNS int RETURN 42 SELECT a.b()",
+                "line 1:6: Inline function names cannot be qualified: a.b");
+
+        assertQueryFails("WITH FUNCTION x() RETURNS int SECURITY INVOKER RETURN 42 SELECT x()",
+                "line 1:31: Security mode not supported for inline functions");
+
+        assertQueryFails("WITH FUNCTION x() RETURNS bigint SECURITY DEFINER RETURN 42 SELECT x()",
+                "line 1:34: Security mode not supported for inline functions");
+
+        // error location reporting
+        assertQueryFails("WITH function x() RETURNS bigint DETERMINISTIC DETERMINISTIC RETURN 42 SELECT x()",
+                "line 1:48: Multiple deterministic clauses specified");
+
+        // Verify the current restrictions on inline functions are enforced
+
+        // inline function can mask a global function
+        assertThat(query("""
+                WITH FUNCTION abs(x integer) RETURNS integer RETURN x * 2
+                SELECT abs(-10)
+                """))
+                .matches("VALUES -20");
+        assertThat(query("""
+                WITH
+                  FUNCTION abs(x integer) RETURNS integer RETURN x * 2,
+                  FUNCTION wrap_abs(x integer) RETURNS integer RETURN abs(x)
+                SELECT wrap_abs(-10)
+                """))
+                .matches("VALUES -20");
+
+        // inline function can have the same name as a global function with a different signature
+        assertThat(query("""
+                WITH FUNCTION abs(x varchar) RETURNS varchar RETURN reverse(x)
+                SELECT abs('abc')
+                """))
+                .skippingTypesCheck()
+                .matches("VALUES 'cba'");
+
+        // inline functions must be declared before they are used
+        assertThat(query("""
+                WITH
+                  FUNCTION a(x integer) RETURNS integer RETURN b(x),
+                  FUNCTION b(x integer) RETURNS integer RETURN x * 2
+                SELECT a(10)
+                """))
+                .failure().hasMessage("line 2:48: Function 'b' not registered");
+
+        // inline function cannot be recursive
+        // note: mutual recursion is not supported either, but it is not tested due to the forward declaration limitation above
+        assertThat(query("""
+                WITH FUNCTION a(x integer) RETURNS integer RETURN a(x)
+                SELECT a(10)
+                """))
+                .failure().hasMessage("line 1:6: Recursive language functions are not supported: a(integer):integer");
+    }
+
+    @Test
+    public void testCreateFunctionErrorReporting()
+    {
+        assertQueryFails("CREATE FUNCTION a.b.c() RETURNS integer DETERMINISTIC DETERMINISTIC RETURN 8",
+                "line 1:55: Multiple deterministic clauses specified");
+
+        assertQueryFails("CREATE FUNCTION a.b.c() RETURNS varchar RETURN 8",
+                "line 1:48: Value of RETURN must evaluate to varchar \\(actual: integer\\)");
     }
 
     private static ZonedDateTime zonedDateTime(String value)

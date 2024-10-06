@@ -19,6 +19,7 @@ import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.inject.Inject;
 import io.airlift.bytecode.BytecodeBlock;
 import io.airlift.bytecode.BytecodeNode;
@@ -31,7 +32,7 @@ import io.airlift.bytecode.Scope;
 import io.airlift.bytecode.Variable;
 import io.airlift.bytecode.control.ForLoop;
 import io.airlift.bytecode.control.IfStatement;
-import io.airlift.jmx.CacheStatsMBean;
+import io.trino.cache.CacheStatsMBean;
 import io.trino.cache.NonEvictableLoadingCache;
 import io.trino.metadata.FunctionManager;
 import io.trino.operator.Work;
@@ -71,6 +72,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static io.airlift.bytecode.Access.FINAL;
 import static io.airlift.bytecode.Access.PRIVATE;
 import static io.airlift.bytecode.Access.PUBLIC;
@@ -167,7 +169,13 @@ public class PageFunctionCompiler
         if (projectionCache == null) {
             return compileProjectionInternal(projection, classNameSuffix);
         }
-        return projectionCache.getUnchecked(projection);
+        try {
+            return projectionCache.getUnchecked(projection);
+        }
+        catch (UncheckedExecutionException e) {
+            throwIfInstanceOf(e.getCause(), TrinoException.class);
+            throw e;
+        }
     }
 
     private Supplier<PageProjection> compileProjectionInternal(RowExpression projection, Optional<String> classNameSuffix)
@@ -175,12 +183,12 @@ public class PageFunctionCompiler
         requireNonNull(projection, "projection is null");
 
         if (projection instanceof InputReferenceExpression input) {
-            InputPageProjection projectionFunction = new InputPageProjection(input.getField(), input.getType());
+            InputPageProjection projectionFunction = new InputPageProjection(input.field(), input.type());
             return () -> projectionFunction;
         }
 
         if (projection instanceof ConstantExpression constant) {
-            ConstantPageProjection projectionFunction = new ConstantPageProjection(constant.getValue(), constant.getType());
+            ConstantPageProjection projectionFunction = new ConstantPageProjection(constant.value(), constant.type());
             return () -> projectionFunction;
         }
 
@@ -358,7 +366,7 @@ public class PageFunctionCompiler
 
         body.append(thisVariable.getField(blockBuilder))
                 .append(compiler.compile(projection, scope))
-                .append(generateWrite(callSiteBinder, scope, wasNullVariable, projection.getType()))
+                .append(generateWrite(callSiteBinder, scope, wasNullVariable, projection.type()))
                 .ret();
         return method;
     }
@@ -368,7 +376,13 @@ public class PageFunctionCompiler
         if (filterCache == null) {
             return compileFilterInternal(filter, classNameSuffix);
         }
-        return filterCache.getUnchecked(filter);
+        try {
+            return filterCache.getUnchecked(filter);
+        }
+        catch (UncheckedExecutionException e) {
+            throwIfInstanceOf(e.getCause(), TrinoException.class);
+            throw e;
+        }
     }
 
     private Supplier<PageFilter> compileFilterInternal(RowExpression filter, Optional<String> classNameSuffix)
@@ -600,7 +614,7 @@ public class PageFunctionCompiler
         TreeSet<Integer> channels = new TreeSet<>();
         for (RowExpression expression : Expressions.subExpressions(expressions)) {
             if (expression instanceof InputReferenceExpression) {
-                channels.add(((InputReferenceExpression) expression).getField());
+                channels.add(((InputReferenceExpression) expression).field());
             }
         }
         return ImmutableList.copyOf(channels);

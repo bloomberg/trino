@@ -13,6 +13,7 @@
  */
 package io.trino.sql.analyzer;
 
+import com.google.errorprone.annotations.FormatMethod;
 import io.trino.spi.ErrorCodeSupplier;
 import io.trino.spi.TrinoException;
 import io.trino.sql.tree.Expression;
@@ -21,6 +22,7 @@ import io.trino.sql.tree.QualifiedName;
 
 import static io.trino.spi.StandardErrorCode.AMBIGUOUS_NAME;
 import static io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND;
+import static io.trino.spi.StandardErrorCode.INVALID_COLUMN_REFERENCE;
 import static io.trino.sql.analyzer.ExpressionTreeUtils.extractLocation;
 import static java.lang.String.format;
 
@@ -33,16 +35,24 @@ public final class SemanticExceptions
         throw semanticException(COLUMN_NOT_FOUND, node, "Column '%s' cannot be resolved", name);
     }
 
+    public static TrinoException invalidReferenceException(Expression node, QualifiedName name)
+    {
+        throw semanticException(INVALID_COLUMN_REFERENCE, node, "Column reference '%s' is invalid", name);
+    }
+
     public static TrinoException ambiguousAttributeException(Expression node, QualifiedName name)
     {
         throw semanticException(AMBIGUOUS_NAME, node, "Column '%s' is ambiguous", name);
     }
 
+    @SuppressWarnings("FormatStringAnnotation")
+    @FormatMethod
     public static TrinoException semanticException(ErrorCodeSupplier code, Node node, String format, Object... args)
     {
         return semanticException(code, node, null, format, args);
     }
 
+    @FormatMethod
     public static TrinoException semanticException(ErrorCodeSupplier code, Node node, Throwable cause, String format, Object... args)
     {
         throw new TrinoException(code, extractLocation(node), format(format, args), cause);

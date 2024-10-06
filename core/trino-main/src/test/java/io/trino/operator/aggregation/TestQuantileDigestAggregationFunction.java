@@ -29,6 +29,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -59,8 +60,10 @@ import static java.lang.Integer.min;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestQuantileDigestAggregationFunction
 {
     private static final Joiner ARRAY_JOINER = Joiner.on(",");
@@ -147,7 +150,7 @@ public class TestQuantileDigestAggregationFunction
                 createSequenceBlockOfReal(-1000, 1000),
                 createRepeatedValuesBlock(1, 2000),
                 0.01,
-                Floats.toArray(LongStream.range(-1000, 1000).mapToObj(Float::new).collect(toImmutableList())));
+                Floats.toArray(LongStream.range(-1000, 1000).mapToObj(Float::valueOf).collect(toImmutableList())));
     }
 
     @Test

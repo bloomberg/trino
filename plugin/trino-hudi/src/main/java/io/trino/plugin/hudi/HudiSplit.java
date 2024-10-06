@@ -14,18 +14,17 @@
 package io.trino.plugin.hudi;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
-import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.predicate.TupleDomain;
 
 import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -74,27 +73,14 @@ public class HudiSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @JsonIgnore
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return ImmutableMap.builder()
+        return ImmutableMap.<String, String>builder()
                 .put("location", location)
-                .put("start", start)
-                .put("length", length)
-                .put("fileSize", fileSize)
-                .put("fileModifiedTime", fileModifiedTime)
+                .put("start", String.valueOf(start))
+                .put("length", String.valueOf(length))
+                .put("fileSize", String.valueOf(fileSize))
+                .put("fileModifiedTime", String.valueOf(fileModifiedTime))
                 .buildOrThrow();
     }
 
@@ -154,7 +140,7 @@ public class HudiSplit
                 + estimatedSizeOf(location)
                 + splitWeight.getRetainedSizeInBytes()
                 + predicate.getRetainedSizeInBytes(HiveColumnHandle::getRetainedSizeInBytes)
-                + estimatedSizeOf(partitionKeys, HivePartitionKey::getEstimatedSizeInBytes);
+                + estimatedSizeOf(partitionKeys, HivePartitionKey::estimatedSizeInBytes);
     }
 
     @Override

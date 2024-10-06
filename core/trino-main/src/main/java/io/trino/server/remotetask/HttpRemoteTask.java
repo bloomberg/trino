@@ -15,8 +15,8 @@ package io.trino.server.remotetask;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Supplier;
-import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.SetMultimap;
 import com.google.common.net.HttpHeaders;
@@ -57,7 +57,9 @@ import io.trino.execution.buffer.OutputBuffers;
 import io.trino.execution.buffer.PipelinedBufferInfo;
 import io.trino.execution.buffer.PipelinedOutputBuffers;
 import io.trino.execution.buffer.SpoolingOutputStats;
+import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
+import io.trino.operator.RetryPolicy;
 import io.trino.operator.TaskStats;
 import io.trino.server.DynamicFilterService;
 import io.trino.server.FailTaskRequest;
@@ -101,6 +103,7 @@ import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.airlift.http.client.FullJsonResponseHandler.createFullJsonResponseHandler;
+import static io.airlift.http.client.HttpStatus.OK;
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.client.Request.Builder.prepareDelete;
 import static io.airlift.http.client.Request.Builder.preparePost;
@@ -110,6 +113,7 @@ import static io.trino.SystemSessionProperties.getMaxRemoteTaskRequestSize;
 import static io.trino.SystemSessionProperties.getMaxUnacknowledgedSplitsPerTask;
 import static io.trino.SystemSessionProperties.getRemoteTaskGuaranteedSplitsPerRequest;
 import static io.trino.SystemSessionProperties.getRemoteTaskRequestSizeHeadroom;
+import static io.trino.SystemSessionProperties.getRetryPolicy;
 import static io.trino.SystemSessionProperties.isRemoteTaskAdaptiveUpdateRequestSizeEnabled;
 import static io.trino.execution.DynamicFiltersCollector.INITIAL_DYNAMIC_FILTERS_VERSION;
 import static io.trino.execution.TaskInfo.createInitialTask;
@@ -117,9 +121,11 @@ import static io.trino.execution.TaskState.FAILED;
 import static io.trino.execution.TaskStatus.failWith;
 import static io.trino.server.remotetask.RequestErrorTracker.logError;
 import static io.trino.spi.HostAddress.fromUri;
+import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.REMOTE_TASK_ERROR;
 import static io.trino.util.Failures.toFailure;
 import static java.lang.Math.addExact;
+import static java.lang.Math.clamp;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
@@ -154,7 +160,7 @@ public final class HttpRemoteTask
     private final AtomicReference<Future<?>> currentRequest = new AtomicReference<>();
 
     @GuardedBy("this")
-    private final SetMultimap<PlanNodeId, ScheduledSplit> pendingSplits = HashMultimap.create();
+    private final SetMultimap<PlanNodeId, ScheduledSplit> pendingSplits = LinkedHashMultimap.create();
     private final int maxUnacknowledgedSplits;
     @GuardedBy("this")
     private volatile int pendingSourceSplitCount;
@@ -171,8 +177,7 @@ public final class HttpRemoteTask
     @GuardedBy("this")
     private OptionalLong whenSplitQueueHasSpaceThreshold = OptionalLong.empty();
 
-    @VisibleForTesting
-    final AtomicInteger splitBatchSize;
+    @VisibleForTesting final AtomicInteger splitBatchSize;
 
     private final boolean summarizeTaskInfo;
 
@@ -206,7 +211,7 @@ public final class HttpRemoteTask
             Session session,
             Span stageSpan,
             TaskId taskId,
-            String nodeId,
+            InternalNode node,
             boolean speculative,
             URI location,
             PlanFragment planFragment,
@@ -236,7 +241,7 @@ public final class HttpRemoteTask
         requireNonNull(session, "session is null");
         requireNonNull(stageSpan, "stageSpan is null");
         requireNonNull(taskId, "taskId is null");
-        requireNonNull(nodeId, "nodeId is null");
+        requireNonNull(node, "node is null");
         requireNonNull(location, "location is null");
         requireNonNull(planFragment, "planFragment is null");
         requireNonNull(outputBuffers, "outputBuffers is null");
@@ -250,11 +255,11 @@ public final class HttpRemoteTask
         requireNonNull(outboundDynamicFilterIds, "outboundDynamicFilterIds is null");
         requireNonNull(estimatedMemory, "estimatedMemory is null");
 
-        try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
             this.taskId = taskId;
             this.session = session;
             this.stageSpan = stageSpan;
-            this.nodeId = nodeId;
+            this.nodeId = node.getNodeIdentifier();
             this.speculative = new AtomicBoolean(speculative);
             this.planFragment = planFragment;
             this.outputBuffers.set(outputBuffers);
@@ -331,7 +336,7 @@ public final class HttpRemoteTask
 
             this.taskStatusFetcher = new ContinuousTaskStatusFetcher(
                     this::fatalUnacknowledgedFailure,
-                    initialTask.getTaskStatus(),
+                    initialTask.taskStatus(),
                     taskStatusRefreshMaxWait,
                     taskStatusCodec,
                     dynamicFiltersFetcher,
@@ -342,6 +347,7 @@ public final class HttpRemoteTask
                     errorScheduledExecutor,
                     stats);
 
+            RetryPolicy retryPolicy = getRetryPolicy(session);
             this.taskInfoFetcher = new TaskInfoFetcher(
                     this::fatalUnacknowledgedFailure,
                     taskStatusFetcher,
@@ -356,7 +362,8 @@ public final class HttpRemoteTask
                     updateScheduledExecutor,
                     errorScheduledExecutor,
                     stats,
-                    estimatedMemory);
+                    estimatedMemory,
+                    retryPolicy);
 
             taskStatusFetcher.addStateChangeListener(newStatus -> {
                 TaskState state = newStatus.getState();
@@ -412,7 +419,7 @@ public final class HttpRemoteTask
     @Override
     public void start()
     {
-        try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
             // to start we just need to trigger an update
             started.set(true);
             triggerUpdate();
@@ -550,7 +557,7 @@ public final class HttpRemoteTask
     }
 
     @Override
-    public SpoolingOutputStats.Snapshot retrieveAndDropSpoolingOutputStats()
+    public Optional<SpoolingOutputStats.Snapshot> retrieveAndDropSpoolingOutputStats()
     {
         return taskInfoFetcher.retrieveAndDropSpoolingOutputStats();
     }
@@ -579,7 +586,7 @@ public final class HttpRemoteTask
     @Override
     public void addStateChangeListener(StateChangeListener<TaskStatus> stateChangeListener)
     {
-        try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
             taskStatusFetcher.addStateChangeListener(stateChangeListener);
         }
     }
@@ -604,6 +611,12 @@ public final class HttpRemoteTask
             return immediateVoidFuture();
         }
         return whenSplitQueueHasSpace.createNewListener();
+    }
+
+    @VisibleForTesting
+    DynamicFiltersFetcher getDynamicFiltersFetcher()
+    {
+        return dynamicFiltersFetcher;
     }
 
     private synchronized void updateSplitQueueSpace()
@@ -656,7 +669,7 @@ public final class HttpRemoteTask
 
     private void updateTaskInfo(TaskInfo taskInfo)
     {
-        taskStatusFetcher.updateTaskStatus(taskInfo.getTaskStatus());
+        taskStatusFetcher.updateTaskStatus(taskInfo.taskStatus());
         taskInfoFetcher.updateTaskInfo(taskInfo);
     }
 
@@ -696,8 +709,7 @@ public final class HttpRemoteTask
                 }
             }
             if (numSplits != 0) {
-                newSplitBatchSize = (int) ((numSplits * (maxRequestSizeInBytes - requestSizeHeadroomInBytes)) / requestSize);
-                newSplitBatchSize = Math.max(guaranteedSplitsPerRequest, Math.min(maxUnacknowledgedSplits, newSplitBatchSize));
+                newSplitBatchSize = clamp((numSplits * (maxRequestSizeInBytes - requestSizeHeadroomInBytes)) / requestSize, guaranteedSplitsPerRequest, maxUnacknowledgedSplits);
             }
             if (newSplitBatchSize != currentSplitBatchSize) {
                 log.debug("%s - Split batch size changed: prevSize=%s, newSize=%s", taskId, currentSplitBatchSize, newSplitBatchSize);
@@ -714,6 +726,16 @@ public final class HttpRemoteTask
     }
 
     private void sendUpdate()
+    {
+        try {
+            sendUpdateInternal();
+        }
+        catch (Throwable e) {
+            fatalUnacknowledgedFailure(new TrinoException(GENERIC_INTERNAL_ERROR, "unexpected error calling sendUpdate()", e));
+        }
+    }
+
+    private void sendUpdateInternal()
     {
         TaskStatus taskStatus = getTaskStatus();
         // don't update if the task is already finishing or finished, or if we have sent a termination command
@@ -825,7 +847,7 @@ public final class HttpRemoteTask
         }
 
         synchronized (this) {
-            try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
                 if (!getTaskStatus().getState().isTerminatingOrDone()) {
                     scheduleAsyncCleanupRequest("abort", true);
                 }
@@ -842,7 +864,7 @@ public final class HttpRemoteTask
         }
 
         synchronized (this) {
-            try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
                 TaskStatus taskStatus = getTaskStatus();
                 if (!taskStatus.getState().isTerminatingOrDone()) {
                     scheduleAsyncCleanupRequest("cancel", false);
@@ -953,12 +975,18 @@ public final class HttpRemoteTask
             @Override
             public void onSuccess(JsonResponse<TaskInfo> result)
             {
+                if (result.getStatusCode() != OK.code()) {
+                    onFailure(new RuntimeException("Unexpected http status code " + result.getStatusCode()));
+                    return;
+                }
+
                 try {
+                    checkArgument(result.hasValue(), "TaskInfo result did not contain JSON payload; payload=%s", result.getResponseBody());
                     updateTaskInfo(result.getValue());
                 }
                 finally {
                     // if cleanup operation has not at least started task termination, mark the task failed
-                    TaskState taskState = getTaskInfo().getTaskStatus().getState();
+                    TaskState taskState = getTaskInfo().taskStatus().getState();
                     if (!taskState.isTerminatingOrDone()) {
                         fatalAsyncCleanupFailure(new TrinoTransportException(REMOTE_TASK_ERROR, fromUri(request.getUri()), format("Unable to %s task at %s, last known state was: %s", action, request.getUri(), taskState)));
                     }
@@ -970,7 +998,7 @@ public final class HttpRemoteTask
             public void onFailure(Throwable t)
             {
                 // final task info has been received, no need to resend the request
-                if (getTaskInfo().getTaskStatus().getState().isDone()) {
+                if (getTaskInfo().taskStatus().getState().isDone()) {
                     return;
                 }
 
@@ -1002,7 +1030,7 @@ public final class HttpRemoteTask
             private void fatalAsyncCleanupFailure(TrinoTransportException cause)
             {
                 synchronized (HttpRemoteTask.this) {
-                    try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+                    try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
                         TaskStatus taskStatus = getTaskStatus();
                         if (taskStatus.getState().isDone()) {
                             log.warn("Task %s already in terminal state %s; cannot overwrite with FAILED due to %s",
@@ -1029,7 +1057,7 @@ public final class HttpRemoteTask
      */
     private synchronized void fatalUnacknowledgedFailure(Throwable cause)
     {
-        try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+        try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
             TaskStatus taskStatus = getTaskStatus();
             if (!taskStatus.getState().isDone()) {
                 // Update the taskInfo with the new taskStatus.
@@ -1057,6 +1085,14 @@ public final class HttpRemoteTask
                     taskStatusFetcher.updateTaskStatus(taskStatus);
                 }
             }
+            else {
+                // Even though state in taskStatus is Done already it could not be the case for task info.
+                // We could have received valid response from taskStatusFetcher just before the worker went
+                // down, but taskInfoFetcher still holds old state.
+                // Update taskInfo so task is not stuck in FTE execution mode which depends on final task info
+                // being delivered.
+                updateTaskInfo(getTaskInfo().withTaskStatus(taskStatus));
+            }
         }
     }
 
@@ -1071,7 +1107,7 @@ public final class HttpRemoteTask
         }
 
         synchronized (this) {
-            try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
                 TaskStatus taskStatus = getTaskStatus();
                 if (!taskStatus.getState().isTerminatingOrDone()) {
                     log.debug(cause, "Remote task %s failed with %s", taskStatus.getSelf(), cause);
@@ -1088,7 +1124,7 @@ public final class HttpRemoteTask
         // Prevent concurrent abort commands after this point
         terminating.set(true);
         synchronized (this) {
-            try (SetThreadName ignored = new SetThreadName("HttpRemoteTask-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("HttpRemoteTask-%s", taskId)) {
                 TaskStatus taskStatus = getTaskStatus();
                 if (!taskStatus.getState().isDone()) {
                     // Record and force the task into a failed state immediately without waiting for the task to respond. A final cleanup
@@ -1148,11 +1184,11 @@ public final class HttpRemoteTask
         @Override
         public void success(TaskInfo value)
         {
-            try (SetThreadName ignored = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
                 sentDynamicFiltersVersion.set(currentRequestDynamicFiltersVersion);
                 // Remove dynamic filters which were successfully sent to free up memory
                 outboundDynamicFiltersCollector.acknowledge(currentRequestDynamicFiltersVersion);
-                sendPlan.set(value.isNeedsPlan());
+                sendPlan.set(value.needsPlan());
                 currentRequest.set(null);
                 updateStats();
                 updateErrorTracker.requestSucceeded();
@@ -1167,7 +1203,7 @@ public final class HttpRemoteTask
         @Override
         public void failed(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
                 try {
                     currentRequest.set(null);
                     updateStats();
@@ -1194,7 +1230,7 @@ public final class HttpRemoteTask
         @Override
         public void fatal(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("UpdateResponseHandler-%s", taskId)) {
                 fatalUnacknowledgedFailure(cause);
             }
         }

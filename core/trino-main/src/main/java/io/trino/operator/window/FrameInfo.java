@@ -13,9 +13,8 @@
  */
 package io.trino.operator.window;
 
-import io.trino.sql.tree.FrameBound;
-import io.trino.sql.tree.SortItem.Ordering;
-import io.trino.sql.tree.WindowFrame;
+import io.trino.sql.planner.plan.FrameBoundType;
+import io.trino.sql.planner.plan.WindowFrameType;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -25,22 +24,22 @@ import static java.util.Objects.requireNonNull;
 
 public class FrameInfo
 {
-    private final WindowFrame.Type type;
-    private final FrameBound.Type startType;
+    private final WindowFrameType type;
+    private final FrameBoundType startType;
     private final int startChannel;
     private final int sortKeyChannelForStartComparison;
-    private final FrameBound.Type endType;
+    private final FrameBoundType endType;
     private final int endChannel;
     private final int sortKeyChannelForEndComparison;
     private final int sortKeyChannel;
     private final Optional<Ordering> ordering;
 
     public FrameInfo(
-            WindowFrame.Type type,
-            FrameBound.Type startType,
+            WindowFrameType type,
+            FrameBoundType startType,
             Optional<Integer> startChannel,
             Optional<Integer> sortKeyChannelForStartComparison,
-            FrameBound.Type endType,
+            FrameBoundType endType,
             Optional<Integer> endChannel,
             Optional<Integer> sortKeyChannelForEndComparison,
             Optional<Integer> sortKeyChannel,
@@ -57,12 +56,12 @@ public class FrameInfo
         this.ordering = requireNonNull(ordering, "ordering is null");
     }
 
-    public WindowFrame.Type getType()
+    public WindowFrameType getType()
     {
         return type;
     }
 
-    public FrameBound.Type getStartType()
+    public FrameBoundType getStartType()
     {
         return startType;
     }
@@ -77,7 +76,7 @@ public class FrameInfo
         return sortKeyChannelForStartComparison;
     }
 
-    public FrameBound.Type getEndType()
+    public FrameBoundType getEndType()
     {
         return endType;
     }
@@ -123,12 +122,12 @@ public class FrameInfo
 
         return this.type == other.type &&
                 this.startType == other.startType &&
-                Objects.equals(this.startChannel, other.startChannel) &&
-                Objects.equals(this.sortKeyChannelForStartComparison, other.sortKeyChannelForStartComparison) &&
+                this.startChannel == other.startChannel &&
+                this.sortKeyChannelForStartComparison == other.sortKeyChannelForStartComparison &&
                 this.endType == other.endType &&
-                Objects.equals(this.endChannel, other.endChannel) &&
-                Objects.equals(this.sortKeyChannelForEndComparison, other.sortKeyChannelForEndComparison) &&
-                Objects.equals(this.sortKeyChannel, other.sortKeyChannel) &&
+                this.endChannel == other.endChannel &&
+                this.sortKeyChannelForEndComparison == other.sortKeyChannelForEndComparison &&
+                this.sortKeyChannel == other.sortKeyChannel &&
                 Objects.equals(this.ordering, other.ordering);
     }
 
@@ -146,5 +145,11 @@ public class FrameInfo
                 .add("sortKeyChannel", sortKeyChannel)
                 .add("ordering", ordering)
                 .toString();
+    }
+
+    public enum Ordering
+    {
+        ASCENDING,
+        DESCENDING
     }
 }

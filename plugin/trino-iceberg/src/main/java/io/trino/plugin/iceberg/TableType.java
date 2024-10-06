@@ -17,10 +17,12 @@ public enum TableType
 {
     DATA,
     HISTORY,
+    METADATA_LOG_ENTRIES,
     SNAPSHOTS,
     MANIFESTS,
     PARTITIONS,
     FILES,
     PROPERTIES,
-    REFS
+    REFS,
+    MATERIALIZED_VIEW_STORAGE,
 }

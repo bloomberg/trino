@@ -15,12 +15,15 @@ package io.trino.tests.tpch;
 
 import io.trino.plugin.memory.MemoryPlugin;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
-import static org.testng.Assert.assertEquals;
+import java.util.Map;
+
+import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_TABLE_SCAN_REDIRECTION_CATALOG;
+import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_TABLE_SCAN_REDIRECTION_SCHEMA;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestTpchTableScanRedirection
         extends AbstractTestQueryFramework
@@ -29,9 +32,10 @@ public class TestTpchTableScanRedirection
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        DistributedQueryRunner queryRunner = TpchQueryRunnerBuilder.builder()
-                .withTableScanRedirectionCatalog("memory")
-                .withTableScanRedirectionSchema("test")
+        QueryRunner queryRunner = TpchQueryRunner.builder()
+                .withConnectorProperties(Map.of(
+                        TPCH_TABLE_SCAN_REDIRECTION_CATALOG, "memory",
+                        TPCH_TABLE_SCAN_REDIRECTION_SCHEMA, "test"))
                 .build();
         queryRunner.installPlugin(new MemoryPlugin());
         queryRunner.createCatalog("memory", "memory");
@@ -51,7 +55,7 @@ public class TestTpchTableScanRedirection
         // F           |  7304
         assertUpdate("CREATE TABLE memory.test.orders AS SELECT * FROM tpch_data_load.tiny.orders WHERE orderstatus IN ('O', 'P')", 7696L);
         // row count of 7333L verifies that filter was coorectly re-materialized during redirection and that redirection has taken place
-        assertEquals(computeActual("SELECT * FROM tpch.tiny.orders WHERE orderstatus IN ('O', 'F')").getRowCount(), 7333L);
+        assertThat(computeActual("SELECT * FROM tpch.tiny.orders WHERE orderstatus IN ('O', 'F')").getRowCount()).isEqualTo(7333L);
     }
 
     @Test

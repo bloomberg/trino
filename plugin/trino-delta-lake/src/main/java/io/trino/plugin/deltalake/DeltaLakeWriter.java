@@ -18,6 +18,10 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 import io.trino.filesystem.Location;
+import io.trino.parquet.ParquetDataSourceId;
+import io.trino.parquet.metadata.BlockMetadata;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
+import io.trino.parquet.metadata.ParquetMetadata;
 import io.trino.parquet.reader.MetadataReader;
 import io.trino.plugin.deltalake.DataFileInfo.DataFileType;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeJsonFileStatistics;
@@ -28,11 +32,12 @@ import io.trino.spi.block.ArrayBlock;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.ColumnarArray;
 import io.trino.spi.block.ColumnarMap;
-import io.trino.spi.block.ColumnarRow;
+import io.trino.spi.block.DictionaryBlock;
 import io.trino.spi.block.LazyBlock;
 import io.trino.spi.block.LazyBlockLoader;
 import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.RowBlock;
+import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
@@ -40,9 +45,6 @@ import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.format.FileMetaData;
-import org.apache.parquet.hadoop.metadata.BlockMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -54,6 +56,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
@@ -63,7 +66,6 @@ import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatistic
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeParquetStatisticsUtils.jsonEncodeMin;
 import static io.trino.spi.block.ColumnarArray.toColumnarArray;
 import static io.trino.spi.block.ColumnarMap.toColumnarMap;
-import static io.trino.spi.block.ColumnarRow.toColumnarRow;
 import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static java.util.Locale.ENGLISH;
@@ -71,7 +73,7 @@ import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.function.UnaryOperator.identity;
 
-public class DeltaLakeWriter
+public final class DeltaLakeWriter
         implements FileWriter
 {
     private final ParquetFileWriter fileWriter;
@@ -106,7 +108,7 @@ public class DeltaLakeWriter
 
         ImmutableMap.Builder<Integer, Function<Block, Block>> coercers = ImmutableMap.builder();
         for (int i = 0; i < columnHandles.size(); i++) {
-            Optional<Function<Block, Block>> coercer = createCoercer(columnHandles.get(i).getBaseType());
+            Optional<Function<Block, Block>> coercer = createCoercer(columnHandles.get(i).baseType());
             if (coercer.isPresent()) {
                 coercers.put(i, coercer.get());
             }
@@ -180,26 +182,30 @@ public class DeltaLakeWriter
     public DataFileInfo getDataFileInfo()
             throws IOException
     {
-        Map</* lowercase */ String, Type> dataColumnTypes = columnHandles.stream()
-                // Lowercase because the subsequent logic expects lowercase
-                .collect(toImmutableMap(column -> column.getBasePhysicalColumnName().toLowerCase(ENGLISH), DeltaLakeColumnHandle::getBasePhysicalType));
+        Location path = rootTableLocation.appendPath(relativeFilePath);
+        FileMetaData fileMetaData = fileWriter.getFileMetadata();
+        ParquetMetadata parquetMetadata = MetadataReader.createParquetMetadata(fileMetaData, new ParquetDataSourceId(path.toString()));
+
         return new DataFileInfo(
                 relativeFilePath,
                 getWrittenBytes(),
                 creationTime,
                 dataFileType,
                 partitionValues,
-                readStatistics(fileWriter.getFileMetadata(), rootTableLocation.appendPath(relativeFilePath), dataColumnTypes, rowCount));
+                readStatistics(parquetMetadata, columnHandles, rowCount),
+                Optional.empty());
     }
 
-    private static DeltaLakeJsonFileStatistics readStatistics(FileMetaData fileMetaData, Location path, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
+    public static DeltaLakeJsonFileStatistics readStatistics(ParquetMetadata parquetMetadata, List<DeltaLakeColumnHandle> columnHandles, long rowCount)
             throws IOException
     {
-        ParquetMetadata parquetMetadata = MetadataReader.createParquetMetadata(fileMetaData, path.fileName());
+        Map</* lowercase */ String, Type> typeForColumn = columnHandles.stream()
+                // Lowercase because the subsequent logic expects lowercase
+                .collect(toImmutableMap(column -> column.basePhysicalColumnName().toLowerCase(ENGLISH), DeltaLakeColumnHandle::basePhysicalType));
 
-        ImmutableMultimap.Builder<String, ColumnChunkMetaData> metadataForColumn = ImmutableMultimap.builder();
-        for (BlockMetaData blockMetaData : parquetMetadata.getBlocks()) {
-            for (ColumnChunkMetaData columnChunkMetaData : blockMetaData.getColumns()) {
+        ImmutableMultimap.Builder<String, ColumnChunkMetadata> metadataForColumn = ImmutableMultimap.builder();
+        for (BlockMetadata blockMetaData : parquetMetadata.getBlocks()) {
+            for (ColumnChunkMetadata columnChunkMetaData : blockMetaData.columns()) {
                 if (columnChunkMetaData.getPath().size() != 1) {
                     continue; // Only base column stats are supported
                 }
@@ -212,7 +218,7 @@ public class DeltaLakeWriter
     }
 
     @VisibleForTesting
-    static DeltaLakeJsonFileStatistics mergeStats(Multimap<String, ColumnChunkMetaData> metadataForColumn, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
+    static DeltaLakeJsonFileStatistics mergeStats(Multimap<String, ColumnChunkMetadata> metadataForColumn, Map</* lowercase */ String, Type> typeForColumn, long rowCount)
     {
         Map<String, Optional<Statistics<?>>> statsForColumn = metadataForColumn.keySet().stream()
                 .collect(toImmutableMap(identity(), key -> mergeMetadataList(metadataForColumn.get(key))));
@@ -228,14 +234,14 @@ public class DeltaLakeWriter
                 Optional.of(nullCount));
     }
 
-    private static Optional<Statistics<?>> mergeMetadataList(Collection<ColumnChunkMetaData> metadataList)
+    private static Optional<Statistics<?>> mergeMetadataList(Collection<ColumnChunkMetadata> metadataList)
     {
         if (hasInvalidStatistics(metadataList)) {
             return Optional.empty();
         }
 
         return metadataList.stream()
-                .<Statistics<?>>map(ColumnChunkMetaData::getStatistics)
+                .<Statistics<?>>map(ColumnChunkMetadata::getStatistics)
                 .reduce((statsA, statsB) -> {
                     statsA.mergeStatistics(statsB);
                     return statsA;
@@ -342,25 +348,61 @@ public class DeltaLakeWriter
         @Override
         public Block apply(Block block)
         {
-            ColumnarRow rowBlock = toColumnarRow(block);
-            Block[] fields = new Block[fieldCoercers.size()];
+            block = block.getLoadedBlock();
+
+            if (block instanceof RunLengthEncodedBlock runLengthEncodedBlock) {
+                RowBlock rowBlock = (RowBlock) runLengthEncodedBlock.getValue();
+                RowBlock newRowBlock = RowBlock.fromNotNullSuppressedFieldBlocks(
+                        1,
+                        rowBlock.isNull(0) ? Optional.of(new boolean[] {true}) : Optional.empty(),
+                        coerceFields(rowBlock.getFieldBlocks()));
+                return RunLengthEncodedBlock.create(newRowBlock, runLengthEncodedBlock.getPositionCount());
+            }
+            if (block instanceof DictionaryBlock dictionaryBlock) {
+                RowBlock rowBlock = (RowBlock) dictionaryBlock.getDictionary();
+                List<Block> fieldBlocks = rowBlock.getFieldBlocks().stream()
+                        .map(dictionaryBlock::createProjection)
+                        .toList();
+                return RowBlock.fromNotNullSuppressedFieldBlocks(
+                        dictionaryBlock.getPositionCount(),
+                        getNulls(dictionaryBlock),
+                        coerceFields(fieldBlocks));
+            }
+            RowBlock rowBlock = (RowBlock) block;
+            return RowBlock.fromNotNullSuppressedFieldBlocks(
+                    rowBlock.getPositionCount(),
+                    getNulls(rowBlock),
+                    coerceFields(rowBlock.getFieldBlocks()));
+        }
+
+        private static Optional<boolean[]> getNulls(Block rowBlock)
+        {
+            if (!rowBlock.mayHaveNull()) {
+                return Optional.empty();
+            }
+
+            boolean[] valueIsNull = new boolean[rowBlock.getPositionCount()];
+            for (int i = 0; i < rowBlock.getPositionCount(); i++) {
+                valueIsNull[i] = rowBlock.isNull(i);
+            }
+            return Optional.of(valueIsNull);
+        }
+
+        private Block[] coerceFields(List<Block> fields)
+        {
+            checkArgument(fields.size() == fieldCoercers.size());
+            Block[] newFields = new Block[fieldCoercers.size()];
             for (int i = 0; i < fieldCoercers.size(); i++) {
                 Optional<Function<Block, Block>> coercer = fieldCoercers.get(i);
+                Block fieldBlock = fields.get(i);
                 if (coercer.isPresent()) {
-                    fields[i] = coercer.get().apply(rowBlock.getField(i));
+                    newFields[i] = coercer.get().apply(fieldBlock);
                 }
                 else {
-                    fields[i] = rowBlock.getField(i);
+                    newFields[i] = fieldBlock;
                 }
             }
-            boolean[] valueIsNull = null;
-            if (rowBlock.mayHaveNull()) {
-                valueIsNull = new boolean[rowBlock.getPositionCount()];
-                for (int i = 0; i < rowBlock.getPositionCount(); i++) {
-                    valueIsNull[i] = rowBlock.isNull(i);
-                }
-            }
-            return RowBlock.fromFieldBlocks(rowBlock.getPositionCount(), Optional.ofNullable(valueIsNull), fields);
+            return newFields;
         }
     }
 

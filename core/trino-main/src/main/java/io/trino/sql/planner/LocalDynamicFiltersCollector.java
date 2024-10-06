@@ -18,7 +18,6 @@ import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.trino.Session;
 import io.trino.spi.connector.ColumnHandle;
@@ -48,7 +47,6 @@ import static io.trino.sql.planner.DomainCoercer.applySaturatedCasts;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
-@ThreadSafe
 public class LocalDynamicFiltersCollector
 {
     private final Session session;
@@ -92,7 +90,6 @@ public class LocalDynamicFiltersCollector
     public DynamicFilter createDynamicFilter(
             List<Descriptor> descriptors,
             Map<Symbol, ColumnHandle> columnsMap,
-            TypeProvider typeProvider,
             PlannerContext plannerContext)
     {
         Multimap<DynamicFilterId, Descriptor> descriptorMap = extractSourceSymbols(descriptors);
@@ -115,7 +112,8 @@ public class LocalDynamicFiltersCollector
                                                         return requireNonNull(columnsMap.get(probeSymbol), () -> format("Missing probe column for %s", probeSymbol));
                                                     },
                                                     descriptor -> {
-                                                        Type targetType = typeProvider.get(Symbol.from(descriptor.getInput()));
+                                                        Symbol symbol = Symbol.from(descriptor.getInput());
+                                                        Type targetType = symbol.type();
                                                         Domain updatedDomain = descriptor.applyComparison(domain);
                                                         if (!updatedDomain.getType().equals(targetType)) {
                                                             return applySaturatedCasts(

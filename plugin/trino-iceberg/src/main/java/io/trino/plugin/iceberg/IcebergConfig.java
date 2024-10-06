@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.DefunctConfig;
@@ -20,6 +21,7 @@ import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.HiveCompressionCodec;
+import jakarta.validation.constraints.AssertFalse;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Max;
@@ -27,11 +29,15 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.Optional;
+import java.util.Set;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
+import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.plugin.hive.HiveCompressionCodec.ZSTD;
 import static io.trino.plugin.iceberg.CatalogType.HIVE_METASTORE;
 import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
+import static java.util.Locale.ENGLISH;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
@@ -61,18 +67,26 @@ public class IcebergConfig
     private boolean collectExtendedStatisticsOnWrite = true;
     private boolean projectionPushdownEnabled = true;
     private boolean registerTableProcedureEnabled;
+    private boolean addFilesProcedureEnabled;
     private Optional<String> hiveCatalogName = Optional.empty();
     private int formatVersion = FORMAT_VERSION_SUPPORT_MAX;
     private Duration expireSnapshotsMinRetention = new Duration(7, DAYS);
     private Duration removeOrphanFilesMinRetention = new Duration(7, DAYS);
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
+    private DataSize idleWriterMinFileSize = DataSize.of(16, MEGABYTE);
     // This is meant to protect users who are misusing schema locations (by
     // putting schemas in locations with extraneous files), so default to false
     // to avoid deleting those files if Trino is unable to check.
     private boolean deleteSchemaLocationsFallback;
     private double minimumAssignedSplitWeight = 0.05;
+    private boolean hideMaterializedViewStorageTable = true;
     private Optional<String> materializedViewsStorageSchema = Optional.empty();
     private boolean sortedWritingEnabled = true;
+    private boolean queryPartitionFilterRequired;
+    private Set<String> queryPartitionFilterRequiredSchemas = ImmutableSet.of();
+    private int splitManagerThreads = Runtime.getRuntime().availableProcessors() * 2;
+    private boolean incrementalRefreshEnabled = true;
+    private boolean metadataCacheEnabled = true;
 
     public CatalogType getCatalogType()
     {
@@ -242,6 +256,19 @@ public class IcebergConfig
         return this;
     }
 
+    public boolean isAddFilesProcedureEnabled()
+    {
+        return addFilesProcedureEnabled;
+    }
+
+    @Config("iceberg.add_files-procedure.enabled")
+    @ConfigDescription("Allow users to call the add_files procedure")
+    public IcebergConfig setAddFilesProcedureEnabled(boolean addFilesProcedureEnabled)
+    {
+        this.addFilesProcedureEnabled = addFilesProcedureEnabled;
+        return this;
+    }
+
     public Optional<String> getHiveCatalogName()
     {
         return hiveCatalogName;
@@ -312,6 +339,20 @@ public class IcebergConfig
         return this;
     }
 
+    @NotNull
+    public DataSize getIdleWriterMinFileSize()
+    {
+        return idleWriterMinFileSize;
+    }
+
+    @Config("iceberg.idle-writer-min-file-size")
+    @ConfigDescription("Minimum data written by a single partition writer before it can be consider as 'idle' and could be closed by the engine")
+    public IcebergConfig setIdleWriterMinFileSize(DataSize idleWriterMinFileSize)
+    {
+        this.idleWriterMinFileSize = idleWriterMinFileSize;
+        return this;
+    }
+
     public boolean isDeleteSchemaLocationsFallback()
     {
         return this.deleteSchemaLocationsFallback;
@@ -341,6 +382,21 @@ public class IcebergConfig
         return minimumAssignedSplitWeight;
     }
 
+    @Deprecated
+    public boolean isHideMaterializedViewStorageTable()
+    {
+        return hideMaterializedViewStorageTable;
+    }
+
+    @Deprecated
+    @Config("iceberg.materialized-views.hide-storage-table")
+    @ConfigDescription("Hide materialized view storage tables in metastore")
+    public IcebergConfig setHideMaterializedViewStorageTable(boolean hideMaterializedViewStorageTable)
+    {
+        this.hideMaterializedViewStorageTable = hideMaterializedViewStorageTable;
+        return this;
+    }
+
     @NotNull
     public Optional<String> getMaterializedViewsStorageSchema()
     {
@@ -365,6 +421,80 @@ public class IcebergConfig
     public IcebergConfig setSortedWritingEnabled(boolean sortedWritingEnabled)
     {
         this.sortedWritingEnabled = sortedWritingEnabled;
+        return this;
+    }
+
+    @Config("iceberg.query-partition-filter-required")
+    @ConfigDescription("Require a filter on at least one partition column")
+    public IcebergConfig setQueryPartitionFilterRequired(boolean queryPartitionFilterRequired)
+    {
+        this.queryPartitionFilterRequired = queryPartitionFilterRequired;
+        return this;
+    }
+
+    public boolean isQueryPartitionFilterRequired()
+    {
+        return queryPartitionFilterRequired;
+    }
+
+    public Set<String> getQueryPartitionFilterRequiredSchemas()
+    {
+        return queryPartitionFilterRequiredSchemas;
+    }
+
+    @Config("iceberg.query-partition-filter-required-schemas")
+    @ConfigDescription("List of schemas for which filter on partition column is enforced")
+    public IcebergConfig setQueryPartitionFilterRequiredSchemas(Set<String> queryPartitionFilterRequiredSchemas)
+    {
+        this.queryPartitionFilterRequiredSchemas = queryPartitionFilterRequiredSchemas.stream()
+                .map(value -> value.toLowerCase(ENGLISH))
+                .collect(toImmutableSet());
+        return this;
+    }
+
+    @Min(0)
+    public int getSplitManagerThreads()
+    {
+        return splitManagerThreads;
+    }
+
+    @Config("iceberg.split-manager-threads")
+    @ConfigDescription("Number of threads to use for generating splits")
+    public IcebergConfig setSplitManagerThreads(int splitManagerThreads)
+    {
+        this.splitManagerThreads = splitManagerThreads;
+        return this;
+    }
+
+    public boolean isIncrementalRefreshEnabled()
+    {
+        return incrementalRefreshEnabled;
+    }
+
+    @Config("iceberg.incremental-refresh-enabled")
+    @ConfigDescription("Enable Incremental refresh for MVs backed by Iceberg tables, when possible")
+    public IcebergConfig setIncrementalRefreshEnabled(boolean incrementalRefreshEnabled)
+    {
+        this.incrementalRefreshEnabled = incrementalRefreshEnabled;
+        return this;
+    }
+
+    @AssertFalse(message = "iceberg.materialized-views.storage-schema may only be set when iceberg.materialized-views.hide-storage-table is set to false")
+    public boolean isStorageSchemaSetWhenHidingIsEnabled()
+    {
+        return hideMaterializedViewStorageTable && materializedViewsStorageSchema.isPresent();
+    }
+
+    public boolean isMetadataCacheEnabled()
+    {
+        return metadataCacheEnabled;
+    }
+
+    @Config("iceberg.metadata-cache.enabled")
+    @ConfigDescription("Enables in-memory caching of metadata files on coordinator if fs.cache.enabled is not set to true")
+    public IcebergConfig setMetadataCacheEnabled(boolean metadataCacheEnabled)
+    {
+        this.metadataCacheEnabled = metadataCacheEnabled;
         return this;
     }
 }

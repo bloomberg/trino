@@ -18,6 +18,9 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
 import io.airlift.units.Duration;
 import io.confluent.kafka.schemaregistry.ParsedSchema;
+import io.confluent.kafka.schemaregistry.client.rest.entities.Metadata;
+import io.confluent.kafka.schemaregistry.client.rest.entities.RuleSet;
+import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaEntity;
 import io.confluent.kafka.schemaregistry.client.rest.entities.SchemaReference;
 import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 import io.trino.tempto.ProductTest;
@@ -46,6 +49,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.context.ThreadLocalTestContextHolder.testContext;
@@ -68,15 +72,15 @@ public class TestKafkaAvroReadsSmokeTest
     private static final String KAFKA_SCHEMA = "product_tests";
 
     private static final String ALL_DATATYPES_AVRO_TOPIC_NAME = "read_all_datatypes_avro";
-    private static final String ALL_DATATYPE_SCHEMA_PATH = "/docker/presto-product-tests/conf/presto/etc/catalog/kafka/all_datatypes_avro_schema.avsc";
+    private static final String ALL_DATATYPE_SCHEMA_PATH = "/docker/trino-product-tests/conf/trino/etc/catalog/kafka/all_datatypes_avro_schema.avsc";
 
     private static final String ALL_NULL_AVRO_TOPIC_NAME = "read_all_null_avro";
 
     private static final String STRUCTURAL_AVRO_TOPIC_NAME = "read_structural_datatype_avro";
-    private static final String STRUCTURAL_SCHEMA_PATH = "/docker/presto-product-tests/conf/presto/etc/catalog/kafka/structural_datatype_avro_schema.avsc";
+    private static final String STRUCTURAL_SCHEMA_PATH = "/docker/trino-product-tests/conf/trino/etc/catalog/kafka/structural_datatype_avro_schema.avsc";
 
     private static final String AVRO_SCHEMA_WITH_REFERENCES_TOPIC_NAME = "schema_with_references_avro";
-    private static final String AVRO_SCHEMA_WITH_REFERENCES_SCHEMA_PATH = "/docker/presto-product-tests/conf/presto/etc/catalog/kafka/schema_with_references.avsc";
+    private static final String AVRO_SCHEMA_WITH_REFERENCES_SCHEMA_PATH = "/docker/trino-product-tests/conf/trino/etc/catalog/kafka/schema_with_references.avsc";
 
     @Test(groups = {KAFKA, PROFILE_SPECIFIC_TESTS}, dataProvider = "catalogs")
     public void testSelectPrimitiveDataType(KafkaCatalog kafkaCatalog)
@@ -332,9 +336,51 @@ public class TestKafkaAvroReadsSmokeTest
         }
 
         @Override
+        public Integer version()
+        {
+            return 1;
+        }
+
+        @Override
         public List<SchemaReference> references()
         {
             return schemaReferences;
+        }
+
+        @Override
+        public Metadata metadata()
+        {
+            return new Metadata(null, null, Set.of());
+        }
+
+        @Override
+        public RuleSet ruleSet()
+        {
+            return new RuleSet(null, null);
+        }
+
+        @Override
+        public ParsedSchema copy()
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ParsedSchema copy(Integer version)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ParsedSchema copy(Metadata metadata, RuleSet ruleSet)
+        {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public ParsedSchema copy(Map<SchemaEntity, Set<String>> tagsToAdd, Map<SchemaEntity, Set<String>> tagsToRemove)
+        {
+            throw new UnsupportedOperationException();
         }
 
         @Override

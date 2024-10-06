@@ -16,7 +16,6 @@ package io.trino.plugin.elasticsearch;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.net.HostAndPort;
 import io.trino.Session;
 import io.trino.spi.type.VarcharType;
 import io.trino.sql.planner.plan.LimitNode;
@@ -25,72 +24,58 @@ import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
-import io.trino.tpch.TpchTable;
-import org.apache.http.HttpHost;
-import org.apache.http.entity.ContentType;
-import org.apache.http.nio.entity.NStringEntity;
-import org.elasticsearch.client.RestClient;
+import org.elasticsearch.client.Request;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
-import static io.trino.plugin.elasticsearch.ElasticsearchQueryRunner.createElasticsearchQueryRunner;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class BaseElasticsearchConnectorTest
         extends BaseConnectorTest
 {
-    private final String image;
-    private final String catalogName;
-    private ElasticsearchServer elasticsearch;
-    protected RestHighLevelClient client;
+    private ElasticsearchServer server;
+    private RestHighLevelClient client;
 
-    BaseElasticsearchConnectorTest(String image, String catalogName)
+    BaseElasticsearchConnectorTest(ElasticsearchServer server)
     {
-        this.image = image;
-        this.catalogName = catalogName;
+        this.server = requireNonNull(server, "server is null");
+        this.client = server.getClient();
     }
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        elasticsearch = new ElasticsearchServer(image, ImmutableMap.of());
-
-        HostAndPort address = elasticsearch.getAddress();
-        client = new RestHighLevelClient(RestClient.builder(new HttpHost(address.getHost(), address.getPort())));
-
-        return createElasticsearchQueryRunner(
-                elasticsearch.getAddress(),
-                TpchTable.getTables(),
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                3,
-                catalogName);
+        return ElasticsearchQueryRunner.builder(server)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public final void destroy()
             throws IOException
     {
-        elasticsearch.stop();
-        elasticsearch = null;
+        server.stop();
+        server = null;
         client.close();
         client = null;
     }
@@ -100,29 +85,29 @@ public abstract class BaseElasticsearchConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ADD_COLUMN,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_CREATE_SCHEMA,
-                    SUPPORTS_CREATE_TABLE,
-                    SUPPORTS_CREATE_VIEW,
-                    SUPPORTS_DELETE,
-                    SUPPORTS_INSERT,
-                    SUPPORTS_LIMIT_PUSHDOWN,
-                    SUPPORTS_MERGE,
-                    SUPPORTS_RENAME_COLUMN,
-                    SUPPORTS_RENAME_TABLE,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_UPDATE -> false;
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_SCHEMA,
+                 SUPPORTS_CREATE_TABLE,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_INSERT,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
 
     /**
      * This method overrides the default values used for the data provider
-     * of the test {@link AbstractTestQueries#testLargeIn(int)} by taking
+     * of the test {@link AbstractTestQueries#testLargeIn()} by taking
      * into account that by default Elasticsearch supports only up to `1024`
      * clauses in query.
      * <p>
@@ -140,6 +125,7 @@ public abstract class BaseElasticsearchConnectorTest
     @Test
     public void testWithoutBackpressure()
     {
+        String catalogName = getSession().getCatalog().orElseThrow();
         assertQuerySucceeds("SELECT * FROM orders");
         // Check that JMX stats show no sign of backpressure
         assertQueryReturnsEmptyResult(format("SELECT 1 FROM jmx.current.\"trino.plugin.elasticsearch.client:*name=%s*\" WHERE \"backpressurestats.alltime.count\" > 0", catalogName));
@@ -195,9 +181,11 @@ public abstract class BaseElasticsearchConnectorTest
                 "TopNPartial\\[count = 5, orderBy = \\[nationkey DESC");
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
+        String catalogName = getSession().getCatalog().orElseThrow();
         assertThat(computeActual("SHOW CREATE TABLE orders").getOnlyValue())
                 .isEqualTo(format("CREATE TABLE %s.tpch.orders (\n", catalogName) +
                         "   clerk varchar,\n" +
@@ -216,7 +204,7 @@ public abstract class BaseElasticsearchConnectorTest
     @Override
     public void testShowColumns()
     {
-        assertThat(query("SHOW COLUMNS FROM orders")).matches(getDescribeOrdersResult());
+        assertThat(query("SHOW COLUMNS FROM orders")).result().matches(getDescribeOrdersResult());
     }
 
     @Test
@@ -633,7 +621,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(null, null, "\"Check out the bi-weekly Trino Community Broadcast https://trino.io/broadcast/\"", null, null, null, "5309")
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
 
         MaterializedResult nestedRows = computeActual("" +
                 "SELECT " +
@@ -652,7 +640,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(null, null, "\"Join the Trino Slack: https://trino.io/slack.html\"", null, null, null, "867")
                 .build();
 
-        assertEquals(nestedRows.getMaterializedRows(), nestedExpected.getMaterializedRows());
+        assertThat(nestedRows.getMaterializedRows()).isEqualTo(nestedExpected.getMaterializedRows());
 
         MaterializedResult arrayRows = computeActual("" +
                 "SELECT " +
@@ -671,7 +659,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(null, null, "\"If you like Presto, you'll love Trino: https://trino.io/slack.html\"", null, null, null, "321")
                 .build();
 
-        assertEquals(arrayRows.getMaterializedRows(), arrayExpected.getMaterializedRows());
+        assertThat(arrayRows.getMaterializedRows()).isEqualTo(arrayExpected.getMaterializedRows());
 
         MaterializedResult rawRows = computeActual("" +
                 "SELECT " +
@@ -690,7 +678,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(null, null, "\"The founders and core contributors of Presto, and are now working on Trino: https://trino.io/blog/2020/12/27/announcing-trino.html\"", null, null, null, "654")
                 .build();
 
-        assertEquals(rawRows.getMaterializedRows(), rawRowsExpected.getMaterializedRows());
+        assertThat(rawRows.getMaterializedRows()).isEqualTo(rawRowsExpected.getMaterializedRows());
     }
 
     @Test
@@ -794,7 +782,7 @@ public abstract class BaseElasticsearchConnectorTest
         assertThat(rows.getTypes())
                 .hasOnlyElementsOfType(VarcharType.class);
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
 
         deleteIndex(indexName);
     }
@@ -853,7 +841,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row("\"dGVzdA==\"", "true", "123")
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
         assertThat(rows.getTypes())
                 .hasOnlyElementsOfType(VarcharType.class);
 
@@ -885,6 +873,8 @@ public abstract class BaseElasticsearchConnectorTest
                 "}";
 
         createIndex(indexName, mapping);
+
+        assertQueryReturnsEmptyResult("SHOW TABLES LIKE '" + indexName + "'");
 
         index(indexName, ImmutableMap.of("array_raw_field", "test"));
 
@@ -1203,7 +1193,7 @@ public abstract class BaseElasticsearchConnectorTest
                         123456.78d)
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1233,7 +1223,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(1L)
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1380,7 +1370,7 @@ public abstract class BaseElasticsearchConnectorTest
                 FROM scaled_float_type
                 WHERE scaled_float_column = 123.46
                 """))
-                .matches(resultBuilder(getSession(), ImmutableList.of(VARCHAR, DOUBLE))
+                .result().matches(resultBuilder(getSession(), ImmutableList.of(VARCHAR, DOUBLE))
                         .row("bar", 123.46d)
                         .build());
     }
@@ -1423,7 +1413,7 @@ public abstract class BaseElasticsearchConnectorTest
                 .row(1.0f, 1.0d, 1, 1L)
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1547,6 +1537,38 @@ public abstract class BaseElasticsearchConnectorTest
     }
 
     @Test
+    public void testFiltersCharset()
+            throws IOException
+    {
+        String indexName = "filter_charset_pushdown";
+
+        @Language("JSON")
+        String mappings = """
+                {
+                  "properties": {
+                    "keyword_column":   { "type": "keyword" },
+                    "text_column":      { "type": "text" }
+                  }
+                }
+                """;
+
+        createIndex(indexName, mappings);
+
+        index(indexName, ImmutableMap.<String, Object>builder()
+                .put("keyword_column", "Türkiye")
+                .put("text_column", "Türkiye")
+                .buildOrThrow());
+
+        assertQuery("SELECT count(*) FROM filter_charset_pushdown WHERE keyword_column = 'Türkiye'", "VALUES 1");
+        assertQuery("SELECT count(*) FROM filter_charset_pushdown WHERE keyword_column = 'bar'", "VALUES 0");
+        assertQuery("SELECT count(*) FROM filter_charset_pushdown WHERE text_column = 'Türkiye'", "VALUES 1");
+        assertQuery("SELECT count(*) FROM filter_charset_pushdown WHERE text_column = 'some'", "VALUES 0");
+
+        assertQuery("SELECT keyword_column FROM filter_charset_pushdown WHERE keyword_column = 'Türkiye'", "VALUES ('Türkiye')");
+        assertQuery("SELECT text_column FROM filter_charset_pushdown WHERE text_column = 'Türkiye'", "VALUES ('Türkiye')");
+    }
+
+    @Test
     public void testLimitPushdown()
             throws IOException
     {
@@ -1619,7 +1641,7 @@ public abstract class BaseElasticsearchConnectorTest
                         LocalDateTime.of(1970, 1, 1, 0, 0), "1.2.3.4", "2001:db8::1:0:0:1")
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1689,7 +1711,7 @@ public abstract class BaseElasticsearchConnectorTest
                         LocalDateTime.of(1970, 1, 1, 0, 0), "1.2.3.4", "2001:db8::1:0:0:1")
                 .build();
 
-        assertEquals(rows.getMaterializedRows(), expected.getMaterializedRows());
+        assertThat(rows.getMaterializedRows()).isEqualTo(expected.getMaterializedRows());
     }
 
     @Test
@@ -1771,7 +1793,8 @@ public abstract class BaseElasticsearchConnectorTest
         testSelectInformationSchemaColumns();
     }
 
-    @Test(enabled = false) // TODO (https://github.com/trinodb/trino/issues/2428)
+    @Test // TODO (https://github.com/trinodb/trino/issues/2428)
+    @Disabled
     public void testMultiIndexAlias()
             throws IOException
     {
@@ -1800,7 +1823,7 @@ public abstract class BaseElasticsearchConnectorTest
         createIndex(indexName, mappings);
 
         assertQuery(format("SELECT column_name FROM information_schema.columns WHERE table_name = '%s'", indexName), "VALUES ('dummy_column')");
-        assertTrue(computeActual("SHOW TABLES").getOnlyColumnAsSet().contains(indexName));
+        assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet()).contains(indexName);
         assertQueryReturnsEmptyResult("SELECT * FROM " + indexName);
     }
 
@@ -1835,6 +1858,8 @@ public abstract class BaseElasticsearchConnectorTest
     @Test
     public void testQueryTableFunction()
     {
+        String catalogName = getSession().getCatalog().orElseThrow();
+
         // select single record
         assertQuery("SELECT json_query(result, 'lax $[0][0].hits.hits._source') " +
                         format("FROM TABLE(%s.system.raw_query(", catalogName) +
@@ -1892,68 +1917,79 @@ public abstract class BaseElasticsearchConnectorTest
                 "VALUES '[]'");
 
         // syntax error
-        assertThatThrownBy(() -> query("SELECT * " +
+        assertThat(query("SELECT * " +
                 format("FROM TABLE(%s.system.raw_query(", catalogName) +
                 "schema => 'tpch', " +
                 "index => 'nation', " +
                 "query => 'wrong syntax')) t(result)"))
-                .hasMessageContaining("json_parse_exception");
+                .failure().hasMessageContaining("json_parse_exception");
     }
 
     protected void assertTableDoesNotExist(String name)
     {
+        String catalogName = getSession().getCatalog().orElseThrow();
         assertQueryReturnsEmptyResult(format("SELECT * FROM information_schema.columns WHERE table_name = '%s'", name));
-        assertFalse(computeActual("SHOW TABLES").getOnlyColumnAsSet().contains(name));
+        assertThat(computeActual("SHOW TABLES").getOnlyColumnAsSet()).doesNotContain(name);
         assertQueryFails("SELECT * FROM " + name, ".*Table '" + catalogName + ".tpch." + name + "' does not exist");
     }
 
-    protected abstract String indexEndpoint(String index, String docId);
+    protected String indexEndpoint(String index, String docId)
+    {
+        return format("/%s/_doc/%s", index, docId);
+    }
 
     private void index(String index, Map<String, Object> document)
             throws IOException
     {
         String json = new ObjectMapper().writeValueAsString(document);
         String endpoint = format("%s?refresh", indexEndpoint(index, String.valueOf(System.nanoTime())));
-        client.getLowLevelClient()
-                .performRequest("PUT", endpoint, ImmutableMap.of(), new NStringEntity(json, ContentType.APPLICATION_JSON));
+
+        Request request = new Request("PUT", endpoint);
+        request.setJsonEntity(json);
+
+        client.getLowLevelClient().performRequest(request);
     }
 
     private void addAlias(String index, String alias)
             throws IOException
     {
         client.getLowLevelClient()
-                .performRequest("PUT", format("/%s/_alias/%s", index, alias));
+                .performRequest(new Request("PUT", format("/%s/_alias/%s", index, alias)));
 
         refreshIndex(alias);
     }
 
-    protected abstract String indexMapping(@Language("JSON") String properties);
+    protected String indexMapping(@Language("JSON") String properties)
+    {
+        return "{\"mappings\": " + properties + "}";
+    }
 
     private void createIndex(String indexName)
             throws IOException
     {
-        client.getLowLevelClient().performRequest("PUT", "/" + indexName);
+        client.getLowLevelClient().performRequest(new Request("PUT", "/" + indexName));
     }
 
     private void createIndex(String indexName, @Language("JSON") String properties)
             throws IOException
     {
         String mappings = indexMapping(properties);
-        client.getLowLevelClient()
-                .performRequest("PUT", "/" + indexName, ImmutableMap.of(), new NStringEntity(mappings, ContentType.APPLICATION_JSON));
+
+        Request request = new Request("PUT", "/" + indexName);
+        request.setJsonEntity(mappings);
+
+        client.getLowLevelClient().performRequest(request);
     }
 
     private void refreshIndex(String index)
             throws IOException
     {
-        client.getLowLevelClient()
-                .performRequest("GET", format("/%s/_refresh", index));
+        client.getLowLevelClient().performRequest(new Request("GET", format("/%s/_refresh", index)));
     }
 
     private void deleteIndex(String indexName)
             throws IOException
     {
-        client.getLowLevelClient()
-                .performRequest("DELETE", "/" + indexName);
+        client.getLowLevelClient().performRequest(new Request("DELETE", "/" + indexName));
     }
 }

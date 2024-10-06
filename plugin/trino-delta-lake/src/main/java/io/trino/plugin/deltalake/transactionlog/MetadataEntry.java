@@ -16,6 +16,7 @@ package io.trino.plugin.deltalake.transactionlog;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.ColumnMappingMode;
 import io.trino.spi.TrinoException;
@@ -25,14 +26,17 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
+import java.util.UUID;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.deltalake.DeltaLakeErrorCode.DELTA_LAKE_INVALID_SCHEMA;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.COLUMN_MAPPING_MODE_CONFIGURATION_KEY;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.DELETION_VECTORS_CONFIGURATION_KEY;
 import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.MAX_COLUMN_ID_CONFIGURATION_KEY;
 import static java.lang.Long.parseLong;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
+import static java.util.Objects.requireNonNull;
 
 public class MetadataEntry
 {
@@ -164,12 +168,14 @@ public class MetadataEntry
     public static Map<String, String> configurationForNewTable(
             Optional<Long> checkpointInterval,
             Optional<Boolean> changeDataFeedEnabled,
+            boolean deletionVectorsEnabled,
             ColumnMappingMode columnMappingMode,
             OptionalInt maxFieldId)
     {
         ImmutableMap.Builder<String, String> configurationMapBuilder = ImmutableMap.builder();
         checkpointInterval.ifPresent(interval -> configurationMapBuilder.put(DELTA_CHECKPOINT_INTERVAL_PROPERTY, String.valueOf(interval)));
         changeDataFeedEnabled.ifPresent(enabled -> configurationMapBuilder.put(DELTA_CHANGE_DATA_FEED_ENABLED_PROPERTY, String.valueOf(enabled)));
+        configurationMapBuilder.put(DELETION_VECTORS_CONFIGURATION_KEY, Boolean.toString(deletionVectorsEnabled));
         switch (columnMappingMode) {
             case NONE -> { /* do nothing */ }
             case ID, NAME -> {
@@ -215,56 +221,83 @@ public class MetadataEntry
                 id, name, description, format, schemaString, partitionColumns, configuration, createdTime);
     }
 
-    public static class Format
+    public static Builder builder()
     {
-        private final String provider;
-        private final Map<String, String> options;
+        return new Builder();
+    }
 
-        @JsonCreator
-        public Format(
-                @JsonProperty("provider") String provider,
-                @JsonProperty("options") Map<String, String> options)
+    public static Builder builder(MetadataEntry metadataEntry)
+    {
+        return new Builder(metadataEntry);
+    }
+
+    public static class Builder
+    {
+        private String id = UUID.randomUUID().toString();
+        private String name;
+        private Optional<String> description = Optional.empty();
+        private Format format = new Format("parquet", ImmutableMap.of());
+        private String schemaString;
+        private List<String> partitionColumns = ImmutableList.of();
+        private Map<String, String> configuration;
+        private long createdTime;
+
+        private Builder() {}
+
+        private Builder(MetadataEntry metadataEntry)
         {
-            this.provider = provider;
-            this.options = options;
+            requireNonNull(metadataEntry, "metadataEntry is null");
+            id = metadataEntry.id;
+            name = metadataEntry.name;
+            description = Optional.ofNullable(metadataEntry.description);
+            format = metadataEntry.format;
+            schemaString = metadataEntry.schemaString;
+            partitionColumns = ImmutableList.copyOf(metadataEntry.partitionColumns);
+            configuration = ImmutableMap.copyOf(metadataEntry.configuration);
+            createdTime = metadataEntry.createdTime;
         }
 
-        @JsonProperty
-        public String getProvider()
+        public Builder setId(String id)
         {
-            return provider;
+            this.id = id;
+            return this;
         }
 
-        @JsonProperty
-        public Map<String, String> getOptions()
+        public Builder setDescription(Optional<String> description)
         {
-            return options;
+            this.description = description;
+            return this;
         }
 
-        @Override
-        public boolean equals(Object o)
+        public Builder setSchemaString(String schemaString)
         {
-            if (this == o) {
-                return true;
-            }
-            if (o == null || getClass() != o.getClass()) {
-                return false;
-            }
-            Format format = (Format) o;
-            return Objects.equals(provider, format.provider) &&
-                    Objects.equals(options, format.options);
+            this.schemaString = schemaString;
+            return this;
         }
 
-        @Override
-        public int hashCode()
+        public Builder setPartitionColumns(List<String> partitionColumns)
         {
-            return Objects.hash(provider, options);
+            this.partitionColumns = ImmutableList.copyOf(partitionColumns);
+            return this;
         }
 
-        @Override
-        public String toString()
+        public Builder setConfiguration(Map<String, String> configuration)
         {
-            return format("MetadataEntry.Format{provider=%s, options=%s}", provider, options);
+            this.configuration = ImmutableMap.copyOf(configuration);
+            return this;
+        }
+
+        public Builder setCreatedTime(long createdTime)
+        {
+            this.createdTime = createdTime;
+            return this;
+        }
+
+        public MetadataEntry build()
+        {
+            return new MetadataEntry(id, name, description.orElse(null), format, schemaString, partitionColumns, configuration, createdTime);
         }
     }
+
+    public record Format(String provider, Map<String, String> options) {}
 }

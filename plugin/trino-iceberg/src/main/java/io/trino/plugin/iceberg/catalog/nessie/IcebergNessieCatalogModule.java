@@ -22,10 +22,14 @@ import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.trino.plugin.iceberg.catalog.IcebergTableOperationsProvider;
 import io.trino.plugin.iceberg.catalog.TrinoCatalogFactory;
 import org.apache.iceberg.nessie.NessieIcebergClient;
+import org.projectnessie.client.NessieClientBuilder;
 import org.projectnessie.client.api.NessieApiV1;
-import org.projectnessie.client.http.HttpClientBuilder;
+import org.projectnessie.client.api.NessieApiV2;
+import org.projectnessie.client.auth.BearerAuthenticationProvider;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
+import static java.lang.Math.toIntExact;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class IcebergNessieCatalogModule
@@ -39,17 +43,30 @@ public class IcebergNessieCatalogModule
         newExporter(binder).export(IcebergTableOperationsProvider.class).withGeneratedName();
         binder.bind(TrinoCatalogFactory.class).to(TrinoNessieCatalogFactory.class).in(Scopes.SINGLETON);
         newExporter(binder).export(TrinoCatalogFactory.class).withGeneratedName();
+        closingBinder(binder).registerCloseable(NessieIcebergClient.class);
     }
 
     @Provides
     @Singleton
     public static NessieIcebergClient createNessieIcebergClient(IcebergNessieCatalogConfig icebergNessieCatalogConfig)
     {
-        return new NessieIcebergClient(
-                HttpClientBuilder.builder()
-                        .withUri(icebergNessieCatalogConfig.getServerUri())
-                        .withEnableApiCompatibilityCheck(false)
-                        .build(NessieApiV1.class),
+        NessieClientBuilder builder = NessieClientBuilder.createClientBuilderFromSystemSettings()
+                .withUri(icebergNessieCatalogConfig.getServerUri())
+                .withDisableCompression(!icebergNessieCatalogConfig.isCompressionEnabled())
+                .withReadTimeout(toIntExact(icebergNessieCatalogConfig.getReadTimeout().toMillis()))
+                .withConnectionTimeout(toIntExact(icebergNessieCatalogConfig.getConnectionTimeout().toMillis()));
+
+        icebergNessieCatalogConfig.getBearerToken()
+                .ifPresent(token -> builder.withAuthentication(BearerAuthenticationProvider.create(token)));
+
+        IcebergNessieCatalogConfig.ClientApiVersion clientApiVersion = icebergNessieCatalogConfig.getClientAPIVersion()
+                .orElseGet(icebergNessieCatalogConfig::inferVersionFromURI);
+        NessieApiV1 api = switch (clientApiVersion) {
+            case V1 -> builder.build(NessieApiV1.class);
+            case V2 -> builder.build(NessieApiV2.class);
+        };
+
+        return new NessieIcebergClient(api,
                 icebergNessieCatalogConfig.getDefaultReferenceName(),
                 null,
                 ImmutableMap.of());

@@ -15,6 +15,9 @@ package io.trino.plugin.hive.metastore;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.DoNotCall;
+import io.trino.metastore.Partition;
+import io.trino.metastore.Table;
 import io.trino.spi.connector.SchemaTableName;
 
 import java.util.List;
@@ -43,6 +46,7 @@ public class HivePageSinkMetadata
     }
 
     @JsonCreator
+    @DoNotCall // For JSON deserialization only
     public static HivePageSinkMetadata deserialize(
             @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
             @JsonProperty("table") Optional<Table> table,

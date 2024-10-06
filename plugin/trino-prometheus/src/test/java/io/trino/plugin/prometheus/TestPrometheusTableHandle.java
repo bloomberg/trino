@@ -15,14 +15,16 @@ package io.trino.plugin.prometheus;
 
 import io.airlift.json.JsonCodec;
 import io.airlift.testing.EquivalenceTester;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+
+import java.util.Optional;
 
 import static io.airlift.json.JsonCodec.jsonCodec;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestPrometheusTableHandle
 {
-    private final PrometheusTableHandle tableHandle = new PrometheusTableHandle("schemaName", "tableName");
+    private final PrometheusTableHandle tableHandle = newTableHandle("schemaName", "tableName");
 
     @Test
     public void testJsonRoundTrip()
@@ -30,16 +32,21 @@ public class TestPrometheusTableHandle
         JsonCodec<PrometheusTableHandle> codec = jsonCodec(PrometheusTableHandle.class);
         String json = codec.toJson(tableHandle);
         PrometheusTableHandle copy = codec.fromJson(json);
-        assertEquals(copy, tableHandle);
+        assertThat(copy).isEqualTo(tableHandle);
     }
 
     @Test
     public void testEquivalence()
     {
         EquivalenceTester.equivalenceTester()
-                .addEquivalentGroup(new PrometheusTableHandle("schema", "table"), new PrometheusTableHandle("schema", "table"))
-                .addEquivalentGroup(new PrometheusTableHandle("schemaX", "table"), new PrometheusTableHandle("schemaX", "table"))
-                .addEquivalentGroup(new PrometheusTableHandle("schema", "tableX"), new PrometheusTableHandle("schema", "tableX"))
+                .addEquivalentGroup(newTableHandle("schema", "table"), newTableHandle("schema", "table"))
+                .addEquivalentGroup(newTableHandle("schemaX", "table"), newTableHandle("schemaX", "table"))
+                .addEquivalentGroup(newTableHandle("schema", "tableX"), newTableHandle("schema", "tableX"))
                 .check();
+    }
+
+    public static PrometheusTableHandle newTableHandle(String schemaName, String tableName)
+    {
+        return new PrometheusTableHandle(schemaName, tableName, Optional.empty());
     }
 }

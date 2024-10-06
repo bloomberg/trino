@@ -17,22 +17,25 @@ import com.google.common.collect.ImmutableList;
 import io.trino.client.Warning;
 import io.trino.spi.WarningCode;
 import io.trino.testing.QueryRunner;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.spi.connector.StandardWarningCode.TOO_MANY_STAGES;
+import static org.assertj.core.api.Fail.fail;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.fail;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestWarnings
 {
     private static final int STAGE_COUNT_WARNING_THRESHOLD = 20;
@@ -42,7 +45,7 @@ public class TestWarnings
     public void setUp()
             throws Exception
     {
-        queryRunner = TpchQueryRunnerBuilder.builder()
+        queryRunner = TpchQueryRunner.builder()
                 .addExtraProperty("query.stage-count-warning-threshold", String.valueOf(STAGE_COUNT_WARNING_THRESHOLD))
                 .build();
     }

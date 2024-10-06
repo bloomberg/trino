@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.SettableFuture;
+import io.opentelemetry.api.trace.Span;
 import io.trino.client.NodeVersion;
 import io.trino.cost.StatsAndCosts;
 import io.trino.execution.buffer.PipelinedOutputBuffers;
@@ -26,7 +27,6 @@ import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
 import io.trino.operator.RetryPolicy;
 import io.trino.spi.QueryId;
-import io.trino.spi.type.Type;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.PlanFragment;
@@ -42,6 +42,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -59,22 +60,21 @@ import static io.airlift.tracing.Tracing.noopTracer;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.execution.SqlStage.createSqlStage;
 import static io.trino.execution.buffer.PipelinedOutputBuffers.BufferType.ARBITRARY;
-import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
+import static io.trino.type.UnknownType.UNKNOWN;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.MINUTES;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertSame;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSqlStage
 {
     private ExecutorService executor;
@@ -124,6 +124,7 @@ public class TestSqlStage
                 nodeTaskMap,
                 executor,
                 noopTracer(),
+                Span.getInvalid(),
                 new SplitSchedulerStats());
 
         // add listener that fetches stage info when the final status is available
@@ -181,7 +182,7 @@ public class TestSqlStage
         // wait for some tasks to be created, and then abort the stage
         countDownLatch.await();
         stage.finish();
-        assertTrue(createdTasks.size() >= 1000);
+        assertThat(createdTasks.size() >= 1000).isTrue();
 
         StageInfo stageInfo = stage.getStageInfo();
         // stage should not report final info because all tasks have a running driver, but
@@ -190,17 +191,21 @@ public class TestSqlStage
             // Tasks can race with the stage finish operation and be cancelled fully before
             // starting any splits running. These can report either cancelling or fully cancelled
             // depending on the timing of TaskInfo being created
-            TaskState taskState = info.getTaskStatus().getState();
-            int runningSplits = info.getTaskStatus().getRunningPartitionedDrivers();
+            TaskState taskState = info.taskStatus().getState();
+            int runningSplits = info.taskStatus().getRunningPartitionedDrivers();
             if (runningSplits == 0) {
-                assertTrue(taskState == TaskState.CANCELING || taskState == TaskState.CANCELED, "unexpected task state: " + taskState);
+                assertThat(taskState == TaskState.CANCELING || taskState == TaskState.CANCELED)
+                        .describedAs("unexpected task state: " + taskState)
+                        .isTrue();
             }
             else {
-                assertEquals(taskState, TaskState.CANCELING);
-                assertTrue(runningSplits > 0, "must be running splits to not be already canceled");
+                assertThat(taskState).isEqualTo(TaskState.CANCELING);
+                assertThat(runningSplits > 0)
+                        .describedAs("must be running splits to not be already canceled")
+                        .isTrue();
             }
         }
-        assertFalse(finalStageInfo.isDone());
+        assertThat(finalStageInfo.isDone()).isFalse();
 
         // cancel the background thread adding tasks
         addTasksTask.cancel(true);
@@ -211,14 +216,14 @@ public class TestSqlStage
         // finishing all running splits on the task should trigger termination complete
         createdTasks.forEach(task -> {
             task.clearSplits();
-            assertEquals(task.getTaskStatus().getState(), TaskState.CANCELED);
+            assertThat(task.getTaskStatus().getState()).isEqualTo(TaskState.CANCELED);
         });
 
         // once the final stage info is available, verify that it is complete
         stageInfo = finalStageInfo.get(1, MINUTES);
-        assertFalse(stageInfo.getTasks().isEmpty());
-        assertTrue(stageInfo.isFinalStageInfo());
-        assertSame(stage.getStageInfo(), stageInfo);
+        assertThat(stageInfo.getTasks()).isNotEmpty();
+        assertThat(stageInfo.isFinalStageInfo()).isTrue();
+        assertThat(stage.getStageInfo()).isSameAs(stageInfo);
     }
 
     private static PlanFragment createExchangePlanFragment()
@@ -226,25 +231,22 @@ public class TestSqlStage
         PlanNode planNode = new RemoteSourceNode(
                 new PlanNodeId("exchange"),
                 ImmutableList.of(new PlanFragmentId("source")),
-                ImmutableList.of(new Symbol("column")),
+                ImmutableList.of(new Symbol(UNKNOWN, "column")),
                 Optional.empty(),
                 REPARTITION,
                 RetryPolicy.NONE);
 
-        ImmutableMap.Builder<Symbol, Type> types = ImmutableMap.builder();
-        for (Symbol symbol : planNode.getOutputSymbols()) {
-            types.put(symbol, VARCHAR);
-        }
         return new PlanFragment(
                 new PlanFragmentId("exchange_fragment_id"),
                 planNode,
-                types.buildOrThrow(),
+                ImmutableSet.copyOf(planNode.getOutputSymbols()),
                 SOURCE_DISTRIBUTION,
                 Optional.empty(),
                 ImmutableList.of(planNode.getId()),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), planNode.getOutputSymbols()),
                 StatsAndCosts.empty(),
                 ImmutableList.of(),
+                ImmutableMap.of(),
                 Optional.empty());
     }
 }

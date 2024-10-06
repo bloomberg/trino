@@ -14,6 +14,8 @@
  */
 package io.trino.execution;
 
+import com.google.common.collect.ImmutableMap;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.opentelemetry.api.OpenTelemetry;
 import io.trino.Session;
 import io.trino.Session.SessionBuilder;
@@ -25,11 +27,13 @@ import io.trino.security.AccessControlConfig;
 import io.trino.security.AccessControlManager;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.sql.tree.Commit;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.net.URI;
 import java.util.Optional;
@@ -49,12 +53,12 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static io.trino.transaction.InMemoryTransactionManager.createTestTransactionManager;
 import static java.util.Collections.emptyList;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestCommitTask
 {
     private final Metadata metadata = createTestMetadataManager();
@@ -76,14 +80,14 @@ public class TestCommitTask
                 .setTransactionId(transactionManager.beginTransaction(false))
                 .build();
         QueryStateMachine stateMachine = createQueryStateMachine("COMMIT", session, transactionManager);
-        assertTrue(stateMachine.getSession().getTransactionId().isPresent());
-        assertEquals(transactionManager.getAllTransactionInfos().size(), 1);
+        assertThat(stateMachine.getSession().getTransactionId()).isPresent();
+        assertThat(transactionManager.getAllTransactionInfos().size()).isEqualTo(1);
 
-        getFutureValue(new CommitTask(transactionManager).execute(new Commit(), stateMachine, emptyList(), WarningCollector.NOOP));
-        assertTrue(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId());
-        assertFalse(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId().isPresent());
+        getFutureValue(new CommitTask(transactionManager).execute(new Commit(new NodeLocation(1, 1)), stateMachine, emptyList(), WarningCollector.NOOP));
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId()).isTrue();
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId()).isEmpty();
 
-        assertTrue(transactionManager.getAllTransactionInfos().isEmpty());
+        assertThat(transactionManager.getAllTransactionInfos()).isEmpty();
     }
 
     @Test
@@ -96,13 +100,13 @@ public class TestCommitTask
         QueryStateMachine stateMachine = createQueryStateMachine("COMMIT", session, transactionManager);
 
         assertTrinoExceptionThrownBy(
-                () -> getFutureValue(new CommitTask(transactionManager).execute(new Commit(), stateMachine, emptyList(), WarningCollector.NOOP)))
+                () -> getFutureValue(new CommitTask(transactionManager).execute(new Commit(new NodeLocation(1, 1)), stateMachine, emptyList(), WarningCollector.NOOP)))
                 .hasErrorCode(NOT_IN_TRANSACTION);
 
-        assertFalse(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId());
-        assertFalse(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId().isPresent());
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId()).isFalse();
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId()).isEmpty();
 
-        assertTrue(transactionManager.getAllTransactionInfos().isEmpty());
+        assertThat(transactionManager.getAllTransactionInfos()).isEmpty();
     }
 
     @Test
@@ -115,14 +119,14 @@ public class TestCommitTask
                 .build();
         QueryStateMachine stateMachine = createQueryStateMachine("COMMIT", session, transactionManager);
 
-        Future<?> future = new CommitTask(transactionManager).execute(new Commit(), stateMachine, emptyList(), WarningCollector.NOOP);
+        Future<?> future = new CommitTask(transactionManager).execute(new Commit(new NodeLocation(1, 1)), stateMachine, emptyList(), WarningCollector.NOOP);
         assertTrinoExceptionThrownBy(() -> getFutureValue(future))
                 .hasErrorCode(UNKNOWN_TRANSACTION);
 
-        assertTrue(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId()); // Still issue clear signal
-        assertFalse(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId().isPresent());
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).isClearTransactionId()).isTrue(); // Still issue clear signal
+        assertThat(stateMachine.getQueryInfo(Optional.empty()).getStartedTransactionId()).isEmpty();
 
-        assertTrue(transactionManager.getAllTransactionInfos().isEmpty());
+        assertThat(transactionManager.getAllTransactionInfos()).isEmpty();
     }
 
     private QueryStateMachine createQueryStateMachine(String query, Session session, TransactionManager transactionManager)
@@ -136,7 +140,7 @@ public class TestCommitTask
                 new ResourceGroupId("test"),
                 true,
                 transactionManager,
-                new AccessControlManager(transactionManager, emptyEventListenerManager(), new AccessControlConfig(), OpenTelemetry.noop(), DefaultSystemAccessControl.NAME),
+                new AccessControlManager(NodeVersion.UNKNOWN, transactionManager, emptyEventListenerManager(), new AccessControlConfig(), OpenTelemetry.noop(), new SecretsResolver(ImmutableMap.of()), DefaultSystemAccessControl.NAME),
                 executor,
                 metadata,
                 WarningCollector.NOOP,

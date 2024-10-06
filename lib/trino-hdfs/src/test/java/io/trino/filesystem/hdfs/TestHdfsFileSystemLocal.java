@@ -82,6 +82,12 @@ public class TestHdfsFileSystemLocal
         Files.delete(tempDirectory);
     }
 
+    @Override
+    protected boolean supportsCreateExclusive()
+    {
+        return false;
+    }
+
     private void cleanupFiles()
             throws IOException
     {
@@ -101,6 +107,12 @@ public class TestHdfsFileSystemLocal
     protected boolean isHierarchical()
     {
         return true;
+    }
+
+    @Override
+    protected boolean supportsIncompleteWriteNoClobber()
+    {
+        return false;
     }
 
     @Override
@@ -130,4 +142,9 @@ public class TestHdfsFileSystemLocal
     @Test
     @Override
     public void testPaths() {}
+
+    @Disabled("Hdfs does not guarantee lexicographical order when listing files")
+    @Test
+    @Override
+    public void testListLexicographicalOrder() {}
 }

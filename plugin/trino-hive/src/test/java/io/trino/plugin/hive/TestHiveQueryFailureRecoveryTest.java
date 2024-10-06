@@ -13,7 +13,7 @@
  */
 package io.trino.plugin.hive;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.inject.Module;
 import io.trino.operator.RetryPolicy;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangePlugin;
 import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
@@ -21,14 +21,20 @@ import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.plugin.hive.s3.S3HiveQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Map;
 
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
 import static io.trino.testing.TestingNames.randomNameSuffix;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestHiveQueryFailureRecoveryTest
         extends BaseHiveFailureRecoveryTest
 {
@@ -44,43 +50,34 @@ public class TestHiveQueryFailureRecoveryTest
     protected QueryRunner createQueryRunner(
             List<TpchTable<?>> requiredTpchTables,
             Map<String, String> configProperties,
-            Map<String, String> coordinatorProperties)
+            Map<String, String> coordinatorProperties,
+            Module failureInjectionModule)
             throws Exception
     {
         String bucketName = "test-hive-insert-overwrite-" + randomNameSuffix(); // randomizing bucket name to ensure cached TrinoS3FileSystem objects are not reused
-        this.hiveMinioDataLake = new HiveMinioDataLake(bucketName);
+        this.hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
         hiveMinioDataLake.start();
 
-        this.minioStorage = new MinioStorage("test-exchange-spooling-" + randomNameSuffix());
+        this.minioStorage = closeAfterClass(new MinioStorage("test-exchange-spooling-" + randomNameSuffix()));
         minioStorage.start();
 
         return S3HiveQueryRunner.builder(hiveMinioDataLake)
-                .setInitialTables(requiredTpchTables)
                 .setExtraProperties(configProperties)
                 .setCoordinatorProperties(coordinatorProperties)
                 .setAdditionalSetup(runner -> {
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
                 })
-                .setHiveProperties(ImmutableMap.of(
-                        // Streaming upload allocates non trivial amount of memory for buffering (16MB per output file by default).
-                        // When streaming upload is enabled insert into a table with high number of buckets / partitions may cause
-                        // the tests to run out of memory as the buffer space is eagerly allocated for each output file.
-                        "hive.s3.streaming.enabled", "false"))
+                .setAdditionalModule(failureInjectionModule)
+                .setInitialTables(requiredTpchTables)
                 .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
             throws Exception
     {
-        if (hiveMinioDataLake != null) {
-            hiveMinioDataLake.close();
-            hiveMinioDataLake = null;
-        }
-        if (minioStorage != null) {
-            minioStorage.close();
-            minioStorage = null;
-        }
+        hiveMinioDataLake = null; // closed by closeAfterClass
+        minioStorage = null; // closed by closeAfterClass
     }
 }

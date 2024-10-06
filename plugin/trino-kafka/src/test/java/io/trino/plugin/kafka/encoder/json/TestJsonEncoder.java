@@ -18,11 +18,12 @@ import com.google.common.collect.ImmutableList;
 import io.trino.plugin.kafka.KafkaColumnHandle;
 import io.trino.plugin.kafka.encoder.RowEncoderSpec;
 import io.trino.plugin.kafka.encoder.json.format.DateTimeFormat;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 import io.trino.testing.TestingConnectorSession;
 import org.assertj.core.api.ThrowableAssert;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
@@ -60,7 +61,7 @@ public class TestJsonEncoder
     private static void assertUnsupportedColumnTypeException(ThrowableAssert.ThrowingCallable callable)
     {
         assertThatThrownBy(callable)
-                .isInstanceOf(IllegalArgumentException.class)
+                .isInstanceOf(TrinoException.class)
                 .hasMessageMatching("Unsupported column type .* for column .*");
     }
 

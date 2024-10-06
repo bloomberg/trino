@@ -15,11 +15,10 @@ package io.trino.plugin.kinesis;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableList;
-import io.trino.spi.HostAddress;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.ConnectorSplit;
 
-import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
@@ -96,21 +95,15 @@ public class KinesisSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return ImmutableMap.of(
+                "streamName", streamName,
+                "shardId", shardId,
+                "messageDataFormat", messageDataFormat,
+                "compressionCodec", compressionCodec.name(),
+                "start", start,
+                "end", end);
     }
 
     @Override

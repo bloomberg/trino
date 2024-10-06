@@ -21,14 +21,19 @@ import org.testng.ITestResult;
 
 import static java.lang.String.format;
 
-final class Listeners
+/**
+ * @see io.trino.testing.services.junit.Listeners for utlity class for JUnit listeners
+ * @deprecated Deprecated because TestNG is deprecated. Use JUnit instead.
+ */
+@Deprecated
+public final class Listeners
 {
     private Listeners() {}
 
     /**
      * Print error to standard error and exit JVM.
      *
-     * @apiNote A TestNG listener cannot throw an exception, as this are not currently properly handled by TestNG.
+     * Note: A TestNG listener cannot throw an exception, as this are not currently properly handled by TestNG.
      */
     @FormatMethod
     public static void reportListenerFailure(Class<? extends ITestNGListener> listenerClass, String format, Object... args)

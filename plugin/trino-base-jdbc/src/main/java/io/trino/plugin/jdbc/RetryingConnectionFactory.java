@@ -14,6 +14,7 @@
 package io.trino.plugin.jdbc;
 
 import com.google.common.base.Throwables;
+import com.google.inject.Inject;
 import dev.failsafe.Failsafe;
 import dev.failsafe.FailsafeException;
 import dev.failsafe.RetryPolicy;
@@ -22,7 +23,8 @@ import io.trino.spi.connector.ConnectorSession;
 
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.sql.SQLRecoverableException;
+import java.sql.SQLTransientException;
+import java.util.Set;
 
 import static java.time.temporal.ChronoUnit.MILLIS;
 import static java.time.temporal.ChronoUnit.SECONDS;
@@ -31,19 +33,28 @@ import static java.util.Objects.requireNonNull;
 public class RetryingConnectionFactory
         implements ConnectionFactory
 {
-    private static final RetryPolicy<Object> RETRY_POLICY = RetryPolicy.builder()
-            .withMaxDuration(java.time.Duration.of(30, SECONDS))
-            .withMaxAttempts(5)
-            .withBackoff(50, 5_000, MILLIS, 4)
-            .handleIf(RetryingConnectionFactory::isSqlRecoverableException)
-            .abortOn(TrinoException.class)
-            .build();
+    private final RetryPolicy<Object> retryPolicy;
 
     private final ConnectionFactory delegate;
 
-    public RetryingConnectionFactory(ConnectionFactory delegate)
+    @Inject
+    public RetryingConnectionFactory(@ForRetrying ConnectionFactory delegate, Set<RetryStrategy> retryStrategies)
     {
+        requireNonNull(retryStrategies);
         this.delegate = requireNonNull(delegate, "delegate is null");
+        this.retryPolicy = RetryPolicy.builder()
+                .withMaxDuration(java.time.Duration.of(30, SECONDS))
+                .withMaxAttempts(5)
+                .withBackoff(50, 5_000, MILLIS, 4)
+                .handleIf(throwable -> isExceptionRecoverable(retryStrategies, throwable))
+                .abortOn(TrinoException.class)
+                .build();
+    }
+
+    private static boolean isExceptionRecoverable(Set<RetryStrategy> retryStrategies, Throwable throwable)
+    {
+        return retryStrategies.stream()
+                .anyMatch(retryStrategy -> retryStrategy.isExceptionRecoverable(throwable));
     }
 
     @Override
@@ -51,7 +62,7 @@ public class RetryingConnectionFactory
             throws SQLException
     {
         try {
-            return Failsafe.with(RETRY_POLICY)
+            return Failsafe.with(retryPolicy)
                     .get(() -> delegate.openConnection(session));
         }
         catch (FailsafeException ex) {
@@ -69,9 +80,19 @@ public class RetryingConnectionFactory
         delegate.close();
     }
 
-    private static boolean isSqlRecoverableException(Throwable exception)
+    public interface RetryStrategy
     {
-        return Throwables.getCausalChain(exception).stream()
-                .anyMatch(SQLRecoverableException.class::isInstance);
+        boolean isExceptionRecoverable(Throwable exception);
+    }
+
+    public static class DefaultRetryStrategy
+            implements RetryStrategy
+    {
+        @Override
+        public boolean isExceptionRecoverable(Throwable exception)
+        {
+            return Throwables.getCausalChain(exception).stream()
+                    .anyMatch(SQLTransientException.class::isInstance);
+        }
     }
 }

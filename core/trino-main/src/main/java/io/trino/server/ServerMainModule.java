@@ -13,16 +13,15 @@
  */
 package io.trino.server;
 
-import com.google.common.collect.ImmutableList;
 import com.google.inject.Binder;
 import com.google.inject.Inject;
+import com.google.inject.Key;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import com.google.inject.multibindings.ProvidesIntoSet;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
-import io.airlift.http.server.HttpServerConfig;
 import io.airlift.slice.Slice;
 import io.airlift.stats.GcMonitor;
 import io.airlift.stats.JmxGcMonitor;
@@ -39,10 +38,10 @@ import io.trino.dispatcher.DispatchManager;
 import io.trino.event.SplitMonitor;
 import io.trino.execution.DynamicFilterConfig;
 import io.trino.execution.ExplainAnalyzeContext;
-import io.trino.execution.FailureInjectionConfig;
 import io.trino.execution.FailureInjector;
 import io.trino.execution.LocationFactory;
 import io.trino.execution.MemoryRevokingScheduler;
+import io.trino.execution.NoOpFailureInjector;
 import io.trino.execution.NodeTaskMap;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.SqlTaskManager;
@@ -57,7 +56,6 @@ import io.trino.execution.scheduler.NodeScheduler;
 import io.trino.execution.scheduler.NodeSchedulerConfig;
 import io.trino.execution.scheduler.TopologyAwareNodeSelectorModule;
 import io.trino.execution.scheduler.UniformNodeSelectorModule;
-import io.trino.index.IndexManager;
 import io.trino.memory.LocalMemoryManager;
 import io.trino.memory.LocalMemoryManagerExporter;
 import io.trino.memory.MemoryInfo;
@@ -75,7 +73,7 @@ import io.trino.metadata.HandleJsonModule;
 import io.trino.metadata.InternalBlockEncodingSerde;
 import io.trino.metadata.InternalFunctionBundle;
 import io.trino.metadata.InternalNodeManager;
-import io.trino.metadata.LiteralFunction;
+import io.trino.metadata.LanguageFunctionManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.MetadataManager;
 import io.trino.metadata.ProcedureRegistry;
@@ -87,21 +85,22 @@ import io.trino.metadata.TypeRegistry;
 import io.trino.operator.DirectExchangeClientConfig;
 import io.trino.operator.DirectExchangeClientFactory;
 import io.trino.operator.DirectExchangeClientSupplier;
+import io.trino.operator.FlatHashStrategyCompiler;
 import io.trino.operator.ForExchange;
 import io.trino.operator.GroupByHashPageIndexerFactory;
 import io.trino.operator.PagesIndex;
 import io.trino.operator.PagesIndexPageSorter;
 import io.trino.operator.RetryPolicy;
 import io.trino.operator.index.IndexJoinLookupStats;
+import io.trino.operator.index.IndexManager;
 import io.trino.operator.scalar.json.JsonExistsFunction;
 import io.trino.operator.scalar.json.JsonQueryFunction;
 import io.trino.operator.scalar.json.JsonValueFunction;
-import io.trino.server.ExpressionSerialization.ExpressionDeserializer;
-import io.trino.server.ExpressionSerialization.ExpressionSerializer;
 import io.trino.server.PluginManager.PluginsProvider;
 import io.trino.server.SliceSerialization.SliceDeserializer;
 import io.trino.server.SliceSerialization.SliceSerializer;
 import io.trino.server.protocol.PreparedStatementEncoder;
+import io.trino.server.protocol.spooling.SpoolingServerModule;
 import io.trino.server.remotetask.HttpLocationFactory;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
@@ -124,7 +123,7 @@ import io.trino.spiller.SpillerStats;
 import io.trino.split.PageSinkManager;
 import io.trino.split.PageSinkProvider;
 import io.trino.split.PageSourceManager;
-import io.trino.split.PageSourceProvider;
+import io.trino.split.PageSourceProviderFactory;
 import io.trino.split.SplitManager;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.SqlEnvironmentConfig;
@@ -135,14 +134,15 @@ import io.trino.sql.gen.JoinCompiler;
 import io.trino.sql.gen.JoinFilterFunctionCompiler;
 import io.trino.sql.gen.OrderingCompiler;
 import io.trino.sql.gen.PageFunctionCompiler;
+import io.trino.sql.gen.columnar.ColumnarFilterCompiler;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.planner.CompilerConfig;
 import io.trino.sql.planner.LocalExecutionPlanner;
 import io.trino.sql.planner.NodePartitioningManager;
 import io.trino.sql.planner.OptimizerConfig;
 import io.trino.sql.planner.RuleStatsRecorder;
-import io.trino.sql.planner.TypeAnalyzer;
-import io.trino.sql.tree.Expression;
+import io.trino.sql.planner.Symbol;
+import io.trino.sql.planner.SymbolKeyDeserializer;
 import io.trino.tracing.ForTracing;
 import io.trino.tracing.TracingMetadata;
 import io.trino.type.BlockTypeOperators;
@@ -152,11 +152,9 @@ import io.trino.type.TypeDeserializer;
 import io.trino.type.TypeOperatorsCache;
 import io.trino.type.TypeSignatureDeserializer;
 import io.trino.type.TypeSignatureKeyDeserializer;
+import io.trino.util.EmbedVersion;
 import io.trino.util.FinalizerService;
-import io.trino.version.EmbedVersion;
-import jakarta.annotation.PreDestroy;
 
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -176,6 +174,7 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.execution.scheduler.NodeSchedulerConfig.NodeSchedulerPolicy.TOPOLOGY;
 import static io.trino.execution.scheduler.NodeSchedulerConfig.NodeSchedulerPolicy.UNIFORM;
 import static io.trino.operator.RetryPolicy.TASK;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.server.InternalCommunicationHttpClientModule.internalHttpClientModule;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -206,20 +205,13 @@ public class ServerMainModule
         }
 
         binder.bind(StartupStatus.class).in(Scopes.SINGLETON);
-
-        configBinder(binder).bindConfigDefaults(HttpServerConfig.class, httpServerConfig -> {
-            httpServerConfig.setAdminEnabled(false);
-        });
-
         binder.bind(PreparedStatementEncoder.class).in(Scopes.SINGLETON);
         binder.bind(HttpRequestSessionContextFactory.class).in(Scopes.SINGLETON);
         install(new InternalCommunicationModule());
+        install(new SpoolingServerModule());
 
         QueryManagerConfig queryManagerConfig = buildConfigObject(QueryManagerConfig.class);
         RetryPolicy retryPolicy = queryManagerConfig.getRetryPolicy();
-        if (retryPolicy == TASK) {
-            configBinder(binder).bindConfigDefaults(QueryManagerConfig.class, QueryManagerConfig::applyFaultTolerantExecutionDefaults);
-        }
 
         configBinder(binder).bindConfig(FeaturesConfig.class);
         if (retryPolicy == TASK) {
@@ -232,6 +224,7 @@ public class ServerMainModule
         binder.bind(SqlParser.class).in(Scopes.SINGLETON);
 
         jaxrsBinder(binder).bind(ThrowableMapper.class);
+        jaxrsBinder(binder).bind(DisableHttpCacheDynamicFeature.class);
 
         configBinder(binder).bindConfig(SqlEnvironmentConfig.class);
 
@@ -255,7 +248,6 @@ public class ServerMainModule
         binder.bind(InternalNodeManager.class).to(DiscoveryNodeManager.class).in(Scopes.SINGLETON);
         newExporter(binder).export(DiscoveryNodeManager.class).withGeneratedName();
         install(internalHttpClientModule("node-manager", ForNodeManager.class)
-                .withTracing()
                 .withConfigDefaults(config -> {
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
@@ -280,8 +272,7 @@ public class ServerMainModule
                 new TopologyAwareNodeSelectorModule()));
 
         // task execution
-        configBinder(binder).bindConfig(FailureInjectionConfig.class);
-        binder.bind(FailureInjector.class).in(Scopes.SINGLETON);
+        newOptionalBinder(binder, FailureInjector.class).setDefault().to(NoOpFailureInjector.class).in(Scopes.SINGLETON);
         jaxrsBinder(binder).bind(TaskResource.class);
         newExporter(binder).export(TaskResource.class).withGeneratedName();
         binder.bind(TaskManagementExecutor.class).in(Scopes.SINGLETON);
@@ -296,17 +287,12 @@ public class ServerMainModule
         newExporter(binder).export(PauseMeter.class).withGeneratedName();
 
         configBinder(binder).bindConfig(MemoryManagerConfig.class);
-        if (retryPolicy == TASK) {
-            configBinder(binder).bindConfigDefaults(MemoryManagerConfig.class, MemoryManagerConfig::applyFaultTolerantExecutionDefaults);
-        }
-
         configBinder(binder).bindConfig(NodeMemoryConfig.class);
         binder.bind(LocalMemoryManager.class).in(Scopes.SINGLETON);
         binder.bind(LocalMemoryManagerExporter.class).in(Scopes.SINGLETON);
         newOptionalBinder(binder, VersionEmbedder.class).setDefault().to(EmbedVersion.class).in(Scopes.SINGLETON);
         newExporter(binder).export(SqlTaskManager.class).withGeneratedName();
 
-        newExporter(binder).export(TaskExecutor.class).withGeneratedName();
         binder.bind(MultilevelSplitQueue.class).in(Scopes.SINGLETON);
         newExporter(binder).export(MultilevelSplitQueue.class).withGeneratedName();
         binder.bind(LocalExecutionPlanner.class).in(Scopes.SINGLETON);
@@ -315,6 +301,8 @@ public class ServerMainModule
         newExporter(binder).export(ExpressionCompiler.class).withGeneratedName();
         binder.bind(PageFunctionCompiler.class).in(Scopes.SINGLETON);
         newExporter(binder).export(PageFunctionCompiler.class).withGeneratedName();
+        binder.bind(ColumnarFilterCompiler.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(ColumnarFilterCompiler.class).withGeneratedName();
         configBinder(binder).bindConfig(TaskManagerConfig.class);
 
         // TODO: use conditional module
@@ -327,6 +315,7 @@ public class ServerMainModule
         else {
             jaxrsBinder(binder).bind(TaskExecutorResource.class);
             newExporter(binder).export(TaskExecutorResource.class).withGeneratedName();
+            newExporter(binder).export(TimeSharingTaskExecutor.class).withGeneratedName();
 
             binder.bind(TaskExecutor.class)
                     .to(TimeSharingTaskExecutor.class)
@@ -345,6 +334,8 @@ public class ServerMainModule
         newExporter(binder).export(JoinFilterFunctionCompiler.class).withGeneratedName();
         binder.bind(JoinCompiler.class).in(Scopes.SINGLETON);
         newExporter(binder).export(JoinCompiler.class).withGeneratedName();
+        binder.bind(FlatHashStrategyCompiler.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(FlatHashStrategyCompiler.class).withGeneratedName();
         binder.bind(OrderingCompiler.class).in(Scopes.SINGLETON);
         newExporter(binder).export(OrderingCompiler.class).withGeneratedName();
         binder.bind(PagesIndex.Factory.class).to(PagesIndex.DefaultFactory.class);
@@ -354,8 +345,6 @@ public class ServerMainModule
         // exchange client
         binder.bind(DirectExchangeClientSupplier.class).to(DirectExchangeClientFactory.class).in(Scopes.SINGLETON);
         install(internalHttpClientModule("exchange", ForExchange.class)
-                .withTracing()
-                .withFilter(GenerateTraceTokenRequestFilter.class)
                 .withConfigDefaults(config -> {
                     config.setIdleTimeout(new Duration(30, SECONDS));
                     config.setRequestTimeout(new Duration(10, SECONDS));
@@ -376,7 +365,7 @@ public class ServerMainModule
 
         // data stream provider
         binder.bind(PageSourceManager.class).in(Scopes.SINGLETON);
-        binder.bind(PageSourceProvider.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
+        binder.bind(PageSourceProviderFactory.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
 
         // page sink provider
         binder.bind(PageSinkManager.class).in(Scopes.SINGLETON);
@@ -399,6 +388,7 @@ public class ServerMainModule
         binder.bind(TableProceduresRegistry.class).in(Scopes.SINGLETON);
         binder.bind(TableFunctionRegistry.class).in(Scopes.SINGLETON);
         binder.bind(PlannerContext.class).in(Scopes.SINGLETON);
+        binder.bind(LanguageFunctionManager.class).in(Scopes.SINGLETON);
 
         // function
         binder.bind(FunctionManager.class).in(Scopes.SINGLETON);
@@ -406,8 +396,8 @@ public class ServerMainModule
         binder.bind(RegisterFunctionBundles.class).asEagerSingleton();
 
         // type
-        binder.bind(TypeAnalyzer.class).in(Scopes.SINGLETON);
         jsonBinder(binder).addDeserializerBinding(Type.class).to(TypeDeserializer.class);
+        jsonBinder(binder).addKeyDeserializerBinding(Symbol.class).to(SymbolKeyDeserializer.class);
         jsonBinder(binder).addDeserializerBinding(TypeSignature.class).to(TypeSignatureDeserializer.class);
         jsonBinder(binder).addKeyDeserializerBinding(TypeSignature.class).to(TypeSignatureKeyDeserializer.class);
         binder.bind(TypeRegistry.class).in(Scopes.SINGLETON);
@@ -433,10 +423,6 @@ public class ServerMainModule
         // slice
         jsonBinder(binder).addSerializerBinding(Slice.class).to(SliceSerializer.class);
         jsonBinder(binder).addDeserializerBinding(Slice.class).to(SliceDeserializer.class);
-
-        // expression
-        jsonBinder(binder).addSerializerBinding(Expression.class).to(ExpressionSerializer.class);
-        jsonBinder(binder).addDeserializerBinding(Expression.class).to(ExpressionDeserializer.class);
 
         // split monitor
         binder.bind(SplitMonitor.class).in(Scopes.SINGLETON);
@@ -499,7 +485,9 @@ public class ServerMainModule
         newOptionalBinder(binder, RuleStatsRecorder.class);
 
         // cleanup
-        binder.bind(ExecutorCleanup.class).in(Scopes.SINGLETON);
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForExchange.class));
+        closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForAsyncHttp.class));
+        closingBinder(binder).registerExecutor(Key.get(ScheduledExecutorService.class, ForAsyncHttp.class));
     }
 
     private static class RegisterFunctionBundles
@@ -518,14 +506,6 @@ public class ServerMainModule
     public static FunctionBundle systemFunctionBundle(FeaturesConfig featuresConfig, TypeOperators typeOperators, BlockTypeOperators blockTypeOperators, NodeVersion nodeVersion)
     {
         return SystemFunctionBundle.create(featuresConfig, typeOperators, blockTypeOperators, nodeVersion);
-    }
-
-    @ProvidesIntoSet
-    @Singleton
-    // literal function must be registered lazily to break circular dependency
-    public static FunctionBundle literalFunctionBundle(BlockEncodingSerde blockEncodingSerde)
-    {
-        return new InternalFunctionBundle(new LiteralFunction(blockEncodingSerde));
     }
 
     @ProvidesIntoSet
@@ -599,28 +579,5 @@ public class ServerMainModule
     public static ScheduledExecutorService createAsyncHttpTimeoutExecutor(TaskManagerConfig config)
     {
         return newScheduledThreadPool(config.getHttpTimeoutThreads(), daemonThreadsNamed("async-http-timeout-%s"));
-    }
-
-    public static class ExecutorCleanup
-    {
-        private final List<ExecutorService> executors;
-
-        @Inject
-        public ExecutorCleanup(
-                @ForExchange ScheduledExecutorService exchangeExecutor,
-                @ForAsyncHttp ExecutorService httpResponseExecutor,
-                @ForAsyncHttp ScheduledExecutorService httpTimeoutExecutor)
-        {
-            executors = ImmutableList.of(
-                    exchangeExecutor,
-                    httpResponseExecutor,
-                    httpTimeoutExecutor);
-        }
-
-        @PreDestroy
-        public void shutdown()
-        {
-            executors.forEach(ExecutorService::shutdownNow);
-        }
     }
 }

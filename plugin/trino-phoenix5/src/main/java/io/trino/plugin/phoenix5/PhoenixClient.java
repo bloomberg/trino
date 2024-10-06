@@ -39,6 +39,7 @@ import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.WriteFunction;
 import io.trino.plugin.jdbc.WriteMapping;
+import io.trino.plugin.jdbc.expression.ComparisonOperator;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
@@ -50,6 +51,8 @@ import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.JoinStatistics;
+import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.SchemaNotFoundException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.expression.ConnectorExpression;
@@ -63,12 +66,13 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hbase.HColumnDescriptor;
 import org.apache.hadoop.hbase.HConstants;
-import org.apache.hadoop.hbase.HTableDescriptor;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.Admin;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptor;
+import org.apache.hadoop.hbase.client.ColumnFamilyDescriptorBuilder;
 import org.apache.hadoop.hbase.client.Scan;
+import org.apache.hadoop.hbase.client.TableDescriptor;
 import org.apache.hadoop.hbase.io.compress.Compression;
 import org.apache.hadoop.hbase.io.encoding.DataBlockEncoding;
 import org.apache.hadoop.hbase.regionserver.BloomType;
@@ -152,7 +156,6 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timeWriteFunctionUsingSqlTime;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryColumnMapping;
@@ -186,7 +189,6 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeType.TIME_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.lang.Math.max;
@@ -205,7 +207,7 @@ import static java.util.Locale.ENGLISH;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toSet;
 import static org.apache.hadoop.hbase.HConstants.FOREVER;
-import static org.apache.phoenix.coprocessor.BaseScannerRegionObserver.SKIP_REGION_BOUNDARY_CHECK;
+import static org.apache.phoenix.coprocessorclient.BaseScannerRegionObserverConstants.SKIP_REGION_BOUNDARY_CHECK;
 import static org.apache.phoenix.util.PhoenixRuntime.getTable;
 import static org.apache.phoenix.util.SchemaUtil.ESCAPE_CHARACTER;
 import static org.apache.phoenix.util.SchemaUtil.getEscapedArgument;
@@ -246,7 +248,7 @@ public class PhoenixClient
         getConnectionProperties(config).forEach((k, v) -> configuration.set((String) k, (String) v));
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
-                .add(new RewriteComparison(ImmutableSet.of(RewriteComparison.ComparisonOperator.EQUAL, RewriteComparison.ComparisonOperator.NOT_EQUAL)))
+                .add(new RewriteComparison(ImmutableSet.of(ComparisonOperator.EQUAL, ComparisonOperator.NOT_EQUAL)))
                 .withTypeClass("integer_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint"))
                 .map("$add(left: integer_type, right: integer_type)").to("left + right")
                 .map("$subtract(left: integer_type, right: integer_type)").to("left - right")
@@ -263,6 +265,22 @@ public class PhoenixClient
         return connectorExpressionRewriter.rewrite(session, expression, assignments);
     }
 
+    @Override
+    public Optional<PreparedQuery> implementJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            PreparedQuery leftSource,
+            Map<JdbcColumnHandle, String> leftProjections,
+            PreparedQuery rightSource,
+            Map<JdbcColumnHandle, String> rightProjections,
+            List<ParameterizedExpression> joinConditions,
+            JoinStatistics statistics)
+    {
+        // Joins are currently not supported
+        return Optional.empty();
+    }
+
+    @Override
     public Connection getConnection(ConnectorSession session)
             throws SQLException
     {
@@ -392,13 +410,13 @@ public class PhoenixClient
         if (outputHandle.rowkeyColumn().isPresent()) {
             String nextId = format(
                     "NEXT VALUE FOR %s, ",
-                    quoted(null, handle.getSchemaName(), handle.getTableName() + "_sequence"));
+                    quoted(null, handle.getRemoteTableName().getSchemaName().orElse(null), handle.getRemoteTableName().getTableName() + "_sequence"));
             params = nextId + params;
             columns = outputHandle.rowkeyColumn().get() + ", " + columns;
         }
         return format(
                 "UPSERT INTO %s (%s) VALUES (%s)",
-                quoted(null, handle.getSchemaName(), handle.getTableName()),
+                quoted(handle.getRemoteTableName()),
                 columns,
                 params);
     }
@@ -440,7 +458,7 @@ public class PhoenixClient
             return mapping;
         }
 
-        switch (typeHandle.getJdbcType()) {
+        switch (typeHandle.jdbcType()) {
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
 
@@ -463,9 +481,9 @@ public class PhoenixClient
                 return Optional.of(doubleColumnMapping());
 
             case Types.DECIMAL:
-                Optional<Integer> columnSize = typeHandle.getColumnSize();
+                Optional<Integer> columnSize = typeHandle.columnSize();
                 int precision = columnSize.orElse(DEFAULT_PRECISION);
-                int decimalDigits = typeHandle.getDecimalDigits().orElse(DEFAULT_SCALE);
+                int decimalDigits = typeHandle.decimalDigits().orElse(DEFAULT_SCALE);
                 if (getDecimalRounding(session) == ALLOW_OVERFLOW) {
                     if (columnSize.isEmpty()) {
                         return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, getDecimalDefaultScale(session)), getDecimalRoundingMode(session)));
@@ -479,16 +497,16 @@ public class PhoenixClient
                 return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0)), UNNECESSARY));
 
             case Types.CHAR:
-                return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultCharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case VARCHAR:
             case NVARCHAR:
             case LONGVARCHAR:
             case LONGNVARCHAR:
-                if (typeHandle.getColumnSize().isEmpty()) {
+                if (typeHandle.columnSize().isEmpty()) {
                     return Optional.of(varcharColumnMapping(createUnboundedVarcharType(), true));
                 }
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), true));
+                return Optional.of(defaultVarcharColumnMapping(typeHandle.requiredColumnSize(), true));
 
             case Types.BINARY:
             case Types.VARBINARY:
@@ -511,18 +529,18 @@ public class PhoenixClient
 
             case ARRAY:
                 JdbcTypeHandle elementTypeHandle = getArrayElementTypeHandle(typeHandle);
-                if (elementTypeHandle.getJdbcType() == Types.VARBINARY) {
+                if (elementTypeHandle.jdbcType() == Types.VARBINARY) {
                     return Optional.empty();
                 }
                 return toColumnMapping(session, connection, elementTypeHandle)
                         .map(elementMapping -> {
                             ArrayType trinoArrayType = new ArrayType(elementMapping.getType());
-                            String jdbcTypeName = elementTypeHandle.getJdbcTypeName()
+                            String jdbcTypeName = elementTypeHandle.jdbcTypeName()
                                     .orElseThrow(() -> new TrinoException(
                                             PHOENIX_METADATA_ERROR,
-                                            "Type name is missing for jdbc type: " + JDBCType.valueOf(elementTypeHandle.getJdbcType())));
+                                            "Type name is missing for jdbc type: " + JDBCType.valueOf(elementTypeHandle.jdbcType())));
                             // TODO (https://github.com/trinodb/trino/issues/11132) Enable predicate pushdown on ARRAY(CHAR) type in Phoenix
-                            PredicatePushdownController pushdownController = elementTypeHandle.getJdbcType() == Types.CHAR ? DISABLE_PUSHDOWN : FULL_PUSHDOWN;
+                            PredicatePushdownController pushdownController = elementTypeHandle.jdbcType() == Types.CHAR ? DISABLE_PUSHDOWN : FULL_PUSHDOWN;
                             return arrayColumnMapping(session, trinoArrayType, jdbcTypeName, pushdownController);
                         });
         }
@@ -585,9 +603,6 @@ public class PhoenixClient
 
         if (type == DATE) {
             return WriteMapping.longMapping("date", dateWriteFunctionUsingString());
-        }
-        if (TIME_MILLIS.equals(type)) {
-            return WriteMapping.longMapping("time", timeWriteFunctionUsingSqlTime());
         }
         if (type instanceof ArrayType arrayType) {
             Type elementType = arrayType.getElementType();
@@ -663,12 +678,12 @@ public class PhoenixClient
             PhoenixTableProperties.getSplitOn(tableProperties).ifPresent(value -> tableOptions.add("SPLIT ON (" + value.replace('"', '\'') + ")"));
             PhoenixTableProperties.getDisableWal(tableProperties).ifPresent(value -> tableOptions.add(TableProperty.DISABLE_WAL + "=" + value));
             PhoenixTableProperties.getDefaultColumnFamily(tableProperties).ifPresent(value -> tableOptions.add(TableProperty.DEFAULT_COLUMN_FAMILY + "=" + value));
-            PhoenixTableProperties.getBloomfilter(tableProperties).ifPresent(value -> tableOptions.add(HColumnDescriptor.BLOOMFILTER + "='" + value + "'"));
+            PhoenixTableProperties.getBloomfilter(tableProperties).ifPresent(value -> tableOptions.add(ColumnFamilyDescriptorBuilder.BLOOMFILTER + "='" + value + "'"));
             PhoenixTableProperties.getVersions(tableProperties).ifPresent(value -> tableOptions.add(HConstants.VERSIONS + "=" + value));
-            PhoenixTableProperties.getMinVersions(tableProperties).ifPresent(value -> tableOptions.add(HColumnDescriptor.MIN_VERSIONS + "=" + value));
-            PhoenixTableProperties.getCompression(tableProperties).ifPresent(value -> tableOptions.add(HColumnDescriptor.COMPRESSION + "='" + value + "'"));
-            PhoenixTableProperties.getTimeToLive(tableProperties).ifPresent(value -> tableOptions.add(HColumnDescriptor.TTL + "=" + value));
-            PhoenixTableProperties.getDataBlockEncoding(tableProperties).ifPresent(value -> tableOptions.add(HColumnDescriptor.DATA_BLOCK_ENCODING + "='" + value + "'"));
+            PhoenixTableProperties.getMinVersions(tableProperties).ifPresent(value -> tableOptions.add(ColumnFamilyDescriptorBuilder.MIN_VERSIONS + "=" + value));
+            PhoenixTableProperties.getCompression(tableProperties).ifPresent(value -> tableOptions.add(ColumnFamilyDescriptorBuilder.COMPRESSION + "='" + value + "'"));
+            PhoenixTableProperties.getTimeToLive(tableProperties).ifPresent(value -> tableOptions.add(ColumnFamilyDescriptorBuilder.TTL + "=" + value));
+            PhoenixTableProperties.getDataBlockEncoding(tableProperties).ifPresent(value -> tableOptions.add(ColumnFamilyDescriptorBuilder.DATA_BLOCK_ENCODING + "='" + value + "'"));
 
             String sql = format(
                     "CREATE %s TABLE %s (%s , CONSTRAINT PK PRIMARY KEY (%s)) %s",
@@ -681,8 +696,7 @@ public class PhoenixClient
             execute(session, sql);
 
             return new PhoenixOutputTableHandle(
-                    schema,
-                    table,
+                    new RemoteTableName(Optional.empty(), Optional.ofNullable(schema), table),
                     columnNames.build(),
                     columnTypes.build(),
                     Optional.empty(),
@@ -694,6 +708,12 @@ public class PhoenixClient
             }
             throw new TrinoException(PHOENIX_METADATA_ERROR, "Error creating Phoenix table", e);
         }
+    }
+
+    @Override
+    public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming columns");
     }
 
     @Override
@@ -743,10 +763,10 @@ public class PhoenixClient
                 properties.put(PhoenixTableProperties.DEFAULT_COLUMN_FAMILY, defaultFamilyName);
             }
 
-            HTableDescriptor tableDesc = admin.getTableDescriptor(TableName.valueOf(table.getPhysicalName().getBytes()));
+            TableDescriptor tableDesc = admin.getDescriptor(TableName.valueOf(table.getPhysicalName().getBytes()));
 
-            HColumnDescriptor[] columnFamilies = tableDesc.getColumnFamilies();
-            for (HColumnDescriptor columnFamily : columnFamilies) {
+            ColumnFamilyDescriptor[] columnFamilies = tableDesc.getColumnFamilies();
+            for (ColumnFamilyDescriptor columnFamily : columnFamilies) {
                 if (columnFamily.getNameAsString().equals(defaultFamilyName)) {
                     if (columnFamily.getBloomFilterType() != BloomType.NONE) {
                         properties.put(PhoenixTableProperties.BLOOMFILTER, columnFamily.getBloomFilterType());
@@ -757,8 +777,8 @@ public class PhoenixClient
                     if (columnFamily.getMinVersions() > 0) {
                         properties.put(PhoenixTableProperties.MIN_VERSIONS, columnFamily.getMinVersions());
                     }
-                    if (columnFamily.getCompression() != Compression.Algorithm.NONE) {
-                        properties.put(PhoenixTableProperties.COMPRESSION, columnFamily.getCompression());
+                    if (columnFamily.getCompressionType() != Compression.Algorithm.NONE) {
+                        properties.put(PhoenixTableProperties.COMPRESSION, columnFamily.getCompressionType());
                     }
                     if (columnFamily.getTimeToLive() < FOREVER) {
                         properties.put(PhoenixTableProperties.TTL, columnFamily.getTimeToLive());
@@ -848,17 +868,17 @@ public class PhoenixClient
 
     private JdbcTypeHandle getArrayElementTypeHandle(JdbcTypeHandle arrayTypeHandle)
     {
-        String arrayTypeName = arrayTypeHandle.getJdbcTypeName()
-                .orElseThrow(() -> new TrinoException(PHOENIX_METADATA_ERROR, "Type name is missing for jdbc type: " + JDBCType.valueOf(arrayTypeHandle.getJdbcType())));
+        String arrayTypeName = arrayTypeHandle.jdbcTypeName()
+                .orElseThrow(() -> new TrinoException(PHOENIX_METADATA_ERROR, "Type name is missing for jdbc type: " + JDBCType.valueOf(arrayTypeHandle.jdbcType())));
         checkArgument(arrayTypeName.endsWith(" ARRAY"), "array type must end with ' ARRAY'");
         arrayTypeName = arrayTypeName.substring(0, arrayTypeName.length() - " ARRAY".length());
-        verify(arrayTypeHandle.getCaseSensitivity().isEmpty(), "Case sensitivity not supported");
+        verify(arrayTypeHandle.caseSensitivity().isEmpty(), "Case sensitivity not supported");
         return new JdbcTypeHandle(
                 PDataType.fromSqlTypeName(arrayTypeName).getSqlType(),
                 Optional.of(arrayTypeName),
-                arrayTypeHandle.getColumnSize(),
-                arrayTypeHandle.getDecimalDigits(),
-                arrayTypeHandle.getArrayDimensions(),
+                arrayTypeHandle.columnSize(),
+                arrayTypeHandle.decimalDigits(),
+                Optional.empty(),
                 Optional.empty());
     }
 

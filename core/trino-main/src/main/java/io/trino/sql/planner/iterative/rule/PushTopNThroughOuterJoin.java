@@ -21,6 +21,7 @@ import io.trino.matching.Pattern;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.TopNNode;
 
@@ -28,8 +29,8 @@ import java.util.List;
 
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.isAtMost;
-import static io.trino.sql.planner.plan.JoinNode.Type.LEFT;
-import static io.trino.sql.planner.plan.JoinNode.Type.RIGHT;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
+import static io.trino.sql.planner.plan.JoinType.RIGHT;
 import static io.trino.sql.planner.plan.Patterns.Join.type;
 import static io.trino.sql.planner.plan.Patterns.TopN.step;
 import static io.trino.sql.planner.plan.Patterns.join;
@@ -53,7 +54,6 @@ import static io.trino.sql.planner.plan.TopNNode.Step.PARTIAL;
  *    - TopN (present if Join is right, not already limited, and orderBy symbols come from right source)
  *       - right source
  * </pre>
- * <p>
  * <p>
  * TODO: this Rule violates the expectation that Rule transformations must preserve the semantics of the
  * expression subtree. It works only because it's a PARTIAL TopN, so there will be a FINAL TopN that "fixes" it.
@@ -79,11 +79,11 @@ public class PushTopNThroughOuterJoin
     {
         JoinNode joinNode = captures.get(JOIN_CHILD);
 
-        List<Symbol> orderBySymbols = parent.getOrderingScheme().getOrderBy();
+        List<Symbol> orderBySymbols = parent.getOrderingScheme().orderBy();
 
         PlanNode left = joinNode.getLeft();
         PlanNode right = joinNode.getRight();
-        JoinNode.Type type = joinNode.getType();
+        JoinType type = joinNode.getType();
 
         if ((type == LEFT)
                 && ImmutableSet.copyOf(left.getOutputSymbols()).containsAll(orderBySymbols)

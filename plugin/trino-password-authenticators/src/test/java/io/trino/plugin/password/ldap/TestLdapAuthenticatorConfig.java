@@ -17,7 +17,7 @@ package io.trino.plugin.password.ldap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +36,7 @@ public class TestLdapAuthenticatorConfig
                 .setUserBindSearchPatterns(" : ")
                 .setUserBaseDistinguishedName(null)
                 .setGroupAuthorizationSearchPattern(null)
-                .setBindDistingushedName(null)
+                .setBindDistinguishedName(null)
                 .setBindPassword(null)
                 .setLdapCacheTtl(new Duration(1, TimeUnit.HOURS)));
     }
@@ -57,7 +57,7 @@ public class TestLdapAuthenticatorConfig
                 .setUserBindSearchPatterns(ImmutableList.of("uid=${USER},ou=org,dc=test,dc=com", "uid=${USER},ou=alt"))
                 .setUserBaseDistinguishedName("dc=test,dc=com")
                 .setGroupAuthorizationSearchPattern("&(objectClass=user)(memberOf=cn=group)(user=username)")
-                .setBindDistingushedName("CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
+                .setBindDistinguishedName("CN=User Name,OU=CITY_OU,OU=STATE_OU,DC=domain,DC=domain_root")
                 .setBindPassword("password1234")
                 .setLdapCacheTtl(new Duration(2, TimeUnit.MINUTES));
 

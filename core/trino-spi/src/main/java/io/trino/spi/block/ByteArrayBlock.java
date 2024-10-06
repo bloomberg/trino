@@ -30,8 +30,8 @@ import static io.trino.spi.block.BlockUtil.compactArray;
 import static io.trino.spi.block.BlockUtil.copyIsNullAndAppendNull;
 import static io.trino.spi.block.BlockUtil.ensureCapacity;
 
-public class ByteArrayBlock
-        implements Block
+public final class ByteArrayBlock
+        implements ValueBlock
 {
     private static final int INSTANCE_SIZE = instanceSize(ByteArrayBlock.class);
     public static final int SIZE_IN_BYTES_PER_POSITION = Byte.BYTES + Byte.BYTES;
@@ -71,6 +71,22 @@ public class ByteArrayBlock
         this.valueIsNull = valueIsNull;
 
         retainedSizeInBytes = (INSTANCE_SIZE + sizeOf(valueIsNull) + sizeOf(values));
+    }
+
+    /**
+     * Gets the raw byte array that keeps the actual data values.
+     */
+    public byte[] getRawValues()
+    {
+        return values;
+    }
+
+    /**
+     * Gets the offset into raw byte array where the data values start.
+     */
+    public int getRawValuesOffset()
+    {
+        return arrayOffset;
     }
 
     @Override
@@ -125,13 +141,9 @@ public class ByteArrayBlock
         return positionCount;
     }
 
-    @Override
-    public byte getByte(int position, int offset)
+    public byte getByte(int position)
     {
         checkReadablePosition(this, position);
-        if (offset != 0) {
-            throw new IllegalArgumentException("offset must be zero");
-        }
         return values[position + arrayOffset];
     }
 
@@ -149,7 +161,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block getSingleValueBlock(int position)
+    public ByteArrayBlock getSingleValueBlock(int position)
     {
         checkReadablePosition(this, position);
         return new ByteArrayBlock(
@@ -160,7 +172,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyPositions(int[] positions, int offset, int length)
+    public ByteArrayBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
 
@@ -181,7 +193,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block getRegion(int positionOffset, int length)
+    public ByteArrayBlock getRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -189,7 +201,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyRegion(int positionOffset, int length)
+    public ByteArrayBlock copyRegion(int positionOffset, int length)
     {
         checkValidRegion(getPositionCount(), positionOffset, length);
 
@@ -210,7 +222,7 @@ public class ByteArrayBlock
     }
 
     @Override
-    public Block copyWithAppendedNull()
+    public ByteArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
         byte[] newValues = ensureCapacity(values, arrayOffset + positionCount + 1);
@@ -219,16 +231,30 @@ public class ByteArrayBlock
     }
 
     @Override
+    public ByteArrayBlock getUnderlyingValueBlock()
+    {
+        return this;
+    }
+
+    @Override
     public String toString()
     {
-        StringBuilder sb = new StringBuilder("ByteArrayBlock{");
-        sb.append("positionCount=").append(getPositionCount());
-        sb.append('}');
-        return sb.toString();
+        return "ByteArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     Slice getValuesSlice()
     {
         return Slices.wrappedBuffer(values, arrayOffset, positionCount);
+    }
+
+    boolean[] getRawValueIsNull()
+    {
+        return valueIsNull;
     }
 }

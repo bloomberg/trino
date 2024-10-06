@@ -19,7 +19,6 @@ Trino also supports two functions for generating JSON data --
 {ref}`json_array<json-array>`, and {ref}`json_object<json-object>`.
 
 (json-path-language)=
-
 ## JSON path language
 
 The JSON path language is a special language, used exclusively by certain SQL
@@ -30,7 +29,6 @@ generally follow the semantics of SQL. The JSON path language is case-sensitive
 for keywords and identifiers.
 
 (json-path-syntax-and-semantics)=
-
 ### JSON path syntax and semantics
 
 JSON path expressions are recursive structures. Although the name "path"
@@ -216,7 +214,6 @@ sub-sequences from all JSON objects are concatenated in the same order in which
 the JSON objects appear in the input sequence.
 
 (json-descendant-member-accessor)=
-
 #### descendant member accessor
 
 Returns the values associated with the specified key in all JSON objects on all
@@ -428,7 +425,6 @@ mode is `unknown`. The result in the lax mode depends on whether the `true`
 comparison or the error was found first.
 
 (json-comparison-rules)=
-
 ##### Comparison rules
 
 Null values in the context of comparison behave different than SQL null:
@@ -580,7 +576,6 @@ The SQL standard describes the `datetime()` JSON path item method and the
 `like_regex()` JSON path predicate. Trino does not support them.
 
 (json-path-modes)=
-
 ### JSON path modes
 
 The JSON path expression can be evaluated in two modes: strict and lax. In the
@@ -590,37 +585,36 @@ diverge from the expected schema.
 
 The following table shows the differences between the two modes.
 
-```{eval-rst}
-.. list-table::
-   :widths: 40 20 40
-   :header-rows: 1
+:::{list-table}
+:widths: 40 20 40
+:header-rows: 1
 
-   * - Condition
-     - strict mode
-     - lax mode
-   * - Performing an operation which requires a non-array on an array, e.g.:
+* - Condition
+  - strict mode
+  - lax mode
+* - Performing an operation which requires a non-array on an array, e.g.:
 
-       ``$.key`` requires a JSON object
+    `$.key` requires a JSON object
 
-       ``$.floor()`` requires a numeric value
-     - ERROR
-     - The array is automatically unnested, and the operation is performed on
-       each array element.
-   * - Performing an operation which requires an array on an non-array, e.g.:
+    `$.floor()` requires a numeric value
+  - ERROR
+  - The array is automatically unnested, and the operation is performed on
+    each array element.
+* - Performing an operation which requires an array on an non-array, e.g.:
 
-       ``$[0]``, ``$[*]``, ``$.size()``
-     - ERROR
-     - The non-array item is automatically wrapped in a singleton array, and
-       the operation is performed on the array.
-   * - A structural error: accessing a non-existent element of an array or a
-       non-existent member of a JSON object, e.g.:
+    `$[0]`, `$[*]`, `$.size()`
+  - ERROR
+  - The non-array item is automatically wrapped in a singleton array, and
+    the operation is performed on the array.
+* - A structural error: accessing a non-existent element of an array or a
+    non-existent member of a JSON object, e.g.:
 
-       ``$[-1]`` (array index out of bounds)
+    `$[-1]` (array index out of bounds)
 
-       ``$.key``, where the input JSON object does not have a member ``key``
-     - ERROR
-     - The error is suppressed, and the operation results in an empty sequence.
-```
+    `$.key`, where the input JSON object does not have a member `key`
+  - ERROR
+  - The error is suppressed, and the operation results in an empty sequence.
+:::
 
 #### Examples of the lax mode behavior
 
@@ -656,7 +650,6 @@ method, the item `"a"` causes type mismatch.
 ```
 
 (json-exists)=
-
 ## json_exists
 
 The `json_exists` function determines whether a JSON value satisfies a JSON
@@ -778,7 +771,6 @@ FROM customers
 | 103 | NULL              |
 
 (json-query)=
-
 ## json_query
 
 The `json_query` function extracts a JSON value from a JSON value.
@@ -797,8 +789,9 @@ JSON_QUERY(
     )
 ```
 
-The `json_path` is evaluated using the `json_input` as the context variable
-(`$`), and the passed arguments as the named variables (`$variable_name`).
+The constant string `json_path` is evaluated using the `json_input` as the
+context variable (`$`), and the passed arguments as the named variables
+(`$variable_name`).
 
 The returned value is a JSON item returned by the path. By default, it is
 represented as a character string (`varchar`). In the `RETURNING` clause,
@@ -979,7 +972,6 @@ to the `ON ERROR` clause are:
 - Output conversion errors
 
 (json-value)=
-
 ## json_value
 
 The `json_value` function extracts a scalar SQL value from a JSON value.
@@ -1147,7 +1139,6 @@ FROM customers
 | 103 | 'missing' |
 
 (json-array)=
-
 ## json_array
 
 The `json_array` function creates a JSON array containing given elements.
@@ -1261,7 +1252,6 @@ SELECT json_array(true, 1 RETURNING VARBINARY FORMAT JSON ENCODING UTF32)
 ```
 
 (json-object)=
-
 ## json_object
 
 The `json_object` function creates a JSON object containing given key-value pairs.
@@ -1454,7 +1444,7 @@ the following requirements are met:
 Cast operations with supported {ref}`character string types
 <string-data-types>` treat the input as a string, not validated as JSON.
 This means that a cast operation with a string-type input of invalid JSON
-results in a succesful cast to invalid JSON.
+results in a successful cast to invalid JSON.
 
 Instead, consider using the {func}`json_parse` function to
 create validated JSON from a string.

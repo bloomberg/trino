@@ -56,17 +56,16 @@ import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.parseTypeSignature;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
 public class TestGlobalFunctionCatalog
 {
     @Test
     public void testIdentityCast()
     {
-        BoundSignature exactOperator = new TestingFunctionResolution().getCoercion(HYPER_LOG_LOG, HYPER_LOG_LOG).getSignature();
-        assertEquals(exactOperator, new BoundSignature(builtinFunctionName(CAST), HYPER_LOG_LOG, ImmutableList.of(HYPER_LOG_LOG)));
+        BoundSignature exactOperator = new TestingFunctionResolution().getCoercion(HYPER_LOG_LOG, HYPER_LOG_LOG).signature();
+        assertThat(exactOperator).isEqualTo(new BoundSignature(builtinFunctionName(CAST), HYPER_LOG_LOG, ImmutableList.of(HYPER_LOG_LOG)));
     }
 
     @Test
@@ -88,11 +87,11 @@ public class TestGlobalFunctionCatalog
             List<Type> argumentTypes = function.getSignature().getArgumentTypes().stream()
                     .map(functionResolution.getPlannerContext().getTypeManager()::getType)
                     .collect(toImmutableList());
-            BoundSignature exactOperator = functionResolution.resolveOperator(operatorType, argumentTypes).getSignature();
-            assertEquals(exactOperator.toSignature(), function.getSignature());
+            BoundSignature exactOperator = functionResolution.resolveOperator(operatorType, argumentTypes).signature();
+            assertThat(exactOperator.toSignature()).isEqualTo(function.getSignature());
             foundOperator = true;
         }
-        assertTrue(foundOperator);
+        assertThat(foundOperator).isTrue();
     }
 
     @Test
@@ -101,7 +100,10 @@ public class TestGlobalFunctionCatalog
         FunctionBundle functionBundle = extractFunctions(CustomAdd.class);
 
         TypeOperators typeOperators = new TypeOperators();
-        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog();
+        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog(
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); });
         globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), NodeVersion.UNKNOWN));
         globalFunctionCatalog.addFunctions(functionBundle);
         assertThatThrownBy(() -> globalFunctionCatalog.addFunctions(functionBundle))
@@ -115,7 +117,10 @@ public class TestGlobalFunctionCatalog
         FunctionBundle functions = extractFunctions(ScalarSum.class);
 
         TypeOperators typeOperators = new TypeOperators();
-        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog();
+        GlobalFunctionCatalog globalFunctionCatalog = new GlobalFunctionCatalog(
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); },
+                () -> { throw new UnsupportedOperationException(); });
         globalFunctionCatalog.addFunctions(SystemFunctionBundle.create(new FeaturesConfig(), typeOperators, new BlockTypeOperators(typeOperators), NodeVersion.UNKNOWN));
         assertThatThrownBy(() -> globalFunctionCatalog.addFunctions(functions))
                 .isInstanceOf(IllegalStateException.class)
@@ -325,7 +330,7 @@ public class TestGlobalFunctionCatalog
         {
             Signature expectedSignature = functionSignature.build();
             Signature actualSignature = resolveSignature().toSignature();
-            assertEquals(actualSignature, expectedSignature);
+            assertThat(actualSignature).isEqualTo(expectedSignature);
             return this;
         }
 
@@ -341,7 +346,7 @@ public class TestGlobalFunctionCatalog
         {
             return new TestingFunctionResolution(createFunctionsFromSignatures())
                     .resolveFunction(TEST_FUNCTION_NAME, fromTypeSignatures(parameterTypes))
-                    .getSignature();
+                    .signature();
         }
 
         private InternalFunctionBundle createFunctionsFromSignatures()

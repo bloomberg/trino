@@ -20,20 +20,15 @@ import com.google.common.collect.ImmutableSet;
 import io.airlift.json.ObjectMapperProvider;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TestingFunctionResolution;
-import io.trino.server.ExpressionSerialization.ExpressionDeserializer;
-import io.trino.server.ExpressionSerialization.ExpressionSerializer;
 import io.trino.spi.connector.SortOrder;
+import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
-import io.trino.sql.parser.SqlParser;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolAllocator;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FrameBound;
-import io.trino.sql.tree.WindowFrame;
+import io.trino.sql.planner.SymbolKeyDeserializer;
 import io.trino.type.TypeDeserializer;
-import io.trino.type.TypeSignatureDeserializer;
 import io.trino.type.TypeSignatureKeyDeserializer;
 import org.junit.jupiter.api.Test;
 
@@ -44,7 +39,10 @@ import java.util.UUID;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
-import static org.testng.Assert.assertEquals;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_PRECEDING;
+import static io.trino.sql.planner.plan.WindowFrameType.RANGE;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestWindowNode
 {
@@ -56,16 +54,14 @@ public class TestWindowNode
         functionResolution = new TestingFunctionResolution();
 
         // dependencies copied from ServerMainModule.java to avoid depending on whole ServerMainModule here
-        SqlParser sqlParser = new SqlParser();
         ObjectMapperProvider provider = new ObjectMapperProvider();
-        provider.setJsonSerializers(ImmutableMap.of(
-                Expression.class, new ExpressionSerializer()));
-        provider.setJsonDeserializers(ImmutableMap.of(
-                Type.class, new TypeDeserializer(functionResolution.getPlannerContext().getTypeManager()),
-                Expression.class, new ExpressionDeserializer(sqlParser),
-                TypeSignature.class, new TypeSignatureDeserializer()));
         provider.setKeyDeserializers(ImmutableMap.of(
+                Symbol.class, new SymbolKeyDeserializer(new TestingTypeManager()),
                 TypeSignature.class, new TypeSignatureKeyDeserializer()));
+
+        provider.setJsonDeserializers(ImmutableMap.of(
+                Type.class, new TypeDeserializer(new TestingTypeManager()::getType)));
+
         objectMapper = provider.get();
     }
 
@@ -78,21 +74,16 @@ public class TestWindowNode
         Symbol columnB = symbolAllocator.newSymbol("b", BIGINT);
         Symbol columnC = symbolAllocator.newSymbol("c", BIGINT);
 
-        ValuesNode sourceNode = new ValuesNode(
-                newId(),
-                ImmutableList.of(columnA, columnB, columnC),
-                ImmutableList.of());
+        ValuesNode sourceNode = new ValuesNode(newId(), ImmutableList.of(columnA, columnB, columnC));
 
         Symbol windowSymbol = symbolAllocator.newSymbol("sum", BIGINT);
         ResolvedFunction resolvedFunction = functionResolution.resolveFunction("sum", fromTypes(BIGINT));
         WindowNode.Frame frame = new WindowNode.Frame(
-                WindowFrame.Type.RANGE,
-                FrameBound.Type.UNBOUNDED_PRECEDING,
+                RANGE,
+                UNBOUNDED_PRECEDING,
                 Optional.empty(),
                 Optional.empty(),
-                FrameBound.Type.UNBOUNDED_FOLLOWING,
-                Optional.empty(),
-                Optional.empty(),
+                UNBOUNDED_FOLLOWING,
                 Optional.empty(),
                 Optional.empty());
 
@@ -118,13 +109,13 @@ public class TestWindowNode
 
         WindowNode actualNode = objectMapper.readValue(json, WindowNode.class);
 
-        assertEquals(actualNode.getId(), windowNode.getId());
-        assertEquals(actualNode.getSpecification(), windowNode.getSpecification());
-        assertEquals(actualNode.getWindowFunctions(), windowNode.getWindowFunctions());
-        assertEquals(actualNode.getFrames(), windowNode.getFrames());
-        assertEquals(actualNode.getHashSymbol(), windowNode.getHashSymbol());
-        assertEquals(actualNode.getPrePartitionedInputs(), windowNode.getPrePartitionedInputs());
-        assertEquals(actualNode.getPreSortedOrderPrefix(), windowNode.getPreSortedOrderPrefix());
+        assertThat(actualNode.getId()).isEqualTo(windowNode.getId());
+        assertThat(actualNode.getSpecification()).isEqualTo(windowNode.getSpecification());
+        assertThat(actualNode.getWindowFunctions()).isEqualTo(windowNode.getWindowFunctions());
+        assertThat(actualNode.getFrames()).isEqualTo(windowNode.getFrames());
+        assertThat(actualNode.getHashSymbol()).isEqualTo(windowNode.getHashSymbol());
+        assertThat(actualNode.getPrePartitionedInputs()).isEqualTo(windowNode.getPrePartitionedInputs());
+        assertThat(actualNode.getPreSortedOrderPrefix()).isEqualTo(windowNode.getPreSortedOrderPrefix());
     }
 
     private static PlanNodeId newId()

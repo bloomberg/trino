@@ -22,12 +22,9 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 
-import static com.google.common.base.Strings.repeat;
 import static io.trino.sql.testing.TreeAssertions.assertFormattedSql;
-import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestStatementBuilder
 {
@@ -221,6 +218,9 @@ public class TestStatementBuilder
         printStatement("alter table foo alter column x set data type bigint");
         printStatement("alter table a.b.c alter column x set data type bigint");
 
+        printStatement("alter table foo alter column x drop not null");
+        printStatement("alter table a.b.c alter column x drop not null");
+
         printStatement("alter materialized view foo set properties a='1'");
         printStatement("alter materialized view a.b.c set properties a=true, b=123, c='x'");
         printStatement("alter materialized view a.b.c set properties a=default, b=123");
@@ -313,6 +313,12 @@ public class TestStatementBuilder
         printStatement("show role grants");
         printStatement("show role grants from foo");
 
+        printStatement("show create schema abc");
+        printStatement("show create table abc");
+        printStatement("show create view abc");
+        printStatement("show create materialized view abc");
+        printStatement("show create function abc");
+
         printStatement("prepare p from select * from (select * from T) \"A B\"");
 
         printStatement("SELECT * FROM table1 WHERE a >= ALL (VALUES 2, 3, 4)");
@@ -391,7 +397,7 @@ public class TestStatementBuilder
         println("");
         assertFormattedSql(SQL_PARSER, statement);
 
-        println(repeat("=", 60));
+        println("=".repeat(60));
         println("");
     }
 
@@ -399,7 +405,7 @@ public class TestStatementBuilder
     {
         Expression originalExpression = SQL_PARSER.createExpression(expression);
         String real = SqlFormatter.formatSql(originalExpression);
-        assertEquals(formatted, real);
+        assertThat(real).isEqualTo(formatted);
     }
 
     private static void println(String s)
@@ -419,10 +425,12 @@ public class TestStatementBuilder
         String sql = getTpchQuery(query);
 
         for (int i = values.length - 1; i >= 0; i--) {
-            sql = sql.replaceAll(format(":%s", i + 1), String.valueOf(values[i]));
+            sql = sql.replaceAll(":%s".formatted(i + 1), String.valueOf(values[i]));
         }
 
-        assertFalse(sql.matches("(?s).*:[0-9].*"), "Not all bind parameters were replaced: " + sql);
+        assertThat(sql.matches("(?s).*:[0-9].*"))
+                .as("Not all bind parameters were replaced: " + sql)
+                .isFalse();
 
         sql = fixTpchQuery(sql);
         printStatement(sql);

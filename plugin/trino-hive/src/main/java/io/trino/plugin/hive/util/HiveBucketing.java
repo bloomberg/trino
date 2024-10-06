@@ -18,20 +18,20 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.SortingColumn;
+import io.trino.metastore.Table;
+import io.trino.metastore.type.ListTypeInfo;
+import io.trino.metastore.type.MapTypeInfo;
+import io.trino.metastore.type.PrimitiveCategory;
+import io.trino.metastore.type.PrimitiveTypeInfo;
+import io.trino.metastore.type.TypeInfo;
 import io.trino.plugin.hive.HiveBucketHandle;
-import io.trino.plugin.hive.HiveBucketProperty;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HiveTableHandle;
 import io.trino.plugin.hive.HiveTimestampPrecision;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.SortingColumn;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.type.ListTypeInfo;
-import io.trino.plugin.hive.type.MapTypeInfo;
-import io.trino.plugin.hive.type.PrimitiveCategory;
-import io.trino.plugin.hive.type.PrimitiveTypeInfo;
-import io.trino.plugin.hive.type.TypeInfo;
 import io.trino.spi.Page;
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
@@ -187,7 +187,7 @@ public final class HiveBucketing
                 .collect(Collectors.toMap(HiveColumnHandle::getName, identity()));
 
         ImmutableList.Builder<HiveColumnHandle> bucketColumns = ImmutableList.builder();
-        for (String bucketColumnName : hiveBucketProperty.get().getBucketedBy()) {
+        for (String bucketColumnName : hiveBucketProperty.get().bucketedBy()) {
             HiveColumnHandle bucketColumnHandle = map.get(bucketColumnName);
             if (bucketColumnHandle == null) {
                 throw new TrinoException(
@@ -197,9 +197,9 @@ public final class HiveBucketing
             bucketColumns.add(bucketColumnHandle);
         }
 
-        BucketingVersion bucketingVersion = hiveBucketProperty.get().getBucketingVersion();
-        int bucketCount = hiveBucketProperty.get().getBucketCount();
-        List<SortingColumn> sortedBy = hiveBucketProperty.get().getSortedBy();
+        BucketingVersion bucketingVersion = getBucketingVersion(table.getParameters());
+        int bucketCount = hiveBucketProperty.get().bucketCount();
+        List<SortingColumn> sortedBy = hiveBucketProperty.get().sortedBy();
         return Optional.of(new HiveBucketHandle(bucketColumns.build(), bucketingVersion, bucketCount, bucketCount, sortedBy));
     }
 
@@ -217,7 +217,8 @@ public final class HiveBucketing
         if (bindings.isEmpty()) {
             return Optional.empty();
         }
-        Optional<Set<Integer>> buckets = getHiveBuckets(hiveBucketProperty, dataColumns, bindings.get());
+        BucketingVersion bucketingVersion = hiveTable.getBucketHandle().get().bucketingVersion();
+        Optional<Set<Integer>> buckets = getHiveBuckets(bucketingVersion, hiveBucketProperty, dataColumns, bindings.get());
         if (buckets.isPresent()) {
             return Optional.of(new HiveBucketFilter(buckets.get()));
         }
@@ -232,7 +233,7 @@ public final class HiveBucketing
         }
         ValueSet values = domain.get().getValues();
         ImmutableSet.Builder<Integer> builder = ImmutableSet.builder();
-        int bucketCount = hiveBucketProperty.getBucketCount();
+        int bucketCount = hiveBucketProperty.bucketCount();
         for (int i = 0; i < bucketCount; i++) {
             if (values.containsValue((long) i)) {
                 builder.add(i);
@@ -241,14 +242,14 @@ public final class HiveBucketing
         return Optional.of(new HiveBucketFilter(builder.build()));
     }
 
-    private static Optional<Set<Integer>> getHiveBuckets(HiveBucketProperty hiveBucketProperty, List<HiveColumnHandle> dataColumns, Map<ColumnHandle, List<NullableValue>> bindings)
+    private static Optional<Set<Integer>> getHiveBuckets(BucketingVersion bucketingVersion, HiveBucketProperty hiveBucketProperty, List<HiveColumnHandle> dataColumns, Map<ColumnHandle, List<NullableValue>> bindings)
     {
         if (bindings.isEmpty()) {
             return Optional.empty();
         }
 
         // Get bucket columns names
-        List<String> bucketColumns = hiveBucketProperty.getBucketedBy();
+        List<String> bucketColumns = hiveBucketProperty.bucketedBy();
 
         // Verify the bucket column types are supported
         Map<String, HiveType> hiveTypes = new HashMap<>();
@@ -286,8 +287,8 @@ public final class HiveBucketing
                 .collect(toImmutableList());
 
         return getHiveBuckets(
-                hiveBucketProperty.getBucketingVersion(),
-                hiveBucketProperty.getBucketCount(),
+                bucketingVersion,
+                hiveBucketProperty.bucketCount(),
                 typeInfos,
                 orderedBindings);
     }
@@ -295,25 +296,22 @@ public final class HiveBucketing
     public static BucketingVersion getBucketingVersion(Map<String, String> tableProperties)
     {
         String bucketingVersion = tableProperties.getOrDefault(TABLE_BUCKETING_VERSION, "1");
-        switch (bucketingVersion) {
-            case "1":
-                return BUCKETING_V1;
-            case "2":
-                return BUCKETING_V2;
-            default:
-                // org.apache.hadoop.hive.ql.exec.Utilities.getBucketingVersion is more permissive and treats any non-number as "1"
-                throw new TrinoException(StandardErrorCode.NOT_SUPPORTED, format("Unsupported bucketing version: '%s'", bucketingVersion));
-        }
+        return switch (bucketingVersion) {
+            case "1" -> BUCKETING_V1;
+            case "2" -> BUCKETING_V2;
+            // org.apache.hadoop.hive.ql.exec.Utilities.getBucketingVersion is more permissive and treats any non-number as "1"
+            default -> throw new TrinoException(StandardErrorCode.NOT_SUPPORTED, format("Unsupported bucketing version: '%s'", bucketingVersion));
+        };
     }
 
     public static boolean isSupportedBucketing(Table table)
     {
-        return isSupportedBucketing(table.getStorage().getBucketProperty().orElseThrow(), table.getDataColumns(), table.getTableName());
+        return isSupportedBucketing(table.getStorage().getBucketProperty().orElseThrow().bucketedBy(), table.getDataColumns(), table.getTableName());
     }
 
-    public static boolean isSupportedBucketing(HiveBucketProperty bucketProperty, List<Column> dataColumns, String tableName)
+    public static boolean isSupportedBucketing(List<String> bucketedBy, List<Column> dataColumns, String tableName)
     {
-        return bucketProperty.getBucketedBy().stream()
+        return bucketedBy.stream()
                 .map(columnName -> dataColumns.stream().filter(column -> column.getName().equals(columnName)).findFirst()
                         .orElseThrow(() -> new IllegalArgumentException(format("Cannot find column '%s' in %s", columnName, tableName))))
                 .map(Column::getType)
@@ -327,26 +325,11 @@ public final class HiveBucketing
             case PRIMITIVE:
                 PrimitiveTypeInfo typeInfo = (PrimitiveTypeInfo) type;
                 PrimitiveCategory primitiveCategory = typeInfo.getPrimitiveCategory();
-                switch (primitiveCategory) {
-                    case BOOLEAN:
-                    case BYTE:
-                    case SHORT:
-                    case INT:
-                    case LONG:
-                    case FLOAT:
-                    case DOUBLE:
-                    case STRING:
-                    case VARCHAR:
-                    case DATE:
-                        return true;
-                    case BINARY:
-                    case TIMESTAMP:
-                    case DECIMAL:
-                    case CHAR:
-                        return false;
-                    default:
-                        throw new UnsupportedOperationException("Unknown type " + type);
-                }
+                return switch (primitiveCategory) {
+                    case BOOLEAN, BYTE, SHORT, INT, LONG, FLOAT, DOUBLE, STRING, VARCHAR, DATE -> true;
+                    case BINARY, TIMESTAMP, DECIMAL, CHAR -> false;
+                    default -> throw new UnsupportedOperationException("Unknown type " + type);
+                };
             case LIST:
                 return isTypeSupportedForBucketing(((ListTypeInfo) type).getListElementTypeInfo());
             case MAP:

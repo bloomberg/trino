@@ -136,6 +136,12 @@ public class FailedDispatchQuery
     public void pruneInfo() {}
 
     @Override
+    public boolean isInfoPruned()
+    {
+        return false;
+    }
+
+    @Override
     public QueryId getQueryId()
     {
         return basicQueryInfo.getQueryId();
@@ -262,6 +268,7 @@ public class FailedDispatchQuery
                 now,
                 now,
                 now,
+                new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),
                 new Duration(0, MILLISECONDS),

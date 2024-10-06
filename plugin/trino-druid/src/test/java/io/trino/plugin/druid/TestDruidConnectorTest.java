@@ -14,7 +14,6 @@
 package io.trino.plugin.druid;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -31,16 +30,14 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.sql.DatabaseMetaData;
 import java.sql.SQLException;
 
 import static io.trino.plugin.druid.DruidQueryRunner.copyAndIngestTpchData;
-import static io.trino.plugin.druid.DruidQueryRunner.createDruidQueryRunnerTpch;
 import static io.trino.plugin.druid.DruidTpchTables.SELECT_FROM_ORDERS;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
@@ -57,8 +54,10 @@ import static io.trino.tpch.TpchTable.REGION;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertFalse;
+import static org.junit.jupiter.api.Assumptions.abort;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestDruidConnectorTest
         extends BaseJdbcConnectorTest
 {
@@ -69,14 +68,12 @@ public class TestDruidConnectorTest
             throws Exception
     {
         druidServer = closeAfterClass(new TestingDruidServer());
-        return createDruidQueryRunnerTpch(
-                druidServer,
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableList.of(ORDERS, LINE_ITEM, NATION, REGION, PART, CUSTOMER));
+        return DruidQueryRunner.builder(druidServer)
+                .setInitialTables(ImmutableList.of(ORDERS, LINE_ITEM, NATION, REGION, PART, CUSTOMER))
+                .build();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void destroy()
     {
         druidServer = null; // closed by closeAfterClass
@@ -87,19 +84,20 @@ public class TestDruidConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ADD_COLUMN,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_SCHEMA,
-                    SUPPORTS_CREATE_TABLE,
-                    SUPPORTS_DELETE,
-                    SUPPORTS_INSERT,
-                    SUPPORTS_RENAME_COLUMN,
-                    SUPPORTS_RENAME_TABLE,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_UPDATE -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_SCHEMA,
+                 SUPPORTS_CREATE_TABLE,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_INSERT,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -127,10 +125,11 @@ public class TestDruidConnectorTest
                 .build();
     }
 
+    @Test
     @Override
     public void testShowColumns()
     {
-        assertThat(query("SHOW COLUMNS FROM orders")).matches(getDescribeOrdersResult());
+        assertThat(query("SHOW COLUMNS FROM orders")).result().matches(getDescribeOrdersResult());
     }
 
     @Test
@@ -161,43 +160,22 @@ public class TestDruidConnectorTest
                         ")");
     }
 
-    @Test
     @Override
-    public void testSelectInformationSchemaColumns()
+    protected @Language("SQL") String getOrdersTableWithColumns()
     {
-        String catalog = getSession().getCatalog().get();
-        String schema = getSession().getSchema().get();
-        String schemaPattern = schema.replaceAll(".$", "_");
-
-        @Language("SQL") String ordersTableWithColumns = "VALUES " +
-                "('orders', 'orderkey'), " +
-                "('orders', 'custkey'), " +
-                "('orders', 'orderstatus'), " +
-                "('orders', 'totalprice'), " +
-                "('orders', 'orderdate'), " +
-                "('orders', '__time'), " +
-                "('orders', 'orderpriority'), " +
-                "('orders', 'clerk'), " +
-                "('orders', 'shippriority'), " +
-                "('orders', 'comment')";
-
-        assertQuery("SELECT table_schema FROM information_schema.columns WHERE table_schema = '" + schema + "' GROUP BY table_schema", "VALUES '" + schema + "'");
-        assertQuery("SELECT table_name FROM information_schema.columns WHERE table_name = 'orders' GROUP BY table_name", "VALUES 'orders'");
-        assertQuery("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = '" + schema + "' AND table_name = 'orders'", ordersTableWithColumns);
-        assertQuery("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = '" + schema + "' AND table_name LIKE '%rders'", ordersTableWithColumns);
-        assertQuery("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema LIKE '" + schemaPattern + "' AND table_name LIKE '_rder_'", ordersTableWithColumns);
-        assertQuery(
-                "SELECT table_name, column_name FROM information_schema.columns " +
-                        "WHERE table_catalog = '" + catalog + "' AND table_schema = '" + schema + "' AND table_name LIKE '%orders%'",
-                ordersTableWithColumns);
-
-        assertQuerySucceeds("SELECT * FROM information_schema.columns");
-        assertQuery("SELECT DISTINCT table_name, column_name FROM information_schema.columns WHERE table_name LIKE '_rders'", ordersTableWithColumns);
-        assertQuerySucceeds("SELECT * FROM information_schema.columns WHERE table_catalog = '" + catalog + "'");
-        assertQuerySucceeds("SELECT * FROM information_schema.columns WHERE table_catalog = '" + catalog + "' AND table_schema = '" + schema + "'");
-        assertQuery("SELECT table_name, column_name FROM information_schema.columns WHERE table_catalog = '" + catalog + "' AND table_schema = '" + schema + "' AND table_name LIKE '_rders'", ordersTableWithColumns);
-        assertQuerySucceeds("SELECT * FROM information_schema.columns WHERE table_catalog = '" + catalog + "' AND table_name LIKE '%'");
-        assertQuery("SELECT column_name FROM information_schema.columns WHERE table_catalog = 'something_else'", "SELECT '' WHERE false");
+        return """
+                VALUES
+                   ('orders', 'orderkey'),
+                   ('orders', 'custkey'),
+                   ('orders', 'orderstatus'),
+                   ('orders', 'totalprice'),
+                   ('orders', 'orderdate'),
+                   ('orders', '__time'),
+                   ('orders', 'orderpriority'),
+                   ('orders', 'clerk'),
+                   ('orders', 'shippriority'),
+                   ('orders', 'comment')
+                """;
     }
 
     @Test
@@ -239,7 +217,7 @@ public class TestDruidConnectorTest
                 .row("shippriority", "bigint", "", "") // Druid doesn't support int type
                 .row("totalprice", "double", "", "")
                 .build();
-        assertThat(query("DESCRIBE " + datasourceA)).matches(expectedColumns);
+        assertThat(query("DESCRIBE " + datasourceA)).result().matches(expectedColumns);
 
         // Assert that only columns from datsourceB are returned
         expectedColumns = MaterializedResult.resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
@@ -254,7 +232,7 @@ public class TestDruidConnectorTest
                 .row("shippriority_x", "bigint", "", "") // Druid doesn't support int type
                 .row("totalprice_x", "double", "", "")
                 .build();
-        assertThat(query("DESCRIBE " + datasourceB)).matches(expectedColumns);
+        assertThat(query("DESCRIBE " + datasourceB)).result().matches(expectedColumns);
     }
 
     @Test
@@ -302,44 +280,48 @@ public class TestDruidConnectorTest
     @Override
     public void testInsertNegativeDate()
     {
-        throw new SkipException("Druid connector does not map 'orderdate' column to date type and INSERT statement");
+        abort("Druid connector does not map 'orderdate' column to date type and INSERT statement");
     }
 
     @Test
     @Override
     public void testDateYearOfEraPredicate()
     {
-        throw new SkipException("Druid connector does not map 'orderdate' column to date type");
+        abort("Druid connector does not map 'orderdate' column to date type");
     }
 
+    @Test
     @Override
     public void testCharTrailingSpace()
     {
         assertThatThrownBy(super::testCharTrailingSpace)
                 .hasMessageContaining("Error while executing SQL \"CREATE TABLE druid.char_trailing_space");
-        throw new SkipException("Implement test for Druid");
+        abort("Implement test for Druid");
     }
 
+    @Test
     @Override
     public void testNativeQuerySelectFromTestTable()
     {
-        throw new SkipException("cannot create test table for Druid");
+        abort("cannot create test table for Druid");
     }
 
+    @Test
     @Override
     public void testNativeQueryCreateStatement()
     {
         // override because Druid fails to prepare statement, while other connectors succeed in preparing statement and then fail because of no metadata available
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
-        assertThatThrownBy(() -> query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE numbers(n INTEGER)'))"))
-                .hasMessageContaining("Failed to get table handle for prepared query");
-        assertFalse(getQueryRunner().tableExists(getSession(), "numbers"));
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'CREATE TABLE numbers(n INTEGER)'))"))
+                .failure().hasMessageContaining("Failed to get table handle for prepared query");
+        assertThat(getQueryRunner().tableExists(getSession(), "numbers")).isFalse();
     }
 
+    @Test
     @Override
     public void testNativeQueryInsertStatementTableExists()
     {
-        throw new SkipException("cannot create test table for Druid");
+        abort("cannot create test table for Druid");
     }
 
     @Test
@@ -527,8 +509,21 @@ public class TestDruidConnectorTest
                 .isNotFullyPushedDown(FilterNode.class);
     }
 
-    @Test(dataProvider = "timestampValuesProvider")
-    public void testPredicatePushdownForTimestampWithHigherPrecision(String timestamp)
+    @Test
+    public void testPredicatePushdownForTimestampWithHigherPrecision()
+    {
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.1234");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.12345");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.123456");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.1234567");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.12345678");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.123456789");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.1234567891");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.12345678912");
+        testPredicatePushdownForTimestampWithHigherPrecision("1992-01-04 00:00:00.123456789123");
+    }
+
+    private void testPredicatePushdownForTimestampWithHigherPrecision(String timestamp)
     {
         // timestamp equality
         assertThat(query(format("SELECT linenumber, partkey, shipmode FROM lineitem WHERE __time = TIMESTAMP '%s'", timestamp)))
@@ -568,19 +563,27 @@ public class TestDruidConnectorTest
                 .isNotFullyPushedDown(FilterNode.class);
     }
 
-    @DataProvider
-    public Object[][] timestampValuesProvider()
+    @Test
+    @Override // Override because Druid doesn't support DDL
+    public void testExecuteProcedure()
     {
-        return new Object[][] {
-                {"1992-01-04 00:00:00.1234"},
-                {"1992-01-04 00:00:00.12345"},
-                {"1992-01-04 00:00:00.123456"},
-                {"1992-01-04 00:00:00.1234567"},
-                {"1992-01-04 00:00:00.12345678"},
-                {"1992-01-04 00:00:00.123456789"},
-                {"1992-01-04 00:00:00.1234567891"},
-                {"1992-01-04 00:00:00.12345678912"},
-                {"1992-01-04 00:00:00.123456789123"}
-        };
+        assertThatThrownBy(super::testExecuteProcedure)
+                .hasMessageContaining("This connector does not support creating tables");
+    }
+
+    @Test
+    @Override // Override because Druid doesn't support DDL
+    public void testExecuteProcedureWithNamedArgument()
+    {
+        assertThatThrownBy(super::testExecuteProcedureWithNamedArgument)
+                .hasMessageContaining("This connector does not support creating tables");
+    }
+
+    @Test
+    @Override // Override because Druid allows SELECT query in update procedure
+    public void testExecuteProcedureWithInvalidQuery()
+    {
+        assertUpdate("CALL system.execute('SELECT 1')");
+        assertQueryFails("CALL system.execute('invalid')", ".*Non-query expression encountered in illegal context.*");
     }
 }

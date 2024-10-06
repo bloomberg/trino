@@ -5,15 +5,14 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>429-SNAPSHOT</version>
+        <version>461-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-filesystem-azure</artifactId>
-    <description>Trino Filesystem - Azure</description>
+    <description>Trino - Azure Blob file system support</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
     </properties>
 
@@ -21,17 +20,16 @@
         <dependency>
             <groupId>com.azure</groupId>
             <artifactId>azure-core</artifactId>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.dataformat</groupId>
-                    <artifactId>jackson-dataformat-xml</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
             <groupId>com.azure</groupId>
             <artifactId>azure-core-http-okhttp</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.azure</groupId>
+            <artifactId>azure-core-tracing-opentelemetry</artifactId>
         </dependency>
 
         <dependency>
@@ -60,10 +58,6 @@
                 <exclusion>
                     <groupId>com.azure</groupId>
                     <artifactId>azure-core-http-netty</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>com.fasterxml.jackson.dataformat</groupId>
-                    <artifactId>jackson-dataformat-xml</artifactId>
                 </exclusion>
             </exclusions>
         </dependency>
@@ -101,6 +95,11 @@
         </dependency>
 
         <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>configuration</artifactId>
         </dependency>
@@ -108,6 +107,11 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>units</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
         </dependency>
 
         <dependency>
@@ -126,8 +130,26 @@
         </dependency>
 
         <dependency>
+            <groupId>jakarta.annotation</groupId>
+            <artifactId>jakarta.annotation-api</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>jakarta.validation</groupId>
             <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-xml</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>oauth2-oidc-sdk</artifactId>
+            <classifier>jdk11</classifier>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -138,13 +160,7 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
-            <artifactId>log-manager</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>testing</artifactId>
+            <artifactId>junit-extensions</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -158,19 +174,7 @@
 
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-main</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>io.trino.hive</groupId>
-            <artifactId>hive-apache</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>it.unimi.dsi</groupId>
-            <artifactId>fastutil</artifactId>
+            <artifactId>trino-testing</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -183,12 +187,6 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -206,9 +204,10 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <excludes>
-                                <exclude>**/TestAzureFileSystemBlob.java</exclude>
-                                <exclude>**/TestAzureFileSystemGen2Flat.java</exclude>
-                                <exclude>**/TestAzureFileSystemGen2Hierarchical.java</exclude>
+                                <exclude>**/TestAzureFileSystemGen2Flat*.java</exclude>
+                                <exclude>**/TestAzureFileSystemGen2Hierarchical*.java</exclude>
+                                <exclude>**/TestAzureFileSystemOAuthGen2Flat*.java</exclude>
+                                <exclude>**/TestAzureFileSystemOAuthGen2Hierarchical*.java</exclude>
                             </excludes>
                         </configuration>
                     </plugin>
@@ -225,9 +224,10 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <includes>
-                                <include>**/TestAzureFileSystemBlob.java</include>
-                                <include>**/TestAzureFileSystemGen2Flat.java</include>
-                                <include>**/TestAzureFileSystemGen2Hierarchical.java</include>
+                                <include>**/TestAzureFileSystemGen2Flat*.java</include>
+                                <include>**/TestAzureFileSystemGen2Hierarchical*.java</include>
+                                <include>**/TestAzureFileSystemOAuthGen2Flat*.java</include>
+                                <include>**/TestAzureFileSystemOAuthGen2Hierarchical*.java</include>
                             </includes>
                         </configuration>
                     </plugin>

@@ -33,7 +33,6 @@ import java.util.stream.IntStream;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Collections2.orderedPermutations;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class IrRowPatternToProgramRewriter
@@ -82,16 +81,16 @@ public class IrRowPatternToProgramRewriter
         @Override
         protected Void visitIrAnchor(IrAnchor node, Void context)
         {
-            switch (node.getType()) {
-                case PARTITION_START:
+            return switch (node.getType()) {
+                case PARTITION_START -> {
                     instructions.add(new MatchStart());
-                    return null;
-                case PARTITION_END:
+                    yield null;
+                }
+                case PARTITION_END -> {
                     instructions.add(new MatchEnd());
-                    return null;
-                default:
-                    throw new IllegalStateException("unexpected anchor type: " + node.getType());
-            }
+                    yield null;
+                }
+            };
         }
 
         @Override
@@ -119,7 +118,7 @@ public class IrRowPatternToProgramRewriter
                 instructions.set(splitPosition, new Split(splitTarget, instructions.size()));
             }
 
-            process(parts.get(parts.size() - 1));
+            process(parts.getLast());
 
             for (int position : jumpPositions) {
                 instructions.set(position, new Jump(instructions.size()));
@@ -174,7 +173,7 @@ public class IrRowPatternToProgramRewriter
                 instructions.set(splitPosition, new Split(splitTarget, instructions.size()));
             }
 
-            concatenation(parts.get(parts.size() - 1));
+            concatenation(parts.getLast());
 
             for (int position : jumpPositions) {
                 instructions.set(position, new Jump(instructions.size()));
@@ -200,7 +199,7 @@ public class IrRowPatternToProgramRewriter
 
         private void loopingQuantified(IrRowPattern pattern, boolean greedy, int min)
         {
-            checkArgument(min >= 0, "invalid min value: " + min);
+            checkArgument(min >= 0, "invalid min value: %s", min);
 
             if (min == 0) {
                 int startSplitPosition = instructions.size();
@@ -243,7 +242,7 @@ public class IrRowPatternToProgramRewriter
 
         private void rangeQuantified(IrRowPattern pattern, boolean greedy, int min, int max)
         {
-            checkArgument(min <= max, format("invalid range: (%s, %s)", min, max));
+            checkArgument(min <= max, "invalid range: (%s, %s)", min, max);
 
             for (int i = 0; i < min; i++) {
                 process(pattern);

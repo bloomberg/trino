@@ -35,19 +35,8 @@ public final class UpdateExpectedPlans
         List<Future<Void>> futures = ForkJoinPool.commonPool().invokeAll(
                 ImmutableList.<Callable<Void>>builder()
                         // in alphabetical order
-                        .add(runMain(TestHivePartitionedTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestHivePartitionedTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestHiveTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestHiveTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergOrcPartitionedTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergOrcPartitionedTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergOrcTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergOrcTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergParquetPartitionedTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergParquetPartitionedTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergParquetTpcdsCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergParquetTpchCostBasedPlan.class, noArgs))
-                        .add(runMain(TestIcebergSmallFilesParquetTpcdsCostBasedPlan.class, noArgs))
+                        .add(runMain(TestPartitionedTpcdsCostBasedPlan.class, noArgs))
+                        .add(runMain(TestTpchCostBasedPlan.class, noArgs))
                         .build());
 
         for (Future<Void> future : futures) {

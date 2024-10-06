@@ -33,29 +33,35 @@ import java.util.concurrent.TimeUnit;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static java.lang.Math.max;
+import static java.lang.Math.round;
+import static java.lang.Runtime.getRuntime;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 @DefunctConfig({
-        "query.max-pending-splits-per-node",
-        "query.queue-config-file",
         "experimental.big-query-initial-hash-partitions",
         "experimental.fault-tolerant-execution-force-preferred-write-partitioning-enabled",
         "experimental.max-concurrent-big-queries",
         "experimental.max-queued-big-queries",
+        "fault-tolerant-execution-target-task-input-size",
+        "fault-tolerant-execution-target-task-split-count",
         "query-manager.initialization-required-workers",
         "query-manager.initialization-timeout",
-        "fault-tolerant-execution-target-task-split-count",
-        "fault-tolerant-execution-target-task-input-size",
+        "query.initial-hash-partitions",
+        "query.max-age",
+        "query.max-pending-splits-per-node",
+        "query.queue-config-file",
         "query.remote-task.max-consecutive-error-count",
         "query.remote-task.min-error-duration",
+        "retry-attempts"
 })
 public class QueryManagerConfig
 {
-    public static final long AVAILABLE_HEAP_MEMORY = Runtime.getRuntime().maxMemory();
+    public static final long AVAILABLE_HEAP_MEMORY = getRuntime().maxMemory();
     public static final int MAX_TASK_RETRY_ATTEMPTS = 126;
     public static final int FAULT_TOLERANT_EXECUTION_MAX_PARTITION_COUNT_LIMIT = 1000;
-
+    public static final int DISPATCHER_THREADPOOL_MAX_SIZE = max(50, getRuntime().availableProcessors() * 10);
     private int scheduleSplitBatchSize = 1000;
     private int minScheduleSplitBatchSize = 100;
     private int maxConcurrentQueries = 1000;
@@ -65,7 +71,7 @@ public class QueryManagerConfig
     private int maxHashPartitionCount = 100;
     private int minHashPartitionCount = 4;
     private int minHashPartitionCountForWrite = 50;
-    private int maxWriterTasksCount = 100;
+    private int maxWriterTaskCount = 100;
     private Duration minQueryExpireAge = new Duration(15, TimeUnit.MINUTES);
     private int maxQueryHistory = 100;
     private int maxQueryLength = 1_000_000;
@@ -77,11 +83,9 @@ public class QueryManagerConfig
     private int queryManagerExecutorPoolSize = 5;
     private int queryExecutorPoolSize = 1000;
     private int maxStateMachineCallbackThreads = 5;
+    private int maxSplitManagerCallbackThreads = 100;
 
-    /**
-     * default value is overwritten for fault tolerant execution in {@link #applyFaultTolerantExecutionDefaults()}
-     */
-    private Duration remoteTaskMaxErrorDuration = new Duration(5, TimeUnit.MINUTES);
+    private Duration remoteTaskMaxErrorDuration = new Duration(1, TimeUnit.MINUTES);
     private int remoteTaskMaxCallbackThreads = 1000;
 
     private String queryExecutionPolicy = "phased";
@@ -91,6 +95,7 @@ public class QueryManagerConfig
     private Duration queryMaxCpuTime = new Duration(1_000_000_000, TimeUnit.DAYS);
     private Optional<DataSize> queryMaxScanPhysicalBytes = Optional.empty();
     private int queryReportedRuleStatsLimit = 10;
+    private int dispatcherQueryPoolSize = DISPATCHER_THREADPOOL_MAX_SIZE;
 
     private int requiredWorkers = 1;
     private Duration requiredWorkersMaxWait = new Duration(5, TimeUnit.MINUTES);
@@ -103,7 +108,7 @@ public class QueryManagerConfig
     private double retryDelayScaleFactor = 2.0;
 
     private int maxTasksWaitingForExecutionPerQuery = 10;
-    private int maxTasksWaitingForNodePerStage = 5;
+    private int maxTasksWaitingForNodePerQuery = 5;
 
     private boolean enabledAdaptiveTaskRequestSize = true;
     private DataSize maxRemoteTaskRequestSize = DataSize.of(8, MEGABYTE);
@@ -127,8 +132,8 @@ public class QueryManagerConfig
     private int faultTolerantExecutionHashDistributionWriteTaskTargetMaxCount = 2000;
 
     private DataSize faultTolerantExecutionStandardSplitSize = DataSize.of(64, MEGABYTE);
-    private int faultTolerantExecutionMaxTaskSplitCount = 256;
-    private DataSize faultTolerantExecutionTaskDescriptorStorageMaxMemory = DataSize.ofBytes(Math.round(AVAILABLE_HEAP_MEMORY * 0.15));
+    private int faultTolerantExecutionMaxTaskSplitCount = 2048;
+    private DataSize faultTolerantExecutionTaskDescriptorStorageMaxMemory = DataSize.ofBytes(round(AVAILABLE_HEAP_MEMORY * 0.15));
     private int faultTolerantExecutionMaxPartitionCount = 50;
     private int faultTolerantExecutionMinPartitionCount = 4;
     private int faultTolerantExecutionMinPartitionCountForWrite = 50;
@@ -137,7 +142,6 @@ public class QueryManagerConfig
     // Currently, initial setup is 5GB of task memory processing 4GB data. Given that we triple the memory in case of
     // task OOM, max task size is set to 12GB such that tasks of stages below threshold will succeed within one retry.
     private DataSize faultTolerantExecutionRuntimeAdaptivePartitioningMaxTaskSize = DataSize.of(12, GIGABYTE);
-    private boolean faultTolerantExecutionForcePreferredWritePartitioningEnabled = true;
     private double faultTolerantExecutionMinSourceStageProgress = 0.2;
 
     private boolean faultTolerantExecutionSmallStageEstimationEnabled = true;
@@ -145,6 +149,17 @@ public class QueryManagerConfig
     private double faultTolerantExecutionSmallStageSourceSizeMultiplier = 1.2;
     private boolean faultTolerantExecutionSmallStageRequireNoMorePartitions;
     private boolean faultTolerantExecutionStageEstimationForEagerParentEnabled = true;
+    private boolean faultTolerantExecutionAdaptiveQueryPlanningEnabled = true;
+    private boolean faultTolerantExecutionAdaptiveJoinReorderingEnabled = true;
+    // Use a smaller threshold to change the order since the cost of changing the order is lower here. Additionally,
+    // the data size stats are more accurate compared to static planning since they are collected at run time from the
+    // stage execution.
+    private double faultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio = 1.5;
+    // With speculative execution, reordering small joins might cause unnecessary restarts of the
+    // join stage and lead to performance degradation. Hence, we only reorder if the size of the right side is
+    // above this threshold.
+    // TODO: Consider the cost of restarting the stage as part of adaptive planning.
+    private DataSize faultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold = DataSize.of(5, GIGABYTE);
 
     @Min(1)
     public int getScheduleSplitBatchSize()
@@ -222,7 +237,7 @@ public class QueryManagerConfig
     }
 
     @Config("query.max-hash-partition-count")
-    @LegacyConfig({"query.initial-hash-partitions", "query.hash-partition-count"})
+    @LegacyConfig("query.hash-partition-count")
     @ConfigDescription("Maximum number of partitions for distributed joins and aggregations")
     public QueryManagerConfig setMaxHashPartitionCount(int maxHashPartitionCount)
     {
@@ -259,16 +274,16 @@ public class QueryManagerConfig
     }
 
     @Min(1)
-    public int getMaxWriterTasksCount()
+    public int getMaxWriterTaskCount()
     {
-        return maxWriterTasksCount;
+        return maxWriterTaskCount;
     }
 
     @Config("query.max-writer-task-count")
     @ConfigDescription("Maximum number of tasks that will participate in writing data")
-    public QueryManagerConfig setMaxWriterTasksCount(int maxWritersNodesCount)
+    public QueryManagerConfig setMaxWriterTaskCount(int maxWritersNodesCount)
     {
-        this.maxWriterTasksCount = maxWritersNodesCount;
+        this.maxWriterTaskCount = maxWritersNodesCount;
         return this;
     }
 
@@ -278,7 +293,6 @@ public class QueryManagerConfig
         return minQueryExpireAge;
     }
 
-    @LegacyConfig("query.max-age")
     @Config("query.min-expire-age")
     public QueryManagerConfig setMinQueryExpireAge(Duration minQueryExpireAge)
     {
@@ -394,6 +408,20 @@ public class QueryManagerConfig
         return this;
     }
 
+    @Min(1)
+    public int getMaxSplitManagerCallbackThreads()
+    {
+        return maxSplitManagerCallbackThreads;
+    }
+
+    @Config("query.max-split-manager-callback-threads")
+    @ConfigDescription("The maximum number of threads allowed to run splits generation callbacks concurrently")
+    public QueryManagerConfig setMaxSplitManagerCallbackThreads(int maxSplitManagerCallbackThreads)
+    {
+        this.maxSplitManagerCallbackThreads = maxSplitManagerCallbackThreads;
+        return this;
+    }
+
     @NotNull
     @MinDuration("1s")
     public Duration getRemoteTaskMaxErrorDuration()
@@ -488,6 +516,19 @@ public class QueryManagerConfig
     }
 
     @Min(1)
+    public int getDispatcherQueryPoolSize()
+    {
+        return dispatcherQueryPoolSize;
+    }
+
+    @Config("query.dispatcher-query-pool-size")
+    public QueryManagerConfig setDispatcherQueryPoolSize(int dispatcherQueryPoolSize)
+    {
+        this.dispatcherQueryPoolSize = dispatcherQueryPoolSize;
+        return this;
+    }
+
+    @Min(1)
     public int getRemoteTaskMaxCallbackThreads()
     {
         return remoteTaskMaxCallbackThreads;
@@ -561,7 +602,6 @@ public class QueryManagerConfig
     }
 
     @Config("query-retry-attempts")
-    @LegacyConfig("retry-attempts")
     public QueryManagerConfig setQueryRetryAttempts(int queryRetryAttempts)
     {
         this.queryRetryAttempts = queryRetryAttempts;
@@ -610,7 +650,6 @@ public class QueryManagerConfig
         return this;
     }
 
-    @NotNull
     public double getRetryDelayScaleFactor()
     {
         return retryDelayScaleFactor;
@@ -640,16 +679,17 @@ public class QueryManagerConfig
     }
 
     @Min(1)
-    public int getMaxTasksWaitingForNodePerStage()
+    public int getMaxTasksWaitingForNodePerQuery()
     {
-        return maxTasksWaitingForNodePerStage;
+        return maxTasksWaitingForNodePerQuery;
     }
 
-    @Config("max-tasks-waiting-for-node-per-stage")
-    @ConfigDescription("Maximum possible number of tasks waiting for node allocation per stage before scheduling of new tasks for stage is paused")
-    public QueryManagerConfig setMaxTasksWaitingForNodePerStage(int maxTasksWaitingForNodePerStage)
+    @Config("max-tasks-waiting-for-node-per-query")
+    @LegacyConfig("max-tasks-waiting-for-node-per-stage") // TODO drop this alltogether in couple releases as name is misleading
+    @ConfigDescription("Maximum possible number of tasks waiting for node allocation per query before scheduling of new tasks for query is paused")
+    public QueryManagerConfig setMaxTasksWaitingForNodePerQuery(int maxTasksWaitingForNodePerQuery)
     {
-        this.maxTasksWaitingForNodePerStage = maxTasksWaitingForNodePerStage;
+        this.maxTasksWaitingForNodePerQuery = maxTasksWaitingForNodePerQuery;
         return this;
     }
 
@@ -1091,8 +1131,57 @@ public class QueryManagerConfig
         return this;
     }
 
-    public void applyFaultTolerantExecutionDefaults()
+    public boolean isFaultTolerantExecutionAdaptiveQueryPlanningEnabled()
     {
-        remoteTaskMaxErrorDuration = new Duration(1, MINUTES);
+        return faultTolerantExecutionAdaptiveQueryPlanningEnabled;
+    }
+
+    @Config("fault-tolerant-execution-adaptive-query-planning-enabled")
+    @ConfigDescription("Enable adaptive query planning for the fault tolerant execution")
+    public QueryManagerConfig setFaultTolerantExecutionAdaptiveQueryPlanningEnabled(boolean faultTolerantExecutionSmallStageEstimationEnabled)
+    {
+        this.faultTolerantExecutionAdaptiveQueryPlanningEnabled = faultTolerantExecutionSmallStageEstimationEnabled;
+        return this;
+    }
+
+    public boolean isFaultTolerantExecutionAdaptiveJoinReorderingEnabled()
+    {
+        return faultTolerantExecutionAdaptiveJoinReorderingEnabled;
+    }
+
+    @Config("fault-tolerant-execution-adaptive-join-reordering-enabled")
+    @ConfigDescription("Reorder partitioned join based on run time stats in fault tolerant execution")
+    public QueryManagerConfig setFaultTolerantExecutionAdaptiveJoinReorderingEnabled(boolean faultTolerantExecutionAdaptiveJoinReorderingEnabled)
+    {
+        this.faultTolerantExecutionAdaptiveJoinReorderingEnabled = faultTolerantExecutionAdaptiveJoinReorderingEnabled;
+        return this;
+    }
+
+    @DecimalMin("1.0")
+    public double getFaultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio()
+    {
+        return faultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio;
+    }
+
+    @Config("fault-tolerant-execution-adaptive-join-reordering-size-difference-ratio")
+    @ConfigDescription("The ratio of difference in estimated size of right and left side of join to consider reordering")
+    public QueryManagerConfig setFaultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio(double faultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio)
+    {
+        this.faultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio = faultTolerantExecutionAdaptiveJoinReorderingSizeDifferenceRatio;
+        return this;
+    }
+
+    @NotNull
+    public DataSize getFaultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold()
+    {
+        return faultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold;
+    }
+
+    @Config("fault-tolerant-execution-adaptive-join-reordering-min-size-threshold")
+    @ConfigDescription("The minimum size of the right side of join to consider reordering")
+    public QueryManagerConfig setFaultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold(DataSize faultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold)
+    {
+        this.faultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold = faultTolerantExecutionAdaptiveJoinReorderingMinSizeThreshold;
+        return this;
     }
 }

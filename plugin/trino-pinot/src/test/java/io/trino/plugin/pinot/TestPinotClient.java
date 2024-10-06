@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.pinot;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.net.MediaType;
 import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.HttpStatus;
@@ -24,7 +25,7 @@ import io.trino.plugin.pinot.auth.PinotControllerAuthenticationProvider;
 import io.trino.plugin.pinot.auth.none.PinotEmptyAuthenticationProvider;
 import io.trino.plugin.pinot.client.IdentityPinotHostMapper;
 import io.trino.plugin.pinot.client.PinotClient;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
@@ -78,7 +79,7 @@ public class TestPinotClient
                 "}"));
         PinotConfig pinotConfig = new PinotConfig()
                 .setMetadataCacheExpiry(new Duration(1, TimeUnit.MILLISECONDS))
-                .setControllerUrls("localhost:7900");
+                .setControllerUrls(ImmutableList.of("localhost:7900"));
         PinotClient pinotClient = new PinotClient(
                 pinotConfig,
                 new IdentityPinotHostMapper(),

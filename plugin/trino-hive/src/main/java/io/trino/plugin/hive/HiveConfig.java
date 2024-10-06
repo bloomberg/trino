@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hive;
 
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.configuration.Config;
@@ -33,11 +32,13 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.joda.time.DateTimeZone;
 
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TimeZone;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.KILOBYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -67,15 +68,12 @@ public class HiveConfig
 {
     public static final String CONFIGURATION_HIVE_PARTITION_PROJECTION_ENABLED = "hive.partition-projection-enabled";
 
-    private static final Splitter SPLITTER = Splitter.on(',').trimResults().omitEmptyStrings();
-    public static final String HIVE_VIEWS_ENABLED = "hive.hive-views.enabled";
-
     private boolean singleStatementWritesOnly;
 
     private DataSize maxSplitSize = DataSize.of(64, MEGABYTE);
     private int maxPartitionsPerScan = 1_000_000;
     private int maxPartitionsForEagerLoad = 100_000;
-    private int maxOutstandingSplits = 1_000;
+    private int maxOutstandingSplits = 3_000;
     private DataSize maxOutstandingSplitsSize = DataSize.of(256, MEGABYTE);
     private int maxSplitIteratorThreads = 1_000;
     private int minPartitionBatchSize = 10;
@@ -168,12 +166,15 @@ public class HiveConfig
     private Optional<String> hudiCatalogName = Optional.empty();
 
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
+    private DataSize idleWriterMinFileSize = DataSize.of(16, MEGABYTE);
 
     private boolean sizeBasedSplitWeightsEnabled = true;
     private double minimumAssignedSplitWeight = 0.05;
     private boolean autoPurge;
 
     private boolean partitionProjectionEnabled;
+
+    private S3StorageClassFilter s3StorageClassFilter = S3StorageClassFilter.READ_ALL;
 
     public boolean isSingleStatementWritesOnly()
     {
@@ -267,6 +268,19 @@ public class HiveConfig
     public HiveConfig setTargetMaxFileSize(DataSize targetMaxFileSize)
     {
         this.targetMaxFileSize = targetMaxFileSize;
+        return this;
+    }
+
+    public DataSize getIdleWriterMinFileSize()
+    {
+        return idleWriterMinFileSize;
+    }
+
+    @Config("hive.idle-writer-min-file-size")
+    @ConfigDescription("Minimum data written by a single partition writer before it can be consider as 'idle' and could be closed by the engine")
+    public HiveConfig setIdleWriterMinFileSize(DataSize idleWriterMinFileSize)
+    {
+        this.idleWriterMinFileSize = idleWriterMinFileSize;
         return this;
     }
 
@@ -633,7 +647,8 @@ public class HiveConfig
 
     public DateTimeZone getRcfileDateTimeZone()
     {
-        return DateTimeZone.forID(rcfileTimeZone);
+        TimeZone timeZone = TimeZone.getTimeZone(ZoneId.of(rcfileTimeZone));
+        return DateTimeZone.forTimeZone(timeZone);
     }
 
     @NotNull
@@ -681,7 +696,8 @@ public class HiveConfig
 
     public DateTimeZone getOrcLegacyDateTimeZone()
     {
-        return DateTimeZone.forID(orcLegacyTimeZone);
+        TimeZone timeZone = TimeZone.getTimeZone(ZoneId.of(orcLegacyTimeZone));
+        return DateTimeZone.forTimeZone(timeZone);
     }
 
     @NotNull
@@ -700,7 +716,8 @@ public class HiveConfig
 
     public DateTimeZone getParquetDateTimeZone()
     {
-        return DateTimeZone.forID(parquetTimeZone);
+        TimeZone timeZone = TimeZone.getTimeZone(ZoneId.of(parquetTimeZone));
+        return DateTimeZone.forTimeZone(timeZone);
     }
 
     @NotNull
@@ -748,9 +765,9 @@ public class HiveConfig
     }
 
     @Config("hive.file-status-cache-tables")
-    public HiveConfig setFileStatusCacheTables(String fileStatusCacheTables)
+    public HiveConfig setFileStatusCacheTables(List<String> fileStatusCacheTables)
     {
-        this.fileStatusCacheTables = SPLITTER.splitToList(fileStatusCacheTables);
+        this.fileStatusCacheTables = ImmutableList.copyOf(fileStatusCacheTables);
         return this;
     }
 
@@ -785,7 +802,7 @@ public class HiveConfig
     }
 
     @LegacyConfig({"hive.views-execution.enabled", "hive.translate-hive-views"})
-    @Config(HIVE_VIEWS_ENABLED)
+    @Config("hive.hive-views.enabled")
     @ConfigDescription("Experimental: Allow translation of Hive views into Trino views")
     public HiveConfig setTranslateHiveViews(boolean translateHiveViews)
     {
@@ -1098,9 +1115,11 @@ public class HiveConfig
 
     @Config("hive.query-partition-filter-required-schemas")
     @ConfigDescription("List of schemas for which filter on partition column is enforced")
-    public HiveConfig setQueryPartitionFilterRequiredSchemas(String queryPartitionFilterRequiredSchemas)
+    public HiveConfig setQueryPartitionFilterRequiredSchemas(List<String> queryPartitionFilterRequiredSchemas)
     {
-        this.queryPartitionFilterRequiredSchemas = ImmutableSet.copyOf(SPLITTER.splitToList(queryPartitionFilterRequiredSchemas.toLowerCase(ENGLISH)));
+        this.queryPartitionFilterRequiredSchemas = queryPartitionFilterRequiredSchemas.stream()
+                .map(value -> value.toLowerCase(ENGLISH))
+                .collect(toImmutableSet());
         return this;
     }
 
@@ -1233,6 +1252,19 @@ public class HiveConfig
     public HiveConfig setPartitionProjectionEnabled(boolean enabledAthenaPartitionProjection)
     {
         this.partitionProjectionEnabled = enabledAthenaPartitionProjection;
+        return this;
+    }
+
+    public S3StorageClassFilter getS3StorageClassFilter()
+    {
+        return s3StorageClassFilter;
+    }
+
+    @Config("hive.s3.storage-class-filter")
+    @ConfigDescription("Filter based on storage class of S3 object")
+    public HiveConfig setS3StorageClassFilter(S3StorageClassFilter s3StorageClassFilter)
+    {
+        this.s3StorageClassFilter = s3StorageClassFilter;
         return this;
     }
 }

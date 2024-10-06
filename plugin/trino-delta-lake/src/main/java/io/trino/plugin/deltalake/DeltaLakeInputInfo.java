@@ -13,42 +13,4 @@
  */
 package io.trino.plugin.deltalake;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
-
-import java.util.Objects;
-
-public class DeltaLakeInputInfo
-{
-    private final boolean partitioned;
-
-    @JsonCreator
-    public DeltaLakeInputInfo(@JsonProperty("partitioned") boolean partitioned)
-    {
-        this.partitioned = partitioned;
-    }
-
-    @JsonProperty
-    public boolean isPartitioned()
-    {
-        return partitioned;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (!(o instanceof DeltaLakeInputInfo that)) {
-            return false;
-        }
-        return partitioned == that.partitioned;
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return Objects.hash(partitioned);
-    }
-}
+public record DeltaLakeInputInfo(boolean partitioned, long version) {}

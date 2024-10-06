@@ -19,7 +19,7 @@ from different catalogs accessing ClickHouse or any other supported data source.
 
 To connect to a ClickHouse server, you need:
 
-- ClickHouse (version 21.8 or higher) or Altinity (version 20.8 or higher).
+- ClickHouse (version 23.8 or higher) or Altinity (version 21.8 or higher).
 - Network access from the Trino coordinator and workers to the ClickHouse
   server. Port 8123 is the default port.
 
@@ -49,7 +49,6 @@ use {doc}`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
 (clickhouse-tls)=
-
 ### Connection security
 
 If you have TLS configured with a globally-trusted certificate installed on your
@@ -89,9 +88,6 @@ configured connector to create a catalog named `sales`.
 ```
 
 ```{include} jdbc-domain-compaction-threshold.fragment
-```
-
-```{include} jdbc-procedures.fragment
 ```
 
 ```{include} jdbc-case-insensitive-matching.fragment
@@ -158,19 +154,18 @@ WITH (
 
 The following are supported ClickHouse table properties from [https://clickhouse.tech/docs/en/engines/table-engines/mergetree-family/mergetree/](https://clickhouse.tech/docs/en/engines/table-engines/mergetree-family/mergetree/)
 
-| Property name  | Default value | Description                                                                                                             |
-| -------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `engine`       | `Log`         | Name and parameters of the engine.                                                                                      |
-| `order_by`     | (none)        | Array of columns or expressions to concatenate to create the sorting key. Required if `engine` is `MergeTree`.          |
-| `partition_by` | (none)        | Array of columns or expressions to use as nested partition keys. Optional.                                              |
-| `primary_key`  | (none)        | Array of columns or expressions to concatenate to create the primary key. Optional.                                     |
-| `sample_by`    | (none)        | An expression to use for [sampling](https://clickhouse.tech/docs/en/sql-reference/statements/select/sample/). Optional. |
+| Property name  | Default value | Description                                                                                                                            |
+| -------------- | ------------- |----------------------------------------------------------------------------------------------------------------------------------------|
+| `engine`       | `Log`         | Name and parameters of the engine.                                                                                                     |
+| `order_by`     | (none)        | Array of columns or expressions to concatenate to create the sorting key. `tuple()` is used by default if `order_by is` not specified. |
+| `partition_by` | (none)        | Array of columns or expressions to use as nested partition keys. Optional.                                                             |
+| `primary_key`  | (none)        | Array of columns or expressions to concatenate to create the primary key. Optional.                                                    |
+| `sample_by`    | (none)        | An expression to use for [sampling](https://clickhouse.tech/docs/en/sql-reference/statements/select/sample/). Optional.                |
 
 Currently the connector only supports `Log` and `MergeTree` table engines
 in create table statement. `ReplicatedMergeTree` engine is not yet supported.
 
 (clickhouse-type-mapping)=
-
 ## Type mapping
 
 Because Trino and ClickHouse each support types that the other does not, this
@@ -184,77 +179,76 @@ each direction.
 The connector maps ClickHouse types to the corresponding Trino types according
 to the following table:
 
-```{eval-rst}
-.. list-table:: ClickHouse type to Trino type mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} ClickHouse type to Trino type mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - ClickHouse type
-    - Trino type
-    - Notes
-  * - ``Int8``
-    - ``TINYINT``
-    - ``TINYINT``, ``BOOL``, ``BOOLEAN``, and ``INT1`` are aliases of ``Int8``
-  * - ``Int16``
-    - ``SMALLINT``
-    -  ``SMALLINT`` and ``INT2`` are aliases of ``Int16``
-  * - ``Int32``
-    - ``INTEGER``
-    - ``INT``, ``INT4``, and ``INTEGER`` are aliases of ``Int32``
-  * - ``Int64``
-    - ``BIGINT``
-    - ``BIGINT`` is an alias of ``Int64``
-  * - ``UInt8``
-    - ``SMALLINT``
-    -
-  * - ``UInt16``
-    - ``INTEGER``
-    -
-  * - ``UInt32``
-    - ``BIGINT``
-    -
-  * - ``UInt64``
-    - ``DECIMAL(20,0)``
-    -
-  * - ``Float32``
-    - ``REAL``
-    - ``FLOAT`` is an alias of ``Float32``
-  * - ``Float64``
-    - ``DOUBLE``
-    - ``DOUBLE`` is an alias of ``Float64``
-  * - ``Decimal``
-    - ``DECIMAL``
-    -
-  * - ``FixedString``
-    - ``VARBINARY``
-    - Enabling ``clickhouse.map-string-as-varchar`` config property changes the
-      mapping to ``VARCHAR``
-  * - ``String``
-    - ``VARBINARY``
-    - Enabling ``clickhouse.map-string-as-varchar`` config property changes the
-      mapping to ``VARCHAR``
-  * - ``Date``
-    - ``DATE``
-    -
-  * - ``DateTime[(timezone)]``
-    - ``TIMESTAMP(0) [WITH TIME ZONE]``
-    -
-  * - ``IPv4``
-    - ``IPADDRESS``
-    -
-  * - ``IPv6``
-    - ``IPADDRESS``
-    -
-  * - ``Enum8``
-    - ``VARCHAR``
-    -
-  * - ``Enum16``
-    - ``VARCHAR``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-```
+* - ClickHouse type
+  - Trino type
+  - Notes
+* - `Int8`
+  - `TINYINT`
+  - `TINYINT`, `BOOL`, `BOOLEAN`, and `INT1` are aliases of `Int8`
+* - `Int16`
+  - `SMALLINT`
+  -  `SMALLINT` and `INT2` are aliases of `Int16`
+* - `Int32`
+  - `INTEGER`
+  - `INT`, `INT4`, and `INTEGER` are aliases of `Int32`
+* - `Int64`
+  - `BIGINT`
+  - `BIGINT` is an alias of `Int64`
+* - `UInt8`
+  - `SMALLINT`
+  -
+* - `UInt16`
+  - `INTEGER`
+  -
+* - `UInt32`
+  - `BIGINT`
+  -
+* - `UInt64`
+  - `DECIMAL(20,0)`
+  -
+* - `Float32`
+  - `REAL`
+  - `FLOAT` is an alias of `Float32`
+* - `Float64`
+  - `DOUBLE`
+  - `DOUBLE` is an alias of `Float64`
+* - `Decimal`
+  - `DECIMAL`
+  -
+* - `FixedString`
+  - `VARBINARY`
+  - Enabling `clickhouse.map-string-as-varchar` config property changes the
+    mapping to `VARCHAR`
+* - `String`
+  - `VARBINARY`
+  - Enabling `clickhouse.map-string-as-varchar` config property changes the
+    mapping to `VARCHAR`
+* - `Date`
+  - `DATE`
+  -
+* - `DateTime[(timezone)]`
+  - `TIMESTAMP(0) [WITH TIME ZONE]`
+  -
+* - `IPv4`
+  - `IPADDRESS`
+  -
+* - `IPv6`
+  - `IPADDRESS`
+  -
+* - `Enum8`
+  - `VARCHAR`
+  -
+* - `Enum16`
+  - `VARCHAR`
+  -
+* - `UUID`
+  - `UUID`
+  -
+:::
 
 No other types are supported.
 
@@ -263,58 +257,57 @@ No other types are supported.
 The connector maps Trino types to the corresponding ClickHouse types according
 to the following table:
 
-```{eval-rst}
-.. list-table:: Trino type to ClickHouse type mapping
-  :widths: 30, 25, 50
-  :header-rows: 1
+:::{list-table} Trino type to ClickHouse type mapping
+:widths: 30, 25, 50
+:header-rows: 1
 
-  * - Trino type
-    - ClickHouse type
-    - Notes
-  * - ``BOOLEAN``
-    - ``UInt8``
-    -
-  * - ``TINYINT``
-    - ``Int8``
-    - ``TINYINT``, ``BOOL``, ``BOOLEAN``, and ``INT1`` are aliases of ``Int8``
-  * - ``SMALLINT``
-    - ``Int16``
-    -  ``SMALLINT`` and ``INT2`` are aliases of ``Int16``
-  * - ``INTEGER``
-    - ``Int32``
-    - ``INT``, ``INT4``, and ``INTEGER`` are aliases of ``Int32``
-  * - ``BIGINT``
-    - ``Int64``
-    - ``BIGINT`` is an alias of ``Int64``
-  * - ``REAL``
-    - ``Float32``
-    - ``FLOAT`` is an alias of ``Float32``
-  * - ``DOUBLE``
-    - ``Float64``
-    - ``DOUBLE`` is an alias of ``Float64``
-  * - ``DECIMAL(p,s)``
-    - ``Decimal(p,s)``
-    -
-  * - ``VARCHAR``
-    - ``String``
-    -
-  * - ``CHAR``
-    - ``String``
-    -
-  * - ``VARBINARY``
-    - ``String``
-    - Enabling ``clickhouse.map-string-as-varchar`` config property changes the
-      mapping to ``VARCHAR``
-  * - ``DATE``
-    - ``Date``
-    -
-  * - ``TIMESTAMP(0)``
-    - ``DateTime``
-    -
-  * - ``UUID``
-    - ``UUID``
-    -
-```
+* - Trino type
+  - ClickHouse type
+  - Notes
+* - `BOOLEAN`
+  - `UInt8`
+  -
+* - `TINYINT`
+  - `Int8`
+  - `TINYINT`, `BOOL`, `BOOLEAN`, and `INT1` are aliases of `Int8`
+* - `SMALLINT`
+  - `Int16`
+  -  `SMALLINT` and `INT2` are aliases of `Int16`
+* - `INTEGER`
+  - `Int32`
+  - `INT`, `INT4`, and `INTEGER` are aliases of `Int32`
+* - `BIGINT`
+  - `Int64`
+  - `BIGINT` is an alias of `Int64`
+* - `REAL`
+  - `Float32`
+  - `FLOAT` is an alias of `Float32`
+* - `DOUBLE`
+  - `Float64`
+  - `DOUBLE` is an alias of `Float64`
+* - `DECIMAL(p,s)`
+  - `Decimal(p,s)`
+  -
+* - `VARCHAR`
+  - `String`
+  -
+* - `CHAR`
+  - `String`
+  -
+* - `VARBINARY`
+  - `String`
+  - Enabling `clickhouse.map-string-as-varchar` config property changes the
+    mapping to `VARCHAR`
+* - `DATE`
+  - `Date`
+  -
+* - `TIMESTAMP(0)`
+  - `DateTime`
+  -
+* - `UUID`
+  - `UUID`
+  -
+:::
 
 No other types are supported.
 
@@ -322,7 +315,6 @@ No other types are supported.
 ```
 
 (clickhouse-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -337,13 +329,55 @@ statements, the connector supports the following features:
 ```{include} alter-schema-limitation.fragment
 ```
 
+### Procedures
+
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
+
+### Table functions
+
+The connector provides specific {doc}`table functions </functions/table>` to
+access ClickHouse.
+
+(clickhouse-query-function)=
+#### `query(varchar) -> table`
+
+The `query` function allows you to query the underlying database directly. It
+requires syntax native to ClickHouse, because the full query is pushed down and
+processed in ClickHouse. This can be useful for accessing native features which
+are not available in Trino or for improving query performance in situations
+where running a query natively may be faster.
+
+```{include} query-passthrough-warning.fragment
+```
+
+As a simple example, query the `example` catalog and select an entire table:
+
+```
+SELECT
+  *
+FROM
+  TABLE(
+    example.system.query(
+      query => 'SELECT
+        *
+      FROM
+        tpch.nation'
+    )
+  );
+```
+
+```{include} query-table-function-ordering.fragment
+```
+
 ## Performance
 
 The connector includes a number of performance improvements, detailed in the
 following sections.
 
 (clickhouse-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:
@@ -362,5 +396,5 @@ The connector supports pushdown for a number of operations:
 ```{include} pushdown-correctness-behavior.fragment
 ```
 
-```{include} no-pushdown-text-type.fragment
+```{include} no-inequality-pushdown-text-type.fragment
 ```

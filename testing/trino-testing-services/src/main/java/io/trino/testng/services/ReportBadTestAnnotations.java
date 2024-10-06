@@ -170,7 +170,7 @@ public class ReportBadTestAnnotations
             // Simplistic override detection
             return Optional.of(base.getMethod(method.getName(), method.getParameterTypes()));
         }
-        catch (NoSuchMethodException ignored) {
+        catch (NoSuchMethodException _) {
             return Optional.empty();
         }
     }
@@ -204,7 +204,7 @@ public class ReportBadTestAnnotations
 
     private static boolean isJUnitAnnotation(Class<? extends Annotation> clazz)
     {
-        return clazz.getPackage().getName().startsWith("org.junit.jupiter.api");
+        return clazz.getPackage().getName().startsWith("org.junit.jupiter.");
     }
 
     @VisibleForTesting

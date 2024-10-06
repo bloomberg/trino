@@ -14,7 +14,6 @@
 package io.trino.plugin.hive.rcfile;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
 import com.google.inject.Inject;
 import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
@@ -36,6 +35,7 @@ import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
 import io.trino.plugin.hive.ReaderColumns;
 import io.trino.plugin.hive.ReaderPageSource;
+import io.trino.plugin.hive.Schema;
 import io.trino.plugin.hive.acid.AcidTransaction;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorPageSource;
@@ -49,19 +49,16 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.hive.formats.HiveClassNames.COLUMNAR_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.LAZY_BINARY_COLUMNAR_SERDE_CLASS;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
 import static io.trino.plugin.hive.ReaderPageSource.noProjectionAdaptation;
-import static io.trino.plugin.hive.util.HiveClassNames.COLUMNAR_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.LAZY_BINARY_COLUMNAR_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.HiveUtil.splitError;
-import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
 
@@ -80,14 +77,9 @@ public class RcFilePageSourceFactory
         this.timeZone = hiveConfig.getRcfileDateTimeZone();
     }
 
-    public static Properties stripUnnecessaryProperties(Properties schema)
+    public static boolean stripUnnecessaryProperties(String serializationLibraryName)
     {
-        if (LAZY_BINARY_COLUMNAR_SERDE_CLASS.equals(getDeserializerClassName(schema))) {
-            Properties stripped = new Properties();
-            stripped.put(SERIALIZATION_LIB, schema.getProperty(SERIALIZATION_LIB));
-            return stripped;
-        }
-        return schema;
+        return LAZY_BINARY_COLUMNAR_SERDE_CLASS.equals(serializationLibraryName);
     }
 
     @Override
@@ -97,7 +89,8 @@ public class RcFilePageSourceFactory
             long start,
             long length,
             long estimatedFileSize,
-            Properties schema,
+            long fileModifiedTime,
+            Schema schema,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             Optional<AcidInfo> acidInfo,
@@ -106,12 +99,12 @@ public class RcFilePageSourceFactory
             AcidTransaction transaction)
     {
         ColumnEncodingFactory columnEncodingFactory;
-        String deserializerClassName = getDeserializerClassName(schema);
-        if (deserializerClassName.equals(LAZY_BINARY_COLUMNAR_SERDE_CLASS)) {
+        String serializationLibraryName = schema.serializationLibraryName();
+        if (serializationLibraryName.equals(LAZY_BINARY_COLUMNAR_SERDE_CLASS)) {
             columnEncodingFactory = new BinaryColumnEncodingFactory(timeZone);
         }
-        else if (deserializerClassName.equals(COLUMNAR_SERDE_CLASS)) {
-            columnEncodingFactory = new TextColumnEncodingFactory(TextEncodingOptions.fromSchema(Maps.fromProperties(schema)));
+        else if (serializationLibraryName.equals(COLUMNAR_SERDE_CLASS)) {
+            columnEncodingFactory = new TextColumnEncodingFactory(TextEncodingOptions.fromSchema(schema.serdeProperties()));
         }
         else {
             return Optional.empty();
@@ -128,7 +121,7 @@ public class RcFilePageSourceFactory
                     .collect(toImmutableList());
         }
 
-        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(session.getIdentity());
+        TrinoFileSystem trinoFileSystem = fileSystemFactory.create(session);
         TrinoInputFile inputFile = trinoFileSystem.newInputFile(path);
         try {
             length = min(inputFile.length() - start, length);

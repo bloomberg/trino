@@ -14,7 +14,7 @@
 package io.trino.plugin.jdbc;
 
 import io.opentelemetry.api.OpenTelemetry;
-import io.opentelemetry.instrumentation.jdbc.datasource.OpenTelemetryDataSource;
+import io.opentelemetry.instrumentation.jdbc.datasource.JdbcTelemetry;
 
 import javax.sql.DataSource;
 
@@ -25,17 +25,18 @@ import java.sql.SQLException;
 import java.util.Properties;
 import java.util.logging.Logger;
 
+import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
 public class TracingDataSource
 {
-    private final OpenTelemetry openTelemetry;
+    private final JdbcTelemetry jdbcTelemetry;
     private final Driver driver;
     private final String connectionUrl;
 
     public TracingDataSource(OpenTelemetry openTelemetry, Driver driver, String connectionUrl)
     {
-        this.openTelemetry = requireNonNull(openTelemetry, "openTelemetry is null");
+        this.jdbcTelemetry = JdbcTelemetry.builder(requireNonNull(openTelemetry, "openTelemetry is null")).build();
         this.driver = requireNonNull(driver, "driver is null");
         this.connectionUrl = requireNonNull(connectionUrl, "connectionUrl is null");
     }
@@ -44,12 +45,7 @@ public class TracingDataSource
             throws SQLException
     {
         DataSource dataSource = new JdbcDataSource(driver, connectionUrl, properties);
-        try (OpenTelemetryDataSource openTelemetryDataSource = new OpenTelemetryDataSource(dataSource, openTelemetry)) {
-            return openTelemetryDataSource.getConnection();
-        }
-        catch (Exception e) {
-            throw new SQLException(e);
-        }
+        return jdbcTelemetry.wrap(dataSource).getConnection();
     }
 
     private static class JdbcDataSource
@@ -70,7 +66,9 @@ public class TracingDataSource
         public Connection getConnection()
                 throws SQLException
         {
-            return driver.connect(connectionUrl, properties);
+            Connection connection = driver.connect(connectionUrl, properties);
+            checkState(connection != null, "Driver returned null connection, make sure the connection URL '%s' is valid for the driver %s", connectionUrl, driver);
+            return connection;
         }
 
         @Override

@@ -24,11 +24,11 @@ import io.trino.Session;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.function.AggregationFunctionMetadata;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Lambda;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.OrderingScheme;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.LambdaExpression;
-import io.trino.sql.tree.SymbolReference;
 import io.trino.type.FunctionType;
 
 import java.util.HashSet;
@@ -130,9 +130,9 @@ public class AggregationNode
     /**
      * @return whether this node should produce default output in case of no input pages.
      * For example for query:
-     * <p>
+     * <pre>{@code
      * SELECT count(*) FROM nation WHERE nationkey < 0
-     * <p>
+     * }</pre>
      * A default output of "0" is expected to be produced by FINAL aggregation operator.
      */
     public boolean hasDefaultOutput()
@@ -234,7 +234,7 @@ public class AggregationNode
         return aggregations.isEmpty() &&
                 !groupingSets.getGroupingKeys().isEmpty() &&
                 outputs.size() == groupingSets.getGroupingKeys().size() &&
-                outputs.containsAll(new HashSet<>(groupingSets.getGroupingKeys()));
+                new HashSet<>(outputs).containsAll(groupingSets.getGroupingKeys());
     }
 
     public boolean isDecomposable(Session session, Metadata metadata)
@@ -407,7 +407,7 @@ public class AggregationNode
             this.resolvedFunction = requireNonNull(resolvedFunction, "resolvedFunction is null");
             this.arguments = ImmutableList.copyOf(requireNonNull(arguments, "arguments is null"));
             for (Expression argument : arguments) {
-                checkArgument(argument instanceof SymbolReference || argument instanceof LambdaExpression,
+                checkArgument(argument instanceof Reference || argument instanceof Lambda,
                         "argument must be symbol or lambda expression: %s", argument.getClass().getSimpleName());
             }
             this.distinct = distinct;
@@ -480,11 +480,11 @@ public class AggregationNode
         {
             int expectedArgumentCount;
             if (step == SINGLE || step == Step.PARTIAL) {
-                expectedArgumentCount = resolvedFunction.getSignature().getArgumentTypes().size();
+                expectedArgumentCount = resolvedFunction.signature().getArgumentTypes().size();
             }
             else {
                 // Intermediate and final steps get the intermediate value and the lambda functions
-                expectedArgumentCount = 1 + (int) resolvedFunction.getSignature().getArgumentTypes().stream()
+                expectedArgumentCount = 1 + (int) resolvedFunction.signature().getArgumentTypes().stream()
                         .filter(FunctionType.class::isInstance)
                         .count();
             }
@@ -493,7 +493,7 @@ public class AggregationNode
                     expectedArgumentCount == arguments.size(),
                     "%s aggregation function %s has %s arguments, but %s arguments were provided to function call",
                     step,
-                    resolvedFunction.getSignature(),
+                    resolvedFunction.signature(),
                     expectedArgumentCount,
                     arguments.size());
         }

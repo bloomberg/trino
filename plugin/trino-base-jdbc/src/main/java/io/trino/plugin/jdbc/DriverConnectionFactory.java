@@ -34,32 +34,14 @@ public class DriverConnectionFactory
     private final Driver driver;
     private final String connectionUrl;
     private final Properties connectionProperties;
-    private final CredentialPropertiesProvider<String, String> credentialPropertiesProvider;
+    private final CredentialPropertiesProvider credentialPropertiesProvider;
     private final TracingDataSource dataSource;
-
-    public DriverConnectionFactory(Driver driver, BaseJdbcConfig config, CredentialProvider credentialProvider)
-    {
-        this(driver,
-                config.getConnectionUrl(),
-                new Properties(),
-                credentialProvider);
-    }
-
-    public DriverConnectionFactory(Driver driver, String connectionUrl, Properties connectionProperties, CredentialProvider credentialProvider)
-    {
-        this(driver, connectionUrl, connectionProperties, new DefaultCredentialPropertiesProvider(credentialProvider), OpenTelemetry.noop());
-    }
-
-    public DriverConnectionFactory(Driver driver, String connectionUrl, Properties connectionProperties, CredentialProvider credentialProvider, OpenTelemetry openTelemetry)
-    {
-        this(driver, connectionUrl, connectionProperties, new DefaultCredentialPropertiesProvider(credentialProvider), openTelemetry);
-    }
 
     public DriverConnectionFactory(
             Driver driver,
             String connectionUrl,
             Properties connectionProperties,
-            CredentialPropertiesProvider<String, String> credentialPropertiesProvider,
+            CredentialPropertiesProvider credentialPropertiesProvider,
             OpenTelemetry openTelemetry)
     {
         this.driver = requireNonNull(driver, "driver is null");
@@ -86,5 +68,49 @@ public class DriverConnectionFactory
         properties.putAll(connectionProperties);
         properties.putAll(credentialPropertiesProvider.getCredentialProperties(identity));
         return properties;
+    }
+
+    public static Builder builder(Driver driver, String connectionUrl, CredentialProvider credentialProvider)
+    {
+        return new Builder(driver, connectionUrl, credentialProvider);
+    }
+
+    public static class Builder
+    {
+        private final Driver driver;
+        private final String connectionUrl;
+        private Properties connectionProperties = new Properties();
+        private CredentialPropertiesProvider credentialPropertiesProvider;
+        private OpenTelemetry openTelemetry = OpenTelemetry.noop();
+
+        private Builder(Driver driver, String connectionUrl, CredentialProvider credentialProvider)
+        {
+            this.driver = requireNonNull(driver, "driver is null");
+            this.connectionUrl = requireNonNull(connectionUrl, "connectionUrl is null");
+            this.credentialPropertiesProvider = new DefaultCredentialPropertiesProvider(requireNonNull(credentialProvider, "credentialProvider is null"));
+        }
+
+        public Builder setConnectionProperties(Properties connectionProperties)
+        {
+            this.connectionProperties = connectionProperties;
+            return this;
+        }
+
+        public Builder setCredentialPropertiesProvider(CredentialPropertiesProvider credentialPropertiesProvider)
+        {
+            this.credentialPropertiesProvider = credentialPropertiesProvider;
+            return this;
+        }
+
+        public Builder setOpenTelemetry(OpenTelemetry openTelemetry)
+        {
+            this.openTelemetry = openTelemetry;
+            return this;
+        }
+
+        public DriverConnectionFactory build()
+        {
+            return new DriverConnectionFactory(driver, connectionUrl, connectionProperties, credentialPropertiesProvider, openTelemetry);
+        }
     }
 }

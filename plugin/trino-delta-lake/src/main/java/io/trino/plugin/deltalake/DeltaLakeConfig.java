@@ -16,10 +16,13 @@ package io.trino.plugin.deltalake;
 import com.google.common.annotations.VisibleForTesting;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.ConfigHidden;
 import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.airlift.units.MaxDuration;
+import io.airlift.units.MinDuration;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
@@ -36,7 +39,12 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
-@DefunctConfig("delta.experimental.ignore-checkpoint-write-failures")
+@DefunctConfig({
+        "delta.experimental.ignore-checkpoint-write-failures",
+        "delta.legacy-create-table-with-existing-location.enabled",
+        "delta.max-initial-splits",
+        "delta.max-initial-split-size"
+})
 public class DeltaLakeConfig
 {
     public static final String EXTENDED_STATISTICS_ENABLED = "delta.extended-statistics.enabled";
@@ -54,14 +62,13 @@ public class DeltaLakeConfig
     private int domainCompactionThreshold = 1000;
     private int maxOutstandingSplits = 1_000;
     private int maxSplitsPerSecond = Integer.MAX_VALUE;
-    private int maxInitialSplits = 200;
-    private DataSize maxInitialSplitSize;
     private DataSize maxSplitSize = DataSize.of(64, MEGABYTE);
     private double minimumAssignedSplitWeight = 0.05;
     private int maxPartitionsPerWriter = 100;
     private boolean unsafeWritesEnabled;
     private boolean checkpointRowStatisticsWritingEnabled = true;
     private long defaultCheckpointWritingInterval = 10;
+    private boolean checkpointFilteringEnabled = true;
     private Duration vacuumMinRetention = new Duration(7, DAYS);
     private Optional<String> hiveCatalogName = Optional.empty();
     private Duration dynamicFilteringWaitTimeout = new Duration(0, SECONDS);
@@ -70,14 +77,19 @@ public class DeltaLakeConfig
     private boolean collectExtendedStatisticsOnWrite = true;
     private HiveCompressionCodec compressionCodec = HiveCompressionCodec.SNAPPY;
     private long perTransactionMetastoreCacheMaximumSize = 1000;
+    private boolean storeTableMetadataEnabled;
+    private int storeTableMetadataThreads = 5;
+    private Duration storeTableMetadataInterval = new Duration(1, SECONDS);
     private boolean deleteSchemaLocationsFallback;
     private String parquetTimeZone = TimeZone.getDefault().getID();
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
+    private DataSize idleWriterMinFileSize = DataSize.of(16, MEGABYTE);
     private boolean uniqueTableLocation = true;
-    private boolean legacyCreateTableWithExistingLocationEnabled;
     private boolean registerTableProcedureEnabled;
     private boolean projectionPushdownEnabled = true;
     private boolean queryPartitionFilterRequired;
+    private boolean deletionVectorsEnabled;
+    private boolean deltaLogFileSystemCacheDisabled;
 
     public Duration getMetadataCacheTtl()
     {
@@ -173,34 +185,6 @@ public class DeltaLakeConfig
         return this;
     }
 
-    public int getMaxInitialSplits()
-    {
-        return maxInitialSplits;
-    }
-
-    @Config("delta.max-initial-splits")
-    public DeltaLakeConfig setMaxInitialSplits(int maxInitialSplits)
-    {
-        this.maxInitialSplits = maxInitialSplits;
-        return this;
-    }
-
-    @NotNull
-    public DataSize getMaxInitialSplitSize()
-    {
-        if (maxInitialSplitSize == null) {
-            return DataSize.ofBytes(maxSplitSize.toBytes() / 2).to(maxSplitSize.getUnit());
-        }
-        return maxInitialSplitSize;
-    }
-
-    @Config("delta.max-initial-split-size")
-    public DeltaLakeConfig setMaxInitialSplitSize(DataSize maxInitialSplitSize)
-    {
-        this.maxInitialSplitSize = maxInitialSplitSize;
-        return this;
-    }
-
     @NotNull
     public DataSize getMaxSplitSize()
     {
@@ -267,6 +251,18 @@ public class DeltaLakeConfig
     public long getDefaultCheckpointWritingInterval()
     {
         return defaultCheckpointWritingInterval;
+    }
+
+    public boolean isCheckpointFilteringEnabled()
+    {
+        return checkpointFilteringEnabled;
+    }
+
+    @Config("delta.checkpoint-filtering.enabled")
+    public DeltaLakeConfig setCheckpointFilteringEnabled(boolean checkpointFilteringEnabled)
+    {
+        this.checkpointFilteringEnabled = checkpointFilteringEnabled;
+        return this;
     }
 
     @NotNull
@@ -389,6 +385,49 @@ public class DeltaLakeConfig
         return this;
     }
 
+    public boolean isStoreTableMetadataEnabled()
+    {
+        return storeTableMetadataEnabled;
+    }
+
+    @Config("delta.metastore.store-table-metadata")
+    @ConfigDescription("Store table metadata in metastore")
+    public DeltaLakeConfig setStoreTableMetadataEnabled(boolean storeTableMetadataEnabled)
+    {
+        this.storeTableMetadataEnabled = storeTableMetadataEnabled;
+        return this;
+    }
+
+    @Min(0) // Allow 0 to use the same thread for testing purpose
+    public int getStoreTableMetadataThreads()
+    {
+        return storeTableMetadataThreads;
+    }
+
+    @Config("delta.metastore.store-table-metadata-threads")
+    @ConfigDescription("Number of threads used for storing table metadata in metastore")
+    public DeltaLakeConfig setStoreTableMetadataThreads(int storeTableMetadataThreads)
+    {
+        this.storeTableMetadataThreads = storeTableMetadataThreads;
+        return this;
+    }
+
+    @MinDuration("0ms")
+    @MaxDuration("1h")
+    public Duration getStoreTableMetadataInterval()
+    {
+        return storeTableMetadataInterval;
+    }
+
+    @ConfigHidden
+    @Config("delta.metastore.store-table-metadata-interval")
+    @ConfigDescription("Interval to store table metadata in metastore")
+    public DeltaLakeConfig setStoreTableMetadataInterval(Duration storeTableMetadataInterval)
+    {
+        this.storeTableMetadataInterval = storeTableMetadataInterval;
+        return this;
+    }
+
     public boolean isDeleteSchemaLocationsFallback()
     {
         return this.deleteSchemaLocationsFallback;
@@ -436,6 +475,20 @@ public class DeltaLakeConfig
         return this;
     }
 
+    @NotNull
+    public DataSize getIdleWriterMinFileSize()
+    {
+        return idleWriterMinFileSize;
+    }
+
+    @Config("delta.idle-writer-min-file-size")
+    @ConfigDescription("Minimum data written by a single partition writer before it can be consider as 'idle' and could be closed by the engine")
+    public DeltaLakeConfig setIdleWriterMinFileSize(DataSize idleWriterMinFileSize)
+    {
+        this.idleWriterMinFileSize = idleWriterMinFileSize;
+        return this;
+    }
+
     public boolean isUniqueTableLocation()
     {
         return uniqueTableLocation;
@@ -446,21 +499,6 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setUniqueTableLocation(boolean uniqueTableLocation)
     {
         this.uniqueTableLocation = uniqueTableLocation;
-        return this;
-    }
-
-    @Deprecated
-    public boolean isLegacyCreateTableWithExistingLocationEnabled()
-    {
-        return legacyCreateTableWithExistingLocationEnabled;
-    }
-
-    @Deprecated
-    @Config("delta.legacy-create-table-with-existing-location.enabled")
-    @ConfigDescription("Enable using the CREATE TABLE statement to register an existing table")
-    public DeltaLakeConfig setLegacyCreateTableWithExistingLocationEnabled(boolean legacyCreateTableWithExistingLocationEnabled)
-    {
-        this.legacyCreateTableWithExistingLocationEnabled = legacyCreateTableWithExistingLocationEnabled;
         return this;
     }
 
@@ -500,6 +538,32 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setQueryPartitionFilterRequired(boolean queryPartitionFilterRequired)
     {
         this.queryPartitionFilterRequired = queryPartitionFilterRequired;
+        return this;
+    }
+
+    public boolean isDeletionVectorsEnabled()
+    {
+        return deletionVectorsEnabled;
+    }
+
+    @Config("delta.deletion-vectors-enabled")
+    @ConfigDescription("Enable deletion vectors by default for new tables")
+    public DeltaLakeConfig setDeletionVectorsEnabled(boolean deletionVectorsEnabled)
+    {
+        this.deletionVectorsEnabled = deletionVectorsEnabled;
+        return this;
+    }
+
+    public boolean isDeltaLogFileSystemCacheDisabled()
+    {
+        return deltaLogFileSystemCacheDisabled;
+    }
+
+    @Config("delta.fs.cache.disable-transaction-log-caching")
+    @ConfigDescription("Disable filesystem caching of the _delta_log directory (effective only when fs.cache.enabled=true)")
+    public DeltaLakeConfig setDeltaLogFileSystemCacheDisabled(boolean deltaLogFileSystemCacheDisabled)
+    {
+        this.deltaLogFileSystemCacheDisabled = deltaLogFileSystemCacheDisabled;
         return this;
     }
 }

@@ -20,7 +20,6 @@ import org.junit.jupiter.api.TestInstance;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
 
 @TestInstance(PER_CLASS)
 public abstract class BaseDeltaLakeSharedMetastoreWithTableRedirectionsTest
@@ -85,13 +84,9 @@ public abstract class BaseDeltaLakeSharedMetastoreWithTableRedirectionsTest
                 .containsAll("VALUES '" + schema + "'");
 
         String showCreateHiveWithRedirectionsSchema = (String) computeActual("SHOW CREATE SCHEMA hive_with_redirections." + schema).getOnlyValue();
-        assertEquals(
-                showCreateHiveWithRedirectionsSchema,
-                getExpectedHiveCreateSchema("hive_with_redirections"));
+        assertThat(showCreateHiveWithRedirectionsSchema).isEqualTo(getExpectedHiveCreateSchema("hive_with_redirections"));
         String showCreateDeltaLakeWithRedirectionsSchema = (String) computeActual("SHOW CREATE SCHEMA delta_with_redirections." + schema).getOnlyValue();
-        assertEquals(
-                showCreateDeltaLakeWithRedirectionsSchema,
-                getExpectedDeltaLakeCreateSchema("delta_with_redirections"));
+        assertThat(showCreateDeltaLakeWithRedirectionsSchema).isEqualTo(getExpectedDeltaLakeCreateSchema("delta_with_redirections"));
     }
 
     @Test
@@ -99,5 +94,12 @@ public abstract class BaseDeltaLakeSharedMetastoreWithTableRedirectionsTest
     {
         assertThat(query("SELECT * FROM delta_with_redirections." + schema + ".\"delta_table$properties\""))
                 .matches("SELECT * FROM hive_with_redirections." + schema + ".\"delta_table$properties\"");
+    }
+
+    @Test
+    public void testPartitionsTable()
+    {
+        assertThat(query("SELECT * FROM delta_with_redirections." + schema + ".\"delta_table$partitions\""))
+                .matches("SELECT * FROM hive_with_redirections." + schema + ".\"delta_table$partitions\"");
     }
 }

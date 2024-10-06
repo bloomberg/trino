@@ -13,27 +13,26 @@
  */
 package io.trino.plugin.kudu;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.primitives.Ints;
 import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
-import io.trino.execution.QueryStats;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.Split;
 import io.trino.metadata.TableHandle;
-import io.trino.operator.OperatorStats;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.QueryId;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.DynamicFilter;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.split.SplitSource;
+import io.trino.sql.planner.Plan;
+import io.trino.sql.planner.optimizations.PlanNodeSearcher;
+import io.trino.sql.planner.plan.FilterNode;
+import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.QueryRunner;
-import io.trino.tpch.TpchTable;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
 import org.intellij.lang.annotations.Language;
@@ -45,18 +44,18 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.JOIN_REORDERING_STRATEGY;
-import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunnerTpch;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
+import static io.trino.sql.DynamicFilters.extractDynamicFilters;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static io.trino.tpch.TpchTable.LINE_ITEM;
+import static io.trino.tpch.TpchTable.ORDERS;
+import static io.trino.tpch.TpchTable.PART;
+import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestKuduIntegrationDynamicFilter
         extends AbstractTestQueryFramework
@@ -65,14 +64,13 @@ public class TestKuduIntegrationDynamicFilter
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createKuduQueryRunnerTpch(
-                closeAfterClass(new TestingKuduServer()),
-                Optional.of(""),
-                ImmutableMap.of("dynamic_filtering_wait_timeout", "1h"),
-                ImmutableMap.of(
-                        "dynamic-filtering.small.max-distinct-values-per-driver", "100",
-                        "dynamic-filtering.small.range-row-limit-per-driver", "100"),
-                TpchTable.getTables());
+        return KuduQueryRunnerFactory.builder(closeAfterClass(new TestingKuduServer()))
+                .setKuduSchemaEmulationPrefix(Optional.of(""))
+                .addConnectorProperty("kudu.dynamic-filtering.wait-timeout", "1h")
+                .addExtraProperty("dynamic-filtering.small.max-distinct-values-per-driver", "100")
+                .addExtraProperty("dynamic-filtering.small.range-row-limit-per-driver", "100")
+                .setInitialTables(List.of(LINE_ITEM, ORDERS, PART))
+                .build();
     }
 
     @Test
@@ -88,21 +86,34 @@ public class TestKuduIntegrationDynamicFilter
                 .build()
                 .beginTransactionId(transactionId, transactionManager, new AllowAllAccessControl());
         QualifiedObjectName tableName = new QualifiedObjectName("kudu", "tpch", "orders");
-        Optional<TableHandle> tableHandle = runner.getMetadata().getTableHandle(session, tableName);
-        assertTrue(tableHandle.isPresent());
-        SplitSource splitSource = runner.getSplitManager()
-                .getSplits(session, Span.getInvalid(), tableHandle.get(), new IncompleteDynamicFilter(), alwaysTrue());
-        List<Split> splits = new ArrayList<>();
-        while (!splitSource.isFinished()) {
-            splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
+        Optional<TableHandle> tableHandle = runner.getPlannerContext().getMetadata().getTableHandle(session, tableName);
+        assertThat(tableHandle).isPresent();
+        CompletableFuture<Void> dynamicFilterBlocked = new CompletableFuture<>();
+        try {
+            SplitSource splitSource = runner.getSplitManager()
+                    .getSplits(session, Span.getInvalid(), tableHandle.get(), new BlockedDynamicFilter(dynamicFilterBlocked), alwaysTrue());
+            List<Split> splits = new ArrayList<>();
+            while (!splitSource.isFinished()) {
+                splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
+            }
+            splitSource.close();
+            assertThat(splits).isNotEmpty();
         }
-        splitSource.close();
-        assertFalse(splits.isEmpty());
+        finally {
+            dynamicFilterBlocked.complete(null);
+        }
     }
 
-    private static class IncompleteDynamicFilter
+    private static class BlockedDynamicFilter
             implements DynamicFilter
     {
+        private final CompletableFuture<?> isBlocked;
+
+        public BlockedDynamicFilter(CompletableFuture<?> isBlocked)
+        {
+            this.isBlocked = requireNonNull(isBlocked, "isBlocked is null");
+        }
+
         @Override
         public Set<ColumnHandle> getColumnsCovered()
         {
@@ -112,14 +123,7 @@ public class TestKuduIntegrationDynamicFilter
         @Override
         public CompletableFuture<?> isBlocked()
         {
-            return CompletableFuture.runAsync(() -> {
-                try {
-                    TimeUnit.HOURS.sleep(1);
-                }
-                catch (InterruptedException e) {
-                    throw new IllegalStateException(e);
-                }
-            });
+            return isBlocked;
         }
 
         @Override
@@ -149,30 +153,29 @@ public class TestKuduIntegrationDynamicFilter
                 "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.comment = 'nstructions sleep furiously among '",
                 withBroadcastJoin(),
                 6,
-                1);
+                6);
     }
 
     @Test
     public void testJoinDynamicFilteringBlockProbeSide()
     {
-        // Wait for both build sides to finish before starting the scan of 'lineitem' table (should be very selective given the dynamic filters).
+        // Wait for both build side to finish before starting the scan of 'lineitem' table (should be very selective given the dynamic filters).
         assertDynamicFiltering(
                 "SELECT l.comment" +
-                        " FROM  lineitem l, part p, orders o" +
-                        " WHERE l.orderkey = o.orderkey AND o.comment = 'nstructions sleep furiously among '" +
-                        " AND p.partkey = l.partkey AND p.comment = 'onic deposits'",
+                        " FROM  lineitem l, orders o" +
+                        " WHERE l.orderkey = o.orderkey AND o.comment = 'nstructions sleep furiously among '",
                 withBroadcastJoinNonReordering(),
-                1,
-                1, 1);
+                6,
+                6);
     }
 
-    private void assertDynamicFiltering(@Language("SQL") String selectQuery, Session session, int expectedRowCount, int... expectedOperatorRowsRead)
+    private void assertDynamicFiltering(@Language("SQL") String selectQuery, Session session, int expectedRowCount, int expectedProbeInputRowsRead)
     {
-        DistributedQueryRunner runner = getDistributedQueryRunner();
-        MaterializedResultWithQueryId result = runner.executeWithQueryId(session, selectQuery);
+        QueryRunner runner = getDistributedQueryRunner();
+        MaterializedResultWithPlan result = runner.executeWithPlan(session, selectQuery);
 
-        assertEquals(result.getResult().getRowCount(), expectedRowCount);
-        assertEquals(getOperatorRowsRead(runner, result.getQueryId()), Ints.asList(expectedOperatorRowsRead));
+        assertThat(result.result().getRowCount()).isEqualTo(expectedRowCount);
+        assertThat(getScanInputRowsRead(result.queryId())).isEqualTo(expectedProbeInputRowsRead);
     }
 
     private Session withBroadcastJoin()
@@ -190,14 +193,24 @@ public class TestKuduIntegrationDynamicFilter
                 .build();
     }
 
-    private static List<Integer> getOperatorRowsRead(DistributedQueryRunner runner, QueryId queryId)
+    private long getScanInputRowsRead(QueryId queryId)
     {
-        QueryStats stats = runner.getCoordinator().getQueryManager().getFullQueryInfo(queryId).getQueryStats();
-        return stats.getOperatorSummaries()
-                .stream()
-                .filter(summary -> summary.getOperatorType().equals("ScanFilterAndProjectOperator"))
-                .map(OperatorStats::getInputPositions)
-                .map(Math::toIntExact)
-                .collect(toImmutableList());
+        Plan plan = getDistributedQueryRunner().getQueryPlan(queryId);
+        FilterNode planNode = (FilterNode) PlanNodeSearcher.searchFrom(plan.getRoot())
+                .where(node -> {
+                    if (!(node instanceof FilterNode filterNode)) {
+                        return false;
+                    }
+                    if (!(filterNode.getSource() instanceof TableScanNode tableScanNode)) {
+                        return false;
+                    }
+                    if (extractDynamicFilters(filterNode.getPredicate()).getDynamicConjuncts().isEmpty()) {
+                        return false;
+                    }
+                    return ((KuduTableHandle) tableScanNode.getTable().connectorHandle())
+                            .getSchemaTableName().equals(new SchemaTableName("tpch", "lineitem"));
+                })
+                .findOnlyElement();
+        return extractOperatorStatsForNodeId(queryId, planNode.getId(), "ScanFilterAndProjectOperator").getInputPositions();
     }
 }

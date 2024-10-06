@@ -17,9 +17,11 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.log.Logger;
 import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.parquet.ChunkKey;
+import io.trino.parquet.Column;
 import io.trino.parquet.DiskRange;
 import io.trino.parquet.Field;
 import io.trino.parquet.GroupField;
@@ -28,12 +30,15 @@ import io.trino.parquet.ParquetDataSource;
 import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.ParquetWriteValidation;
 import io.trino.parquet.PrimitiveField;
+import io.trino.parquet.metadata.ColumnChunkMetadata;
+import io.trino.parquet.metadata.PrunedBlockMetadata;
 import io.trino.parquet.predicate.TupleDomainParquetPredicate;
 import io.trino.parquet.reader.FilteredOffsetIndex.OffsetRange;
 import io.trino.plugin.base.metrics.LongCount;
 import io.trino.spi.Page;
 import io.trino.spi.block.ArrayBlock;
 import io.trino.spi.block.Block;
+import io.trino.spi.block.DictionaryBlock;
 import io.trino.spi.block.RowBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.metrics.Metric;
@@ -42,13 +47,10 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeSignatureParameter;
 import jakarta.annotation.Nullable;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.filter2.compat.FilterCompat;
 import org.apache.parquet.filter2.predicate.FilterPredicate;
-import org.apache.parquet.hadoop.metadata.BlockMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
 import org.apache.parquet.hadoop.metadata.ColumnPath;
 import org.apache.parquet.internal.column.columnindex.OffsetIndex;
 import org.apache.parquet.internal.filter2.columnindex.ColumnIndexFilter;
@@ -65,6 +67,7 @@ import java.util.Set;
 import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.parquet.ParquetValidationUtils.validateParquet;
 import static io.trino.parquet.ParquetWriteValidation.StatisticsValidation;
@@ -77,7 +80,6 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
-import static java.util.Collections.nCopies;
 import static java.util.Objects.requireNonNull;
 
 public class ParquetReader
@@ -91,16 +93,15 @@ public class ParquetReader
     public static final String COLUMN_INDEX_ROWS_FILTERED = "ParquetColumnIndexRowsFiltered";
 
     private final Optional<String> fileCreatedBy;
-    private final List<BlockMetaData> blocks;
-    private final List<Long> firstRowsOfBlocks;
-    private final List<Field> columnFields;
+    private final List<RowGroupInfo> rowGroups;
+    private final List<Column> columnFields;
     private final List<PrimitiveField> primitiveFields;
     private final ParquetDataSource dataSource;
     private final ColumnReaderFactory columnReaderFactory;
     private final AggregatedMemoryContext memoryContext;
 
     private int currentRowGroup = -1;
-    private BlockMetaData currentBlockMetadata;
+    private PrunedBlockMetadata currentBlockMetadata;
     private long currentGroupRowCount;
     /**
      * Index in the Parquet file of the first row of the current group
@@ -120,7 +121,6 @@ public class ParquetReader
 
     private AggregatedMemoryContext currentRowGroupMemoryContext;
     private final Map<ChunkKey, ChunkedInputStream> chunkReaders;
-    private final List<Optional<ColumnIndexStore>> columnIndexStore;
     private final Optional<ParquetWriteValidation> writeValidation;
     private final Optional<WriteChecksumBuilder> writeChecksumBuilder;
     private final Optional<StatisticsValidation> rowGroupStatisticsValidation;
@@ -132,42 +132,24 @@ public class ParquetReader
 
     public ParquetReader(
             Optional<String> fileCreatedBy,
-            List<Field> columnFields,
-            List<BlockMetaData> blocks,
-            List<Long> firstRowsOfBlocks,
-            ParquetDataSource dataSource,
-            DateTimeZone timeZone,
-            AggregatedMemoryContext memoryContext,
-            ParquetReaderOptions options,
-            Function<Exception, RuntimeException> exceptionTransform)
-            throws IOException
-    {
-        this(fileCreatedBy, columnFields, blocks, firstRowsOfBlocks, dataSource, timeZone, memoryContext, options, exceptionTransform, Optional.empty(), nCopies(blocks.size(), Optional.empty()), Optional.empty());
-    }
-
-    public ParquetReader(
-            Optional<String> fileCreatedBy,
-            List<Field> columnFields,
-            List<BlockMetaData> blocks,
-            List<Long> firstRowsOfBlocks,
+            List<Column> columnFields,
+            List<RowGroupInfo> rowGroups,
             ParquetDataSource dataSource,
             DateTimeZone timeZone,
             AggregatedMemoryContext memoryContext,
             ParquetReaderOptions options,
             Function<Exception, RuntimeException> exceptionTransform,
             Optional<TupleDomainParquetPredicate> parquetPredicate,
-            List<Optional<ColumnIndexStore>> columnIndexStore,
             Optional<ParquetWriteValidation> writeValidation)
             throws IOException
     {
         this.fileCreatedBy = requireNonNull(fileCreatedBy, "fileCreatedBy is null");
         requireNonNull(columnFields, "columnFields is null");
         this.columnFields = ImmutableList.copyOf(columnFields);
-        this.primitiveFields = getPrimitiveFields(columnFields);
-        this.blocks = requireNonNull(blocks, "blocks is null");
-        this.firstRowsOfBlocks = requireNonNull(firstRowsOfBlocks, "firstRowsOfBlocks is null");
+        this.primitiveFields = getPrimitiveFields(columnFields.stream().map(Column::field).collect(toImmutableList()));
+        this.rowGroups = requireNonNull(rowGroups, "rowGroups is null");
         this.dataSource = requireNonNull(dataSource, "dataSource is null");
-        this.columnReaderFactory = new ColumnReaderFactory(timeZone);
+        this.columnReaderFactory = new ColumnReaderFactory(timeZone, options);
         this.memoryContext = requireNonNull(memoryContext, "memoryContext is null");
         this.currentRowGroupMemoryContext = memoryContext.newAggregatedMemoryContext();
         this.options = requireNonNull(options, "options is null");
@@ -175,36 +157,34 @@ public class ParquetReader
         this.columnReaders = new HashMap<>();
         this.maxBytesPerCell = new HashMap<>();
 
-        checkArgument(blocks.size() == firstRowsOfBlocks.size(), "elements of firstRowsOfBlocks must correspond to blocks");
-
         this.writeValidation = requireNonNull(writeValidation, "writeValidation is null");
         validateWrite(
                 validation -> fileCreatedBy.equals(Optional.of(validation.getCreatedBy())),
                 "Expected created by %s, found %s",
                 writeValidation.map(ParquetWriteValidation::getCreatedBy),
                 fileCreatedBy);
-        validateBlockMetadata(blocks);
+        validateBlockMetadata(rowGroups);
         this.writeChecksumBuilder = writeValidation.map(validation -> createWriteChecksumBuilder(validation.getTypes()));
         this.rowGroupStatisticsValidation = writeValidation.map(validation -> createStatisticsValidationBuilder(validation.getTypes()));
 
         requireNonNull(parquetPredicate, "parquetPredicate is null");
-        this.columnIndexStore = requireNonNull(columnIndexStore, "columnIndexStore is null");
         Optional<FilterPredicate> filter = Optional.empty();
         if (parquetPredicate.isPresent() && options.isUseColumnIndex()) {
             filter = parquetPredicate.get().toParquetFilter(timeZone);
         }
-        this.blockRowRanges = calculateFilteredRowRanges(blocks, filter, columnIndexStore, primitiveFields);
+        this.blockRowRanges = calculateFilteredRowRanges(rowGroups, filter, primitiveFields);
 
         this.blockFactory = new ParquetBlockFactory(exceptionTransform);
         ListMultimap<ChunkKey, DiskRange> ranges = ArrayListMultimap.create();
         Map<String, LongCount> codecMetrics = new HashMap<>();
-        for (int rowGroup = 0; rowGroup < blocks.size(); rowGroup++) {
-            BlockMetaData metadata = blocks.get(rowGroup);
+        for (int rowGroup = 0; rowGroup < rowGroups.size(); rowGroup++) {
+            PrunedBlockMetadata blockMetadata = rowGroups.get(rowGroup).prunedBlockMetadata();
+            long rowGroupRowCount = blockMetadata.getRowCount();
             for (PrimitiveField field : primitiveFields) {
                 int columnId = field.getId();
-                ColumnChunkMetaData chunkMetadata = getColumnChunkMetaData(metadata, field.getDescriptor());
+                ColumnChunkMetadata chunkMetadata = blockMetadata.getColumnChunkMetaData(field.getDescriptor());
                 ColumnPath columnPath = chunkMetadata.getPath();
-                long rowGroupRowCount = metadata.getRowCount();
+
                 long startingPosition = chunkMetadata.getStartingPos();
                 long totalLength = chunkMetadata.getTotalSize();
                 long totalDataSize = 0;
@@ -268,7 +248,7 @@ public class ParquetReader
         blockFactory.nextPage();
         Block[] blocks = new Block[columnFields.size()];
         for (int channel = 0; channel < columnFields.size(); channel++) {
-            Field field = columnFields.get(channel);
+            Field field = columnFields.get(channel).field();
             blocks[channel] = blockFactory.createBlock(batchSize, () -> readBlock(field));
         }
         Page page = new Page(batchSize, blocks);
@@ -314,11 +294,12 @@ public class ParquetReader
         }
 
         currentRowGroup++;
-        if (currentRowGroup == blocks.size()) {
+        if (currentRowGroup == rowGroups.size()) {
             return false;
         }
-        currentBlockMetadata = blocks.get(currentRowGroup);
-        firstRowIndexInGroup = firstRowsOfBlocks.get(currentRowGroup);
+        RowGroupInfo rowGroupInfo = rowGroups.get(currentRowGroup);
+        currentBlockMetadata = rowGroupInfo.prunedBlockMetadata();
+        firstRowIndexInGroup = rowGroupInfo.fileRowOffset();
         currentGroupRowCount = currentBlockMetadata.getRowCount();
         FilteredRowRanges currentGroupRowRanges = blockRowRanges[currentRowGroup];
         log.debug("advanceToNextRowGroup dataSource %s, currentRowGroup %d, rowRanges %s, currentBlockMetadata %s", dataSource.getId(), currentRowGroup, currentGroupRowRanges, currentBlockMetadata);
@@ -326,7 +307,9 @@ public class ParquetReader
             long rowCount = currentGroupRowRanges.getRowCount();
             columnIndexRowsFiltered += currentGroupRowCount - rowCount;
             if (rowCount == 0) {
-                return false;
+                // Filters on multiple columns with page indexes may yield non-overlapping row ranges and eliminate the entire row group.
+                // Advance to next row group to ensure that we don't return a null Page and close the page source before all row groups are processed
+                return advanceToNextRowGroup();
             }
             currentGroupRowCount = rowCount;
         }
@@ -341,8 +324,8 @@ public class ParquetReader
             return;
         }
 
-        for (int column = 0; column < primitiveFields.size(); column++) {
-            ChunkedInputStream chunkedStream = chunkReaders.get(new ChunkKey(column, currentRowGroup));
+        for (PrimitiveField field : primitiveFields) {
+            ChunkedInputStream chunkedStream = chunkReaders.get(new ChunkKey(field.getId(), currentRowGroup));
             if (chunkedStream != null) {
                 chunkedStream.close();
             }
@@ -381,31 +364,73 @@ public class ParquetReader
     private ColumnChunk readStruct(GroupField field)
             throws IOException
     {
-        List<TypeSignatureParameter> fields = field.getType().getTypeSignature().getParameters();
-        Block[] blocks = new Block[fields.size()];
+        Block[] blocks = new Block[field.getType().getTypeParameters().size()];
         ColumnChunk columnChunk = null;
         List<Optional<Field>> parameters = field.getChildren();
-        for (int i = 0; i < fields.size(); i++) {
+        for (int i = 0; i < blocks.length; i++) {
             Optional<Field> parameter = parameters.get(i);
             if (parameter.isPresent()) {
                 columnChunk = readColumnChunk(parameter.get());
                 blocks[i] = columnChunk.getBlock();
             }
         }
-        for (int i = 0; i < fields.size(); i++) {
+
+        if (columnChunk == null) {
+            throw new ParquetCorruptionException(dataSource.getId(), "Struct field does not have any children: %s", field);
+        }
+
+        StructColumnReader.RowBlockPositions structIsNull = StructColumnReader.calculateStructOffsets(field, columnChunk.getDefinitionLevels(), columnChunk.getRepetitionLevels());
+        Optional<boolean[]> isNull = structIsNull.isNull();
+        for (int i = 0; i < blocks.length; i++) {
             if (blocks[i] == null) {
-                blocks[i] = RunLengthEncodedBlock.create(field.getType().getTypeParameters().get(i), null, columnChunk.getBlock().getPositionCount());
+                blocks[i] = RunLengthEncodedBlock.create(field.getType().getTypeParameters().get(i), null, structIsNull.positionsCount());
+            }
+            else if (isNull.isPresent()) {
+                blocks[i] = toNotNullSupressedBlock(structIsNull.positionsCount(), isNull.get(), blocks[i]);
             }
         }
-        StructColumnReader.RowBlockPositions structIsNull = StructColumnReader.calculateStructOffsets(field, columnChunk.getDefinitionLevels(), columnChunk.getRepetitionLevels());
-        Block rowBlock = RowBlock.fromFieldBlocks(structIsNull.positionsCount(), structIsNull.isNull(), blocks);
+        Block rowBlock = RowBlock.fromNotNullSuppressedFieldBlocks(structIsNull.positionsCount(), structIsNull.isNull(), blocks);
         return new ColumnChunk(rowBlock, columnChunk.getDefinitionLevels(), columnChunk.getRepetitionLevels());
+    }
+
+    private static Block toNotNullSupressedBlock(int positionCount, boolean[] rowIsNull, Block fieldBlock)
+    {
+        // find a existing position in the block that is null
+        int nullIndex = -1;
+        if (fieldBlock.mayHaveNull()) {
+            for (int position = 0; position < fieldBlock.getPositionCount(); position++) {
+                if (fieldBlock.isNull(position)) {
+                    nullIndex = position;
+                    break;
+                }
+            }
+        }
+        // if there are no null positions, append a null to the end of the block
+        if (nullIndex == -1) {
+            fieldBlock = fieldBlock.getLoadedBlock();
+            nullIndex = fieldBlock.getPositionCount();
+            fieldBlock = fieldBlock.copyWithAppendedNull();
+        }
+
+        // create a dictionary that maps null positions to the null index
+        int[] dictionaryIds = new int[positionCount];
+        int nullSuppressedPosition = 0;
+        for (int position = 0; position < positionCount; position++) {
+            if (rowIsNull[position]) {
+                dictionaryIds[position] = nullIndex;
+            }
+            else {
+                dictionaryIds[position] = nullSuppressedPosition;
+                nullSuppressedPosition++;
+            }
+        }
+        return DictionaryBlock.create(positionCount, fieldBlock, dictionaryIds);
     }
 
     @Nullable
     private FilteredOffsetIndex getFilteredOffsetIndex(FilteredRowRanges rowRanges, int rowGroup, long rowGroupRowCount, ColumnPath columnPath)
     {
-        Optional<ColumnIndexStore> rowGroupColumnIndexStore = this.columnIndexStore.get(rowGroup);
+        Optional<ColumnIndexStore> rowGroupColumnIndexStore = this.rowGroups.get(rowGroup).columnIndexStore();
         if (rowGroupColumnIndexStore.isEmpty()) {
             return null;
         }
@@ -424,8 +449,8 @@ public class ParquetReader
         int fieldId = field.getId();
         ColumnReader columnReader = columnReaders.get(fieldId);
         if (!columnReader.hasPageReader()) {
-            validateParquet(currentBlockMetadata.getRowCount() > 0, "Row group has 0 rows");
-            ColumnChunkMetaData metadata = getColumnChunkMetaData(currentBlockMetadata, columnDescriptor);
+            validateParquet(currentBlockMetadata.getRowCount() > 0, dataSource.getId(), "Row group has 0 rows");
+            ColumnChunkMetadata metadata = currentBlockMetadata.getColumnChunkMetaData(columnDescriptor);
             FilteredRowRanges rowRanges = blockRowRanges[currentRowGroup];
             OffsetIndex offsetIndex = null;
             if (rowRanges != null) {
@@ -433,7 +458,7 @@ public class ParquetReader
             }
             ChunkedInputStream columnChunkInputStream = chunkReaders.get(new ChunkKey(fieldId, currentRowGroup));
             columnReader.setPageReader(
-                    createPageReader(columnChunkInputStream, metadata, columnDescriptor, offsetIndex, fileCreatedBy),
+                    createPageReader(dataSource.getId(), columnChunkInputStream, metadata, columnDescriptor, offsetIndex, fileCreatedBy),
                     Optional.ofNullable(rowRanges));
         }
         ColumnChunk columnChunk = columnReader.readPrimitive();
@@ -450,6 +475,11 @@ public class ParquetReader
         return columnChunk;
     }
 
+    public List<Column> getColumnFields()
+    {
+        return columnFields;
+    }
+
     public Metrics getMetrics()
     {
         ImmutableMap.Builder<String, Metric<?>> metrics = ImmutableMap.<String, Metric<?>>builder()
@@ -459,17 +489,6 @@ public class ParquetReader
         }
 
         return new Metrics(metrics.buildOrThrow());
-    }
-
-    private ColumnChunkMetaData getColumnChunkMetaData(BlockMetaData blockMetaData, ColumnDescriptor columnDescriptor)
-            throws IOException
-    {
-        for (ColumnChunkMetaData metadata : blockMetaData.getColumns()) {
-            if (metadata.getPath().equals(ColumnPath.get(columnDescriptor.getPath()))) {
-                return metadata;
-            }
-        }
-        throw new ParquetCorruptionException("Metadata is missing for column: %s", columnDescriptor);
     }
 
     private void initializeColumnReaders()
@@ -537,25 +556,24 @@ public class ParquetReader
     }
 
     private static FilteredRowRanges[] calculateFilteredRowRanges(
-            List<BlockMetaData> blocks,
+            List<RowGroupInfo> rowGroups,
             Optional<FilterPredicate> filter,
-            List<Optional<ColumnIndexStore>> columnIndexStore,
             List<PrimitiveField> primitiveFields)
     {
-        FilteredRowRanges[] blockRowRanges = new FilteredRowRanges[blocks.size()];
+        FilteredRowRanges[] blockRowRanges = new FilteredRowRanges[rowGroups.size()];
         if (filter.isEmpty()) {
             return blockRowRanges;
         }
         Set<ColumnPath> paths = primitiveFields.stream()
                 .map(field -> ColumnPath.get(field.getDescriptor().getPath()))
                 .collect(toImmutableSet());
-        for (int rowGroup = 0; rowGroup < blocks.size(); rowGroup++) {
-            Optional<ColumnIndexStore> rowGroupColumnIndexStore = columnIndexStore.get(rowGroup);
+        for (int rowGroup = 0; rowGroup < rowGroups.size(); rowGroup++) {
+            RowGroupInfo rowGroupInfo = rowGroups.get(rowGroup);
+            Optional<ColumnIndexStore> rowGroupColumnIndexStore = rowGroupInfo.columnIndexStore();
             if (rowGroupColumnIndexStore.isEmpty()) {
                 continue;
             }
-            BlockMetaData metadata = blocks.get(rowGroup);
-            long rowGroupRowCount = metadata.getRowCount();
+            long rowGroupRowCount = rowGroupInfo.prunedBlockMetadata().getRowCount();
             FilteredRowRanges rowRanges = new FilteredRowRanges(ColumnIndexFilter.calculateRowRanges(
                     FilterCompat.get(filter.get()),
                     rowGroupColumnIndexStore.get(),
@@ -577,14 +595,16 @@ public class ParquetReader
         }
     }
 
-    private void validateBlockMetadata(List<BlockMetaData> blockMetaData)
+    private void validateBlockMetadata(List<RowGroupInfo> rowGroups)
             throws ParquetCorruptionException
     {
         if (writeValidation.isPresent()) {
-            writeValidation.get().validateBlocksMetadata(dataSource.getId(), blockMetaData);
+            writeValidation.get().validateBlocksMetadata(dataSource.getId(), rowGroups);
         }
     }
 
+    @SuppressWarnings("FormatStringAnnotation")
+    @FormatMethod
     private void validateWrite(java.util.function.Predicate<ParquetWriteValidation> test, String messageFormat, Object... args)
             throws ParquetCorruptionException
     {

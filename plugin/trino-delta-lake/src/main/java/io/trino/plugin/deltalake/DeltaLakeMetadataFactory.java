@@ -16,6 +16,7 @@ package io.trino.plugin.deltalake;
 import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.plugin.deltalake.metastore.DeltaLakeTableMetadataScheduler;
 import io.trino.plugin.deltalake.metastore.HiveMetastoreBackedDeltaLakeMetastore;
 import io.trino.plugin.deltalake.statistics.CachingExtendedStatisticsAccess;
 import io.trino.plugin.deltalake.statistics.FileBasedTableStatisticsProvider;
@@ -33,7 +34,7 @@ import io.trino.spi.type.TypeManager;
 
 import java.util.Optional;
 
-import static io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.memoizeMetastore;
+import static io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.createPerTransactionCache;
 import static java.util.Objects.requireNonNull;
 
 public class DeltaLakeMetadataFactory
@@ -56,6 +57,7 @@ public class DeltaLakeMetadataFactory
     private final long perTransactionMetastoreCacheMaximumSize;
     private final boolean deleteSchemaLocationsFallback;
     private final boolean useUniqueTableLocation;
+    private final DeltaLakeTableMetadataScheduler metadataScheduler;
 
     private final boolean allowManagedTableRename;
     private final String trinoVersion;
@@ -76,7 +78,8 @@ public class DeltaLakeMetadataFactory
             DeltaLakeRedirectionsProvider deltaLakeRedirectionsProvider,
             CachingExtendedStatisticsAccess statisticsAccess,
             @AllowDeltaLakeManagedTableRename boolean allowManagedTableRename,
-            NodeVersion nodeVersion)
+            NodeVersion nodeVersion,
+            DeltaLakeTableMetadataScheduler metadataScheduler)
     {
         this.hiveMetastoreFactory = requireNonNull(hiveMetastoreFactory, "hiveMetastore is null");
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
@@ -98,12 +101,12 @@ public class DeltaLakeMetadataFactory
         this.useUniqueTableLocation = deltaLakeConfig.isUniqueTableLocation();
         this.allowManagedTableRename = allowManagedTableRename;
         this.trinoVersion = requireNonNull(nodeVersion, "nodeVersion is null").toString();
+        this.metadataScheduler = requireNonNull(metadataScheduler, "metadataScheduler is null");
     }
 
     public DeltaLakeMetadata create(ConnectorIdentity identity)
     {
-        // create per-transaction cache over hive metastore interface
-        CachingHiveMetastore cachingHiveMetastore = memoizeMetastore(
+        CachingHiveMetastore cachingHiveMetastore = createPerTransactionCache(
                 hiveMetastoreFactory.createMetastore(Optional.of(identity)),
                 perTransactionMetastoreCacheMaximumSize);
         AccessControlMetadata accessControlMetadata = accessControlMetadataFactory.create(cachingHiveMetastore);
@@ -136,6 +139,7 @@ public class DeltaLakeMetadataFactory
                 deleteSchemaLocationsFallback,
                 deltaLakeRedirectionsProvider,
                 statisticsAccess,
+                metadataScheduler,
                 useUniqueTableLocation,
                 allowManagedTableRename);
     }

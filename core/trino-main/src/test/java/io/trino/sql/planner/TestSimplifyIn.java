@@ -17,7 +17,6 @@ import io.trino.sql.planner.assertions.BasePlanTest;
 import org.junit.jupiter.api.Test;
 
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.filter;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.values;
 
 public class TestSimplifyIn
@@ -28,8 +27,6 @@ public class TestSimplifyIn
     {
         assertPlan(
                 "SELECT * FROM (VALUES 0) t(a) WHERE a IN (5)",
-                anyTree(
-                        filter("A = 5",
-                                values("A"))));
+                anyTree(values("A")));
     }
 }

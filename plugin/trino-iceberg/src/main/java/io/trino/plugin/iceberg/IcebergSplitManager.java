@@ -16,7 +16,7 @@ package io.trino.plugin.iceberg;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
-import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.filesystem.cache.CachingHostAddressProvider;
 import io.trino.plugin.base.classloader.ClassLoaderSafeConnectorSplitSource;
 import io.trino.plugin.iceberg.functions.tablechanges.TableChangesFunctionHandle;
 import io.trino.plugin.iceberg.functions.tablechanges.TableChangesSplitSource;
@@ -30,10 +30,16 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.function.table.ConnectorTableFunctionHandle;
 import io.trino.spi.type.TypeManager;
+import org.apache.iceberg.CombinedScanTask;
+import org.apache.iceberg.DataOperations;
+import org.apache.iceberg.FileScanTask;
+import org.apache.iceberg.Scan;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.TableScan;
+import org.apache.iceberg.util.SnapshotUtil;
 
-import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
+import java.util.concurrent.ExecutorService;
+
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getDynamicFilteringWaitTimeout;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getMinimumAssignedSplitWeight;
 import static io.trino.spi.connector.FixedSplitSource.emptySplitSource;
@@ -46,20 +52,23 @@ public class IcebergSplitManager
 
     private final IcebergTransactionManager transactionManager;
     private final TypeManager typeManager;
-    private final TrinoFileSystemFactory fileSystemFactory;
-    private final boolean asyncIcebergSplitProducer;
+    private final IcebergFileSystemFactory fileSystemFactory;
+    private final ExecutorService executor;
+    private final CachingHostAddressProvider cachingHostAddressProvider;
 
     @Inject
     public IcebergSplitManager(
             IcebergTransactionManager transactionManager,
             TypeManager typeManager,
-            TrinoFileSystemFactory fileSystemFactory,
-            @AsyncIcebergSplitProducer boolean asyncIcebergSplitProducer)
+            IcebergFileSystemFactory fileSystemFactory,
+            @ForIcebergSplitManager ExecutorService executor,
+            CachingHostAddressProvider cachingHostAddressProvider)
     {
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
-        this.asyncIcebergSplitProducer = asyncIcebergSplitProducer;
+        this.executor = requireNonNull(executor, "executor is null");
+        this.cachingHostAddressProvider = requireNonNull(cachingHostAddressProvider, "cachingHostAddressProvider is null");
     }
 
     @Override
@@ -79,28 +88,52 @@ public class IcebergSplitManager
             return emptySplitSource();
         }
 
-        Table icebergTable = transactionManager.get(transaction, session.getIdentity()).getIcebergTable(session, table.getSchemaTableName());
+        IcebergMetadata icebergMetadata = transactionManager.get(transaction, session.getIdentity());
+        Table icebergTable = icebergMetadata.getIcebergTable(session, table.getSchemaTableName());
         Duration dynamicFilteringWaitTimeout = getDynamicFilteringWaitTimeout(session);
 
-        TableScan tableScan = icebergTable.newScan()
-                .useSnapshot(table.getSnapshotId().get());
-        if (!asyncIcebergSplitProducer) {
-            tableScan = tableScan.planWith(newDirectExecutorService());
-        }
+        Scan scan = getScan(icebergMetadata, icebergTable, table, executor);
+
         IcebergSplitSource splitSource = new IcebergSplitSource(
                 fileSystemFactory,
                 session,
                 table,
-                tableScan,
+                icebergTable.io().properties(),
+                scan,
                 table.getMaxScannedFileSize(),
                 dynamicFilter,
                 dynamicFilteringWaitTimeout,
                 constraint,
                 typeManager,
                 table.isRecordScannedFiles(),
-                getMinimumAssignedSplitWeight(session));
+                getMinimumAssignedSplitWeight(session),
+                cachingHostAddressProvider);
 
         return new ClassLoaderSafeConnectorSplitSource(splitSource, IcebergSplitManager.class.getClassLoader());
+    }
+
+    private Scan<?, FileScanTask, CombinedScanTask> getScan(IcebergMetadata icebergMetadata, Table icebergTable, IcebergTableHandle table, ExecutorService executor)
+    {
+        Long fromSnapshot = icebergMetadata.getIncrementalRefreshFromSnapshot().orElse(null);
+        if (fromSnapshot != null) {
+            // check if fromSnapshot is still part of the table's snapshot history
+            if (SnapshotUtil.isAncestorOf(icebergTable, fromSnapshot)) {
+                boolean containsModifiedRows = false;
+                for (Snapshot snapshot : SnapshotUtil.ancestorsBetween(icebergTable, icebergTable.currentSnapshot().snapshotId(), fromSnapshot)) {
+                    if (snapshot.operation().equals(DataOperations.OVERWRITE) || snapshot.operation().equals(DataOperations.DELETE)) {
+                        containsModifiedRows = true;
+                        break;
+                    }
+                }
+                if (!containsModifiedRows) {
+                    return icebergTable.newIncrementalAppendScan().fromSnapshotExclusive(fromSnapshot).planWith(executor);
+                }
+            }
+            // fromSnapshot is missing (could be due to snapshot expiration or rollback), or snapshot range contains modifications
+            // (deletes or overwrites), so we cannot perform incremental refresh. Falling back to full refresh.
+            icebergMetadata.disableIncrementalRefresh();
+        }
+        return icebergTable.newScan().useSnapshot(table.getSnapshotId().get()).planWith(executor);
     }
 
     @Override

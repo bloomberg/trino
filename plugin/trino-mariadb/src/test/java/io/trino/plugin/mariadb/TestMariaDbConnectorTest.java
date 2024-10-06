@@ -13,12 +13,8 @@
  */
 package io.trino.plugin.mariadb;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.SqlExecutor;
-
-import static io.trino.plugin.mariadb.MariaDbQueryRunner.createMariaDbQueryRunner;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestMariaDbConnectorTest
         extends BaseMariaDbConnectorTest
@@ -28,33 +24,14 @@ public class TestMariaDbConnectorTest
             throws Exception
     {
         server = closeAfterClass(new TestingMariaDbServer());
-        return createMariaDbQueryRunner(server, ImmutableMap.of(), ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return MariaDbQueryRunner.builder(server)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
     protected SqlExecutor onRemoteDatabase()
     {
         return server::execute;
-    }
-
-    @Override
-    public void testRenameColumn()
-    {
-        assertThatThrownBy(super::testRenameColumn)
-                .hasMessageContaining("Rename column not supported for the MariaDB server version");
-    }
-
-    @Override
-    public void testRenameColumnName(String columnName)
-    {
-        assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                .hasMessageContaining("Rename column not supported for the MariaDB server version");
-    }
-
-    @Override
-    public void testAlterTableRenameColumnToLongName()
-    {
-        assertThatThrownBy(super::testAlterTableRenameColumnToLongName)
-                .hasMessageContaining("Rename column not supported for the MariaDB server version");
     }
 }

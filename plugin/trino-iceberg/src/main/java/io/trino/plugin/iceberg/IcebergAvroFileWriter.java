@@ -18,7 +18,6 @@ import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.Type;
-import org.apache.iceberg.Metrics;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.avro.Avro;
 import org.apache.iceberg.data.Record;
@@ -29,16 +28,17 @@ import org.apache.iceberg.io.OutputFile;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.plugin.iceberg.IcebergAvroDataConversion.toIcebergRecords;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_WRITER_CLOSE_ERROR;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_WRITER_OPEN_ERROR;
-import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
 import static org.apache.iceberg.TableProperties.AVRO_COMPRESSION;
 
-public class IcebergAvroFileWriter
+public final class IcebergAvroFileWriter
         implements IcebergFileWriter
 {
     private static final int INSTANCE_SIZE = instanceSize(IcebergAvroFileWriter.class);
@@ -135,24 +135,18 @@ public class IcebergAvroFileWriter
 
     private static String toIcebergAvroCompressionName(HiveCompressionCodec hiveCompressionCodec)
     {
-        switch (hiveCompressionCodec) {
-            case NONE:
-                return "UNCOMPRESSED";
-            case SNAPPY:
-                return "SNAPPY";
-            case LZ4:
-                return "LZ4";
-            case ZSTD:
-                return "ZSTD";
-            case GZIP:
-                return "GZIP";
-        }
-        throw new TrinoException(GENERIC_INTERNAL_ERROR, "Unexpected hiveCompressionCodec: " + hiveCompressionCodec);
+        return switch (hiveCompressionCodec) {
+            case NONE -> "UNCOMPRESSED";
+            case SNAPPY -> "SNAPPY";
+            case LZ4 -> throw new TrinoException(NOT_SUPPORTED, "Compression codec LZ4 not supported for Avro");
+            case ZSTD -> "ZSTD";
+            case GZIP -> "GZIP";
+        };
     }
 
     @Override
-    public Metrics getMetrics()
+    public FileMetrics getFileMetrics()
     {
-        return avroWriter.metrics();
+        return new FileMetrics(avroWriter.metrics(), Optional.empty());
     }
 }

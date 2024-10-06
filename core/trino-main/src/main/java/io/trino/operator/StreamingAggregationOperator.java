@@ -16,7 +16,6 @@ package io.trino.operator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import io.trino.memory.context.LocalMemoryContext;
-import io.trino.operator.BasicWorkProcessorOperatorAdapter.BasicAdapterWorkProcessorOperatorFactory;
 import io.trino.operator.WorkProcessor.Transformation;
 import io.trino.operator.WorkProcessor.TransformationState;
 import io.trino.operator.aggregation.Aggregator;
@@ -38,10 +37,10 @@ import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.operator.BasicWorkProcessorOperatorAdapter.createAdapterOperatorFactory;
 import static io.trino.operator.WorkProcessor.TransformationState.finished;
 import static io.trino.operator.WorkProcessor.TransformationState.needsMoreData;
 import static io.trino.operator.WorkProcessor.TransformationState.ofResult;
+import static io.trino.operator.WorkProcessorOperatorAdapter.createAdapterOperatorFactory;
 import static java.util.Objects.requireNonNull;
 
 public class StreamingAggregationOperator
@@ -67,7 +66,7 @@ public class StreamingAggregationOperator
     }
 
     private static class Factory
-            implements BasicAdapterWorkProcessorOperatorFactory
+            implements WorkProcessorOperatorFactory
     {
         private final int operatorId;
         private final PlanNodeId planNodeId;
@@ -265,7 +264,7 @@ public class StreamingAggregationOperator
 
             Page groupByPage = page.getColumns(groupByChannels);
             if (currentGroup != null) {
-                if (!pagesHashStrategy.rowNotDistinctFromRow(0, currentGroup.getColumns(groupByChannels), 0, groupByPage)) {
+                if (!pagesHashStrategy.rowIdenticalToRow(0, currentGroup.getColumns(groupByChannels), 0, groupByPage)) {
                     // page starts with new group, so flush it
                     evaluateAndFlushGroup(currentGroup, 0);
                 }
@@ -325,7 +324,7 @@ public class StreamingAggregationOperator
         private int findNextGroupStart(int startPosition, Page page)
         {
             for (int i = startPosition + 1; i < page.getPositionCount(); i++) {
-                if (!pagesHashStrategy.rowNotDistinctFromRow(startPosition, page, i, page)) {
+                if (!pagesHashStrategy.rowIdenticalToRow(startPosition, page, i, page)) {
                     return i;
                 }
             }

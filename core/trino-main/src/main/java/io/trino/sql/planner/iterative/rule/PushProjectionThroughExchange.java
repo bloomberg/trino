@@ -19,7 +19,8 @@ import com.google.common.collect.ImmutableSet;
 import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.spi.type.Type;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -27,8 +28,6 @@ import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.ExchangeNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.List;
 import java.util.Map;
@@ -111,7 +110,7 @@ public class PushProjectionThroughExchange
 
             if (exchange.getOrderingScheme().isPresent()) {
                 // Need to retain ordering columns for the exchange
-                exchange.getOrderingScheme().get().getOrderBy().stream()
+                exchange.getOrderingScheme().get().orderBy().stream()
                         // Do not duplicate symbols in inputs list
                         .filter(symbol -> !partitioningColumns.contains(symbol))
                         .map(outputToInputMap::get)
@@ -124,7 +123,7 @@ public class PushProjectionThroughExchange
             ImmutableSet.Builder<Symbol> outputBuilder = ImmutableSet.builder();
             partitioningColumns.forEach(outputBuilder::add);
             exchange.getPartitioningScheme().getHashColumn().ifPresent(outputBuilder::add);
-            exchange.getOrderingScheme().ifPresent(orderingScheme -> outputBuilder.addAll(orderingScheme.getOrderBy()));
+            exchange.getOrderingScheme().ifPresent(orderingScheme -> outputBuilder.addAll(orderingScheme.orderBy()));
             Set<Symbol> partitioningHashAndOrderingOutputs = outputBuilder.build();
 
             Map<Symbol, Expression> translationMap = outputToInputMap.entrySet().stream()
@@ -136,8 +135,7 @@ public class PushProjectionThroughExchange
                     continue;
                 }
                 Expression translatedExpression = inlineSymbols(translationMap, projection.getValue());
-                Type type = context.getSymbolAllocator().getTypes().get(projection.getKey());
-                Symbol symbol = context.getSymbolAllocator().newSymbol(translatedExpression, type);
+                Symbol symbol = context.getSymbolAllocator().newSymbol(translatedExpression);
                 projections.put(symbol, translatedExpression);
                 inputs.add(symbol);
             }
@@ -150,7 +148,7 @@ public class PushProjectionThroughExchange
         partitioningColumns.forEach(outputBuilder::add);
         exchange.getPartitioningScheme().getHashColumn().ifPresent(outputBuilder::add);
         if (exchange.getOrderingScheme().isPresent()) {
-            exchange.getOrderingScheme().get().getOrderBy().stream()
+            exchange.getOrderingScheme().get().orderBy().stream()
                     // Do not duplicate symbols in outputs list (for consistency with inputs lists)
                     .filter(symbol -> !partitioningColumns.contains(symbol))
                     .forEach(outputBuilder::add);
@@ -190,7 +188,7 @@ public class PushProjectionThroughExchange
 
     private static boolean isSymbolToSymbolProjection(ProjectNode project)
     {
-        return project.getAssignments().getExpressions().stream().allMatch(SymbolReference.class::isInstance);
+        return project.getAssignments().getExpressions().stream().allMatch(Reference.class::isInstance);
     }
 
     private static Map<Symbol, Symbol> mapExchangeOutputToInput(ExchangeNode exchange, int sourceIndex)

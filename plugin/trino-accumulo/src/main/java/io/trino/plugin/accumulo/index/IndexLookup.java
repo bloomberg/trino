@@ -27,8 +27,8 @@ import io.trino.plugin.accumulo.serializers.AccumuloRowSerializer;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import jakarta.annotation.PreDestroy;
+import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.BatchScanner;
-import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableNotFoundException;
 import org.apache.accumulo.core.data.Key;
@@ -53,8 +53,8 @@ import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.trino.plugin.accumulo.AccumuloClient.getRangesFromDomain;
 import static io.trino.plugin.accumulo.AccumuloErrorCode.UNEXPECTED_ACCUMULO_ERROR;
+import static io.trino.plugin.accumulo.AccumuloMetadataManager.getRangesFromDomain;
 import static io.trino.plugin.accumulo.conf.AccumuloSessionProperties.getIndexCardinalityCachePollingDuration;
 import static io.trino.plugin.accumulo.conf.AccumuloSessionProperties.getIndexSmallCardThreshold;
 import static io.trino.plugin.accumulo.conf.AccumuloSessionProperties.getIndexThreshold;
@@ -83,14 +83,14 @@ public class IndexLookup
     private static final Logger LOG = Logger.get(IndexLookup.class);
     private static final Range METRICS_TABLE_ROWID_RANGE = new Range(METRICS_TABLE_ROWID_AS_TEXT);
     private final ColumnCardinalityCache cardinalityCache;
-    private final Connector connector;
+    private final AccumuloClient connector;
     private final ExecutorService coreExecutor;
     private final BoundedExecutor executorService;
 
     @Inject
-    public IndexLookup(Connector connector, ColumnCardinalityCache cardinalityCache)
+    public IndexLookup(AccumuloClient client, ColumnCardinalityCache cardinalityCache)
     {
-        this.connector = requireNonNull(connector, "connector is null");
+        this.connector = requireNonNull(client, "client is null");
         this.cardinalityCache = requireNonNull(cardinalityCache, "cardinalityCache is null");
 
         // Create a bounded executor with a pool size at 4x number of processors
@@ -180,13 +180,13 @@ public class IndexLookup
     {
         ImmutableListMultimap.Builder<AccumuloColumnConstraint, Range> builder = ImmutableListMultimap.builder();
         for (AccumuloColumnConstraint columnConstraint : constraints) {
-            if (columnConstraint.isIndexed()) {
-                for (Range range : getRangesFromDomain(columnConstraint.getDomain(), serializer)) {
+            if (columnConstraint.indexed()) {
+                for (Range range : getRangesFromDomain(columnConstraint.domain(), serializer)) {
                     builder.put(columnConstraint, range);
                 }
             }
             else {
-                LOG.warn("Query contains constraint on non-indexed column %s. Is it worth indexing?", columnConstraint.getName());
+                LOG.warn("Query contains constraint on non-indexed column %s. Is it worth indexing?", columnConstraint.name());
             }
         }
         return builder.build();
@@ -323,7 +323,7 @@ public class IndexLookup
                 scan.setRanges(constraintEntry.getValue());
 
                 // Fetch the column family for this specific column
-                scan.fetchColumnFamily(new Text(Indexer.getIndexColumnFamily(constraintEntry.getKey().getFamily().getBytes(UTF_8), constraintEntry.getKey().getQualifier().getBytes(UTF_8)).array()));
+                scan.fetchColumnFamily(new Text(Indexer.getIndexColumnFamily(constraintEntry.getKey().family().getBytes(UTF_8), constraintEntry.getKey().qualifier().getBytes(UTF_8)).array()));
 
                 // For each entry in the scanner
                 Text tmpQualifier = new Text();
@@ -337,7 +337,7 @@ public class IndexLookup
                     }
                 }
 
-                LOG.debug("Retrieved %d ranges for index column %s", columnRanges.size(), constraintEntry.getKey().getName());
+                LOG.debug("Retrieved %d ranges for index column %s", columnRanges.size(), constraintEntry.getKey().name());
                 scan.close();
                 return columnRanges;
             }));

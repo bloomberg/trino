@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.deltalake.statistics;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeColumnMetadata;
@@ -33,11 +34,13 @@ import io.trino.spi.type.TypeManager;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
@@ -79,12 +82,12 @@ public class FileBasedTableStatisticsProvider
         List<DeltaLakeColumnMetadata> columnMetadata = DeltaLakeSchemaSupport.extractSchema(metadata, tableHandle.getProtocolEntry(), typeManager);
         List<DeltaLakeColumnHandle> columns = columnMetadata.stream()
                 .map(columnMeta -> new DeltaLakeColumnHandle(
-                        columnMeta.getName(),
-                        columnMeta.getType(),
-                        columnMeta.getFieldId(),
-                        columnMeta.getPhysicalName(),
-                        columnMeta.getPhysicalColumnType(),
-                        metadata.getOriginalPartitionColumns().contains(columnMeta.getName()) ? PARTITION_KEY : REGULAR,
+                        columnMeta.name(),
+                        columnMeta.type(),
+                        columnMeta.fieldId(),
+                        columnMeta.physicalName(),
+                        columnMeta.physicalColumnType(),
+                        metadata.getOriginalPartitionColumns().contains(columnMeta.name()) ? PARTITION_KEY : REGULAR,
                         Optional.empty()))
                 .collect(toImmutableList());
 
@@ -94,7 +97,7 @@ public class FileBasedTableStatisticsProvider
         Map<DeltaLakeColumnHandle, Double> maxValues = new HashMap<>();
         Map<DeltaLakeColumnHandle, Set<String>> partitioningColumnsDistinctValues = new HashMap<>();
         columns.stream()
-                .filter(column -> column.getColumnType() == PARTITION_KEY)
+                .filter(column -> column.columnType() == PARTITION_KEY)
                 .forEach(column -> partitioningColumnsDistinctValues.put(column, new HashSet<>()));
 
         if (tableHandle.getEnforcedPartitionConstraint().isNone() || tableHandle.getNonPartitionConstraint().isNone()) {
@@ -104,72 +107,82 @@ public class FileBasedTableStatisticsProvider
         Set<String> predicatedColumnNames = tableHandle.getNonPartitionConstraint().getDomains().orElseThrow().keySet().stream()
                 // TODO Statistics for column inside complex type is not collected (https://github.com/trinodb/trino/issues/17164)
                 .filter(DeltaLakeColumnHandle::isBaseColumn)
-                .map(DeltaLakeColumnHandle::getBaseColumnName)
+                .map(DeltaLakeColumnHandle::baseColumnName)
                 .collect(toImmutableSet());
         List<DeltaLakeColumnMetadata> predicatedColumns = columnMetadata.stream()
-                .filter(column -> predicatedColumnNames.contains(column.getName()))
+                .filter(column -> predicatedColumnNames.contains(column.name()))
                 .collect(toImmutableList());
 
-        for (AddFileEntry addEntry : transactionLogAccess.getActiveFiles(tableSnapshot, session)) {
-            Optional<? extends DeltaLakeFileStatistics> fileStatistics = addEntry.getStats();
-            if (fileStatistics.isEmpty()) {
-                // Open source Delta Lake does not collect stats
-                return TableStatistics.empty();
-            }
-            DeltaLakeFileStatistics stats = fileStatistics.get();
-            if (!partitionMatchesPredicate(addEntry.getCanonicalPartitionValues(), tableHandle.getEnforcedPartitionConstraint().getDomains().orElseThrow())) {
-                continue;
-            }
-
-            TupleDomain<DeltaLakeColumnHandle> statisticsPredicate = createStatisticsPredicate(
-                    addEntry,
-                    predicatedColumns,
-                    tableHandle.getMetadataEntry().getLowercasePartitionColumns());
-            if (!tableHandle.getNonPartitionConstraint().overlaps(statisticsPredicate)) {
-                continue;
-            }
-
-            if (stats.getNumRecords().isEmpty()) {
-                // Not clear if it's possible for stats to be present with no row count, but bail out if that happens
-                return TableStatistics.empty();
-            }
-            numRecords += stats.getNumRecords().get();
-            for (DeltaLakeColumnHandle column : columns) {
-                if (column.getColumnType() == PARTITION_KEY) {
-                    Optional<String> partitionValue = addEntry.getCanonicalPartitionValues().get(column.getBasePhysicalColumnName());
-                    if (partitionValue.isEmpty()) {
-                        nullCounts.merge(column, (double) stats.getNumRecords().get(), Double::sum);
-                    }
-                    else {
-                        // NULL is not counted as a distinct value
-                        // Code below assumes that values returned by addEntry.getCanonicalPartitionValues() are normalized,
-                        // it may not be true in case of real, doubles, timestamps etc
-                        partitioningColumnsDistinctValues.get(column).add(partitionValue.get());
-                    }
+        try (Stream<AddFileEntry> addEntries = transactionLogAccess.getActiveFiles(
+                session,
+                tableSnapshot,
+                tableHandle.getMetadataEntry(),
+                tableHandle.getProtocolEntry(),
+                tableHandle.getEnforcedPartitionConstraint(),
+                tableHandle.getProjectedColumns().orElse(ImmutableSet.of()))) {
+            Iterator<AddFileEntry> addEntryIterator = addEntries.iterator();
+            while (addEntryIterator.hasNext()) {
+                AddFileEntry addEntry = addEntryIterator.next();
+                Optional<? extends DeltaLakeFileStatistics> fileStatistics = addEntry.getStats();
+                if (fileStatistics.isEmpty()) {
+                    // Open source Delta Lake does not collect stats
+                    return TableStatistics.empty();
                 }
-                else {
-                    Optional<Long> maybeNullCount = column.isBaseColumn() ? stats.getNullCount(column.getBasePhysicalColumnName()) : Optional.empty();
-                    if (maybeNullCount.isPresent()) {
-                        nullCounts.put(column, nullCounts.get(column) + maybeNullCount.get());
-                    }
-                    else {
-                        // If any individual file fails to report null counts, fail to calculate the total for the table
-                        nullCounts.put(column, NaN);
-                    }
+                DeltaLakeFileStatistics stats = fileStatistics.get();
+                if (!partitionMatchesPredicate(addEntry.getCanonicalPartitionValues(), tableHandle.getEnforcedPartitionConstraint().getDomains().orElseThrow())) {
+                    continue;
                 }
 
-                // Math.min returns NaN if any operand is NaN
-                stats.getMinColumnValue(column)
-                        .map(parsedValue -> toStatsRepresentation(column.getBaseType(), parsedValue))
-                        .filter(OptionalDouble::isPresent)
-                        .map(OptionalDouble::getAsDouble)
-                        .ifPresent(parsedValueAsDouble -> minValues.merge(column, parsedValueAsDouble, Math::min));
+                TupleDomain<DeltaLakeColumnHandle> statisticsPredicate = createStatisticsPredicate(
+                        addEntry,
+                        predicatedColumns,
+                        tableHandle.getMetadataEntry().getLowercasePartitionColumns());
+                if (!tableHandle.getNonPartitionConstraint().overlaps(statisticsPredicate)) {
+                    continue;
+                }
 
-                stats.getMaxColumnValue(column)
-                        .map(parsedValue -> toStatsRepresentation(column.getBaseType(), parsedValue))
-                        .filter(OptionalDouble::isPresent)
-                        .map(OptionalDouble::getAsDouble)
-                        .ifPresent(parsedValueAsDouble -> maxValues.merge(column, parsedValueAsDouble, Math::max));
+                if (stats.getNumRecords().isEmpty()) {
+                    // Not clear if it's possible for stats to be present with no row count, but bail out if that happens
+                    return TableStatistics.empty();
+                }
+                numRecords += stats.getNumRecords().get();
+                for (DeltaLakeColumnHandle column : columns) {
+                    if (column.columnType() == PARTITION_KEY) {
+                        Optional<String> partitionValue = addEntry.getCanonicalPartitionValues().get(column.basePhysicalColumnName());
+                        if (partitionValue.isEmpty()) {
+                            nullCounts.merge(column, (double) stats.getNumRecords().get(), Double::sum);
+                        }
+                        else {
+                            // NULL is not counted as a distinct value
+                            // Code below assumes that values returned by addEntry.getCanonicalPartitionValues() are normalized,
+                            // it may not be true in case of real, doubles, timestamps etc
+                            partitioningColumnsDistinctValues.get(column).add(partitionValue.get());
+                        }
+                    }
+                    else {
+                        Optional<Long> maybeNullCount = column.isBaseColumn() ? stats.getNullCount(column.basePhysicalColumnName()) : Optional.empty();
+                        if (maybeNullCount.isPresent()) {
+                            nullCounts.put(column, nullCounts.get(column) + maybeNullCount.get());
+                        }
+                        else {
+                            // If any individual file fails to report null counts, fail to calculate the total for the table
+                            nullCounts.put(column, NaN);
+                        }
+                    }
+
+                    // Math.min returns NaN if any operand is NaN
+                    stats.getMinColumnValue(column)
+                            .map(parsedValue -> toStatsRepresentation(column.baseType(), parsedValue))
+                            .filter(OptionalDouble::isPresent)
+                            .map(OptionalDouble::getAsDouble)
+                            .ifPresent(parsedValueAsDouble -> minValues.merge(column, parsedValueAsDouble, Math::min));
+
+                    stats.getMaxColumnValue(column)
+                            .map(parsedValue -> toStatsRepresentation(column.baseType(), parsedValue))
+                            .filter(OptionalDouble::isPresent)
+                            .map(OptionalDouble::getAsDouble)
+                            .ifPresent(parsedValueAsDouble -> maxValues.merge(column, parsedValueAsDouble, Math::max));
+                }
             }
         }
 
@@ -203,12 +216,12 @@ public class FileBasedTableStatisticsProvider
             }
 
             // extend statistics with NDV
-            if (column.getColumnType() == PARTITION_KEY) {
+            if (column.columnType() == PARTITION_KEY) {
                 columnStatsBuilder.setDistinctValuesCount(Estimate.of(partitioningColumnsDistinctValues.get(column).size()));
             }
             if (statistics.isPresent()) {
-                DeltaLakeColumnStatistics deltaLakeColumnStatistics = statistics.get().getColumnStatistics().get(column.getBasePhysicalColumnName());
-                if (deltaLakeColumnStatistics != null && column.getColumnType() != PARTITION_KEY) {
+                DeltaLakeColumnStatistics deltaLakeColumnStatistics = statistics.get().getColumnStatistics().get(column.basePhysicalColumnName());
+                if (deltaLakeColumnStatistics != null && column.columnType() != PARTITION_KEY) {
                     deltaLakeColumnStatistics.getTotalSizeInBytes().ifPresent(size -> columnStatsBuilder.setDataSize(Estimate.of(size)));
                     columnStatsBuilder.setDistinctValuesCount(Estimate.of(deltaLakeColumnStatistics.getNdvSummary().cardinality()));
                 }

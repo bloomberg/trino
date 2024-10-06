@@ -33,7 +33,6 @@ import java.util.stream.Collectors;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tests.product.TestGroups.AVRO;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
@@ -43,12 +42,12 @@ public abstract class BaseTestAvroSchemaEvolution
         extends ProductTest
 {
     // TODO move Avro schema files to classpath and use tempto SshClient to upload them
-    private static final String ORIGINAL_SCHEMA = "file:///docker/presto-product-tests/avro/original_schema.avsc";
-    private static final String RENAMED_COLUMN_SCHEMA = "file:///docker/presto-product-tests/avro/rename_column_schema.avsc";
-    private static final String REMOVED_COLUMN_SCHEMA = "file:///docker/presto-product-tests/avro/remove_column_schema.avsc";
-    private static final String ADDED_COLUMN_SCHEMA = "file:///docker/presto-product-tests/avro/add_column_schema.avsc";
-    private static final String CHANGE_COLUMN_TYPE_SCHEMA = "file:///docker/presto-product-tests/avro/change_column_type_schema.avsc";
-    private static final String INCOMPATIBLE_TYPE_SCHEMA = "file:///docker/presto-product-tests/avro/incompatible_type_schema.avsc";
+    private static final String ORIGINAL_SCHEMA = "file:///docker/trino-product-tests/avro/original_schema.avsc";
+    private static final String RENAMED_COLUMN_SCHEMA = "file:///docker/trino-product-tests/avro/rename_column_schema.avsc";
+    private static final String REMOVED_COLUMN_SCHEMA = "file:///docker/trino-product-tests/avro/remove_column_schema.avsc";
+    private static final String ADDED_COLUMN_SCHEMA = "file:///docker/trino-product-tests/avro/add_column_schema.avsc";
+    private static final String CHANGE_COLUMN_TYPE_SCHEMA = "file:///docker/trino-product-tests/avro/change_column_type_schema.avsc";
+    private static final String INCOMPATIBLE_TYPE_SCHEMA = "file:///docker/trino-product-tests/avro/incompatible_type_schema.avsc";
 
     private final String tableWithSchemaUrl;
     private final String tableWithSchemaLiteral;
@@ -104,7 +103,7 @@ public abstract class BaseTestAvroSchemaEvolution
         onTrino().executeQuery(format("DROP TABLE IF EXISTS %s", tableWithSchemaLiteral));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSelectTable()
     {
         assertThat(onTrino().executeQuery(format("SELECT string_col FROM %s", tableWithSchemaUrl)))
@@ -113,7 +112,7 @@ public abstract class BaseTestAvroSchemaEvolution
                 .containsExactlyInOrder(row("stringA0"));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testInsertAfterSchemaEvolution()
             throws IOException
     {
@@ -135,7 +134,7 @@ public abstract class BaseTestAvroSchemaEvolution
                         createRow(1, "stringA1", 1, 101));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSchemaEvolutionWithIncompatibleType()
             throws IOException
     {
@@ -160,7 +159,7 @@ public abstract class BaseTestAvroSchemaEvolution
                 .hasStackTraceContaining("Found int, expecting string");
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSchemaEvolutionWithUrl()
     {
         assertThat(onTrino().executeQuery(format(columnsInTableStatement, tableWithSchemaUrl)))
@@ -215,7 +214,7 @@ public abstract class BaseTestAvroSchemaEvolution
                         createRow(0, "stringA0", null));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSchemaEvolutionWithLiteral()
             throws IOException
     {
@@ -271,7 +270,7 @@ public abstract class BaseTestAvroSchemaEvolution
                         createRow(0, "stringA0", null));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSchemaWhenUrlIsUnset()
     {
         assertThat(onTrino().executeQuery(format(columnsInTableStatement, tableWithSchemaUrl)))
@@ -290,7 +289,7 @@ public abstract class BaseTestAvroSchemaEvolution
                                 row("dummy_col", "varchar", "", "")));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testSchemaWhenLiteralIsUnset()
     {
         assertThat(onTrino().executeQuery(format(columnsInTableStatement, tableWithSchemaLiteral)))
@@ -309,7 +308,7 @@ public abstract class BaseTestAvroSchemaEvolution
                                 row("dummy_col", "varchar", "", "")));
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testCreateTableLike()
     {
         String createTableLikeWithSchemaUrl = tableWithSchemaUrl + "_avro_like";

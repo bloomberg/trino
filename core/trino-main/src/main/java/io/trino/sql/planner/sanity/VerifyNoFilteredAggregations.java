@@ -16,8 +16,6 @@ package io.trino.sql.planner.sanity;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.sql.PlannerContext;
-import io.trino.sql.planner.TypeAnalyzer;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.PlanNode;
 
@@ -30,17 +28,16 @@ public final class VerifyNoFilteredAggregations
     public void validate(PlanNode plan,
             Session session,
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
-            TypeProvider types,
             WarningCollector warningCollector)
     {
         searchFrom(plan)
                 .where(AggregationNode.class::isInstance)
-                .<AggregationNode>findAll()
+                .findAll()
                 .stream()
+                .map(AggregationNode.class::cast)
                 .flatMap(node -> node.getAggregations().values().stream())
                 .filter(aggregation -> aggregation.getFilter().isPresent())
-                .forEach(ignored -> {
+                .forEach(_ -> {
                     throw new IllegalStateException("Generated plan contains unimplemented filtered aggregations");
                 });
     }

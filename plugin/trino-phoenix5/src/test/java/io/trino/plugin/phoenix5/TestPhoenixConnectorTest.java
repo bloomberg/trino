@@ -24,9 +24,7 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -43,7 +41,6 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.phoenix5.PhoenixQueryRunner.createPhoenixQueryRunner;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.limit;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.output;
@@ -64,7 +61,7 @@ import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestPhoenixConnectorTest
         extends BaseJdbcConnectorTest
@@ -76,7 +73,9 @@ public class TestPhoenixConnectorTest
             throws Exception
     {
         testingPhoenixServer = closeAfterClass(TestingPhoenixServer.getInstance()).get();
-        return createPhoenixQueryRunner(testingPhoenixServer, ImmutableMap.of(), REQUIRED_TPCH_TABLES);
+        return PhoenixQueryRunner.builder(testingPhoenixServer)
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Override
@@ -84,30 +83,32 @@ public class TestPhoenixConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_MERGE,
-                    SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
-                    SUPPORTS_ROW_LEVEL_UPDATE,
-                    SUPPORTS_UPDATE -> true;
+                 SUPPORTS_PREDICATE_ARITHMETIC_EXPRESSION_PUSHDOWN,
+                 SUPPORTS_ROW_LEVEL_UPDATE,
+                 SUPPORTS_UPDATE -> true;
             case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
-                    SUPPORTS_COMMENT_ON_COLUMN,
-                    SUPPORTS_COMMENT_ON_TABLE,
-                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
-                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
-                    SUPPORTS_DROP_SCHEMA_CASCADE,
-                    SUPPORTS_LIMIT_PUSHDOWN,
-                    SUPPORTS_NATIVE_QUERY,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_RENAME_TABLE,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_TRUNCATE -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_COMMENT_ON_COLUMN,
+                 SUPPORTS_COMMENT_ON_TABLE,
+                 SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                 SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                 SUPPORTS_DROP_SCHEMA_CASCADE,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_NATIVE_QUERY,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_COLUMN,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_RENAME_TABLE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
 
     // TODO: wait https://github.com/trinodb/trino/pull/14939 done and then remove this test
+    @Test
     @Override
     public void testArithmeticPredicatePushdown()
     {
@@ -149,15 +150,15 @@ public class TestPhoenixConnectorTest
         // multiplication/division/modulo by zero
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 0 != 0"))
                 .isFullyPushedDown();
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey / 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey % 0 = 0"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
         // Expression that evaluates to 0 for some rows on RHS of modulus
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
-        assertThatThrownBy(() -> query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
-                .satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) / (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
+        assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey > 0 AND (nationkey - regionkey) % (regionkey - 1) = 2"))
+                .failure().satisfies(this::verifyDivisionByZeroFailure);
 
         // multiplicative/divisive identity
         assertThat(query("SELECT nationkey, name, regionkey FROM nation WHERE nationkey * 1 = nationkey"))
@@ -204,65 +205,38 @@ public class TestPhoenixConnectorTest
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Phoenix connector does not support column default values");
+        return abort("Phoenix connector does not support column default values");
     }
 
     @Override
     protected TestTable createTableWithUnsupportedColumn()
     {
         // Apparently all Phoenix types are supported in the Phoenix connector.
-        throw new SkipException("Cannot find an unsupported data type");
+        return abort("Cannot find an unsupported data type");
     }
 
+    @Test
     @Override
-    public void testRenameColumn()
+    public void testAddAndDropColumnName()
     {
-        assertThatThrownBy(super::testRenameColumn)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
-    }
+        for (String columnName : testColumnNameDataProvider()) {
+            // TODO: Investigate why these two case fail
+            if (columnName.equals("an'apostrophe")) {
+                assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
+                        .hasMessageContaining("Syntax error. Mismatched input");
+                continue;
+            }
+            if (columnName.equals("a\\backslash`")) {
+                assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
+                        .hasMessageContaining("Undefined column");
+                continue;
+            }
 
-    @Override
-    public void testAlterTableRenameColumnToLongName()
-    {
-        assertThatThrownBy(super::testAlterTableRenameColumnToLongName)
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
-    }
-
-    @Override
-    public void testRenameColumnName(String columnName)
-    {
-        // The column name is rejected when creating a table
-        if (columnName.equals("a\"quote")) {
-            super.testRenameColumnName(columnName);
-            return;
+            testAddAndDropColumnName(columnName, requiresDelimiting(columnName));
         }
-        assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                // TODO (https://github.com/trinodb/trino/issues/7205) support column rename in Phoenix
-                .hasMessageContaining("Syntax error. Encountered \"RENAME\"");
-        throw new SkipException("Rename column is not yet supported by Phoenix connector");
     }
 
-    @Override
-    public void testAddAndDropColumnName(String columnName)
-    {
-        // TODO: Investigate why these two case fail
-        if (columnName.equals("an'apostrophe")) {
-            assertThatThrownBy(() -> super.testAddAndDropColumnName(columnName))
-                    .hasMessageContaining("Syntax error. Mismatched input");
-            throw new SkipException("TODO");
-        }
-        if (columnName.equals("a\\backslash`")) {
-            assertThatThrownBy(() -> super.testAddAndDropColumnName(columnName))
-                    .hasMessageContaining("Undefined column");
-            throw new SkipException("TODO");
-        }
-        super.testAddAndDropColumnName(columnName);
-    }
-
+    @Test
     @Override
     public void testInsertArray()
     {
@@ -271,10 +245,11 @@ public class TestPhoenixConnectorTest
                 .hasMessage("Phoenix JDBC driver replaced 'null' with '0.0' at index 1 in [0.0]");
     }
 
+    @Test
     @Override
     public void testCreateSchema()
     {
-        throw new SkipException("test disabled until issue fixed"); // TODO https://github.com/trinodb/trino/issues/2348
+        abort("test disabled until issue fixed"); // TODO https://github.com/trinodb/trino/issues/2348
     }
 
     @Override
@@ -309,6 +284,7 @@ public class TestPhoenixConnectorTest
         return Optional.of(dataMappingTestSetup);
     }
 
+    @Test
     @Override
     public void testShowCreateTable()
     {
@@ -332,6 +308,7 @@ public class TestPhoenixConnectorTest
                         ")");
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
@@ -355,6 +332,7 @@ public class TestPhoenixConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testVarcharCharComparison()
     {
@@ -385,6 +363,7 @@ public class TestPhoenixConnectorTest
         }
     }
 
+    @Test
     @Override
     public void testCharTrailingSpace()
     {
@@ -399,6 +378,7 @@ public class TestPhoenixConnectorTest
     }
 
     // Overridden because Phoenix requires a ROWID column
+    @Test
     @Override
     public void testCountDistinctWithStringTypes()
     {
@@ -413,39 +393,6 @@ public class TestPhoenixConnectorTest
             assertQuery("SELECT count(DISTINCT t_char) FROM " + testTable.getName(), "VALUES 6");
             assertQuery("SELECT count(DISTINCT t_char), count(DISTINCT t_varchar) FROM " + testTable.getName(), "VALUES (6, 6)");
         }
-    }
-
-    @Override
-    public void testMergeLarge()
-    {
-        String tableName = "test_merge_" + randomNameSuffix();
-
-        assertUpdate(createTableForWrites(format("CREATE TABLE %s (orderkey BIGINT, custkey BIGINT, totalprice DOUBLE)", tableName)));
-
-        assertUpdate(
-                format("INSERT INTO %s SELECT orderkey, custkey, totalprice FROM tpch.sf1.orders", tableName),
-                (long) computeScalar("SELECT count(*) FROM tpch.sf1.orders"));
-
-        @Language("SQL") String mergeSql = "" +
-                "MERGE INTO " + tableName + " t USING (SELECT * FROM tpch.sf1.orders) s ON (t.orderkey = s.orderkey)\n" +
-                "WHEN MATCHED AND mod(s.orderkey, 3) = 0 THEN UPDATE SET totalprice = t.totalprice + s.totalprice\n" +
-                "WHEN MATCHED AND mod(s.orderkey, 3) = 1 THEN DELETE";
-
-        assertUpdate(mergeSql, 1_000_000);
-
-        // verify deleted rows
-        assertQuery("SELECT count(*) FROM " + tableName + " WHERE mod(orderkey, 3) = 1", "SELECT 0");
-
-        // verify untouched rows
-        assertThat(query("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM " + tableName + " WHERE mod(orderkey, 3) = 2"))
-                .matches("SELECT count(*), cast(sum(totalprice) AS decimal(18,2)) FROM tpch.sf1.orders WHERE mod(orderkey, 3) = 2");
-
-        // TODO investigate why sum(DOUBLE) not correct
-        // verify updated rows
-        String sql = format("SELECT count(*) FROM %s t JOIN tpch.sf1.orders s ON t.orderkey = s.orderkey WHERE mod(t.orderkey, 3) = 0 AND t.totalprice != s.totalprice * 2", tableName);
-        assertQuery(sql, "SELECT 0");
-
-        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -523,10 +470,11 @@ public class TestPhoenixConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
+    @Test
     @Override
     public void testUpdateRowConcurrently()
     {
-        throw new SkipException("Phoenix doesn't support concurrent update of different columns in a row");
+        abort("Phoenix doesn't support concurrent update of different columns in a row");
     }
 
     @Test
@@ -590,7 +538,7 @@ public class TestPhoenixConnectorTest
     public void testCreateTableWithProperties()
     {
         assertUpdate("CREATE TABLE test_create_table_with_properties (created_date date, a bigint, b double, c varchar(10), d varchar(10)) WITH(rowkeys = 'created_date row_timestamp, a,b,c', salt_buckets=10)");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_with_properties"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_create_table_with_properties")).isTrue();
         assertTableColumnNames("test_create_table_with_properties", "created_date", "a", "b", "c", "d");
         assertThat(computeActual("SHOW CREATE TABLE test_create_table_with_properties").getOnlyValue())
                 .isEqualTo("CREATE TABLE phoenix.tpch.test_create_table_with_properties (\n" +
@@ -614,7 +562,7 @@ public class TestPhoenixConnectorTest
     public void testCreateTableWithPresplits()
     {
         assertUpdate("CREATE TABLE test_create_table_with_presplits (rid varchar(10), val1 varchar(10)) with(rowkeys = 'rid', SPLIT_ON='\"1\",\"2\",\"3\"')");
-        assertTrue(getQueryRunner().tableExists(getSession(), "test_create_table_with_presplits"));
+        assertThat(getQueryRunner().tableExists(getSession(), "test_create_table_with_presplits")).isTrue();
         assertTableColumnNames("test_create_table_with_presplits", "rid", "val1");
         assertUpdate("DROP TABLE test_create_table_with_presplits");
     }
@@ -648,10 +596,11 @@ public class TestPhoenixConnectorTest
         assertQuery("SELECT * FROM test_col_insert", "SELECT 1, 'val1', 'val2'");
     }
 
+    @Test
     @Override
     public void testTopNPushdown()
     {
-        throw new SkipException("Phoenix does not support topN push down, but instead replaces partial topN with partial Limit.");
+        abort("Phoenix does not support topN push down, but instead replaces partial topN with partial Limit.");
     }
 
     @Test
@@ -780,34 +729,38 @@ public class TestPhoenixConnectorTest
                 .hasMessageContaining("Concurrent modification to table");
     }
 
+    @Test
     @Override
     public void testCreateSchemaWithLongName()
     {
         // TODO: Find the maximum table schema length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongTableName()
     {
         // TODO: Find the maximum table name length in Phoenix and enable this test.
         // Table name length with 65536 chars throws "startRow's length must be less than or equal to 32767 to meet the criteria for a row key."
         // 32767 chars still causes the same error and shorter names (e.g. 10000) causes timeout.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongColumnName()
     {
         // TODO: Find the maximum column name length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testAlterTableAddLongColumnName()
     {
         // TODO: Find the maximum column name length in Phoenix and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
     @Test
@@ -818,6 +771,29 @@ public class TestPhoenixConnectorTest
         assertQuery(
                 "SHOW SESSION LIKE '" + propertyName + "'",
                 "VALUES('" + propertyName + "','5000', '5000', 'integer', 'Maximum ranges to allow in a tuple domain without simplifying it')");
+    }
+
+    @Test
+    @Override // Override because Phoenix doesn't follow SQL standard syntax
+    public void testExecuteProcedure()
+    {
+        String tableName = "test_execute" + randomNameSuffix();
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+
+        assertUpdate("CREATE TABLE " + schemaTableName + "(a int) WITH (rowkeys = 'a')");
+        try {
+            assertUpdate("CALL system.execute('UPSERT INTO " + schemaTableName + " VALUES (1)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES 1");
+
+            assertUpdate("CALL system.execute('DELETE FROM " + schemaTableName + "')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute('DROP TABLE " + schemaTableName + "')");
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
     }
 
     @Override

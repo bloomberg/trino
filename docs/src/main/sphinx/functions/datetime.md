@@ -20,7 +20,6 @@ These functions and operators operate on {ref}`date and time data types <date-ti
 | `-`      | `interval '3' year - interval '5' month`            | `2-7`                     |
 
 (at-time-zone-operator)=
-
 ## Time zone conversion
 
 The `AT TIME ZONE` operator sets the time zone of a timestamp:
@@ -244,6 +243,7 @@ The `date_trunc` function supports the following units:
 
 | Unit      | Example Truncated Value   |
 | --------- | ------------------------- |
+| `millisecond`  | `2001-08-22 03:04:05.321` |
 | `second`  | `2001-08-22 03:04:05.000` |
 | `minute`  | `2001-08-22 03:04:00.000` |
 | `hour`    | `2001-08-22 03:00:00.000` |
@@ -271,7 +271,6 @@ SELECT date_trunc('year', TIMESTAMP '2022-10-20 05:10:00');
 :::
 
 (datetime-interval-functions)=
-
 ## Interval functions
 
 The functions in this section support the following interval units:
@@ -426,10 +425,10 @@ SELECT date_format(TIMESTAMP '2022-10-20 05:10:00', '%m-%d-%Y %H');
 ```
 :::
 
-:::{function} date_parse(string, format) -> timestamp(3)
+:::{js:function} date_parse(string, format) → timestamp(3)
 Parses `string` into a timestamp using `format`:
 
-```
+```sql
 SELECT date_parse('2022/10/20/05', '%Y/%m/%d/%H');
 -- 2022-10-20 05:00:00.000
 ```

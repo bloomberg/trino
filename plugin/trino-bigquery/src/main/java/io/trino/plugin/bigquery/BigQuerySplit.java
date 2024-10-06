@@ -16,10 +16,11 @@ package io.trino.plugin.bigquery;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-import io.trino.spi.HostAddress;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
@@ -124,21 +125,13 @@ public class BigQuerySplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return ImmutableMap.of(
+                "mode", mode.name(),
+                "filter", filter.orElse(""),
+                "streamName", streamName,
+                "emptyRowsToGenerate", String.valueOf(emptyRowsToGenerate));
     }
 
     @Override
@@ -164,7 +157,7 @@ public class BigQuerySplit
                 Objects.equals(streamName, that.streamName) &&
                 Objects.equals(schemaString, that.schemaString) &&
                 Objects.equals(columns, that.columns) &&
-                Objects.equals(emptyRowsToGenerate, that.emptyRowsToGenerate);
+                emptyRowsToGenerate == that.emptyRowsToGenerate;
     }
 
     @Override

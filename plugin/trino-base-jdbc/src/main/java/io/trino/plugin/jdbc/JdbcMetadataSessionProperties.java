@@ -33,8 +33,10 @@ public class JdbcMetadataSessionProperties
 {
     public static final String COMPLEX_EXPRESSION_PUSHDOWN = "complex_expression_pushdown";
     public static final String JOIN_PUSHDOWN_ENABLED = "join_pushdown_enabled";
+    public static final String COMPLEX_JOIN_PUSHDOWN_ENABLED = "complex_join_pushdown_enabled";
     public static final String AGGREGATION_PUSHDOWN_ENABLED = "aggregation_pushdown_enabled";
     public static final String TOPN_PUSHDOWN_ENABLED = "topn_pushdown_enabled";
+    public static final String BULK_LIST_COLUMNS = "bulk_list_columns";
     public static final String DOMAIN_COMPACTION_THRESHOLD = "domain_compaction_threshold";
 
     private final List<PropertyMetadata<?>> properties;
@@ -55,10 +57,21 @@ public class JdbcMetadataSessionProperties
                         jdbcMetadataConfig.isJoinPushdownEnabled(),
                         false))
                 .add(booleanProperty(
+                        COMPLEX_JOIN_PUSHDOWN_ENABLED,
+                        "Enable join pushdown with non-comparison expressions",
+                        jdbcMetadataConfig.isComplexJoinPushdownEnabled(),
+                        false))
+                .add(booleanProperty(
                         AGGREGATION_PUSHDOWN_ENABLED,
                         "Enable aggregation pushdown",
                         jdbcMetadataConfig.isAggregationPushdownEnabled(),
                         false))
+                .add(booleanProperty(
+                        BULK_LIST_COLUMNS,
+                        "Listing tables' columns in bulk",
+                        jdbcMetadataConfig.isBulkListColumns(),
+                        // Hidden because it's really a kill switch. Some connectors do not support it.
+                        true))
                 .add(integerProperty(
                         DOMAIN_COMPACTION_THRESHOLD,
                         "Maximum ranges to allow in a tuple domain without simplifying it",
@@ -89,6 +102,11 @@ public class JdbcMetadataSessionProperties
         return session.getProperty(JOIN_PUSHDOWN_ENABLED, Boolean.class);
     }
 
+    public static boolean isComplexJoinPushdownEnabled(ConnectorSession session)
+    {
+        return session.getProperty(COMPLEX_JOIN_PUSHDOWN_ENABLED, Boolean.class);
+    }
+
     public static boolean isAggregationPushdownEnabled(ConnectorSession session)
     {
         return session.getProperty(AGGREGATION_PUSHDOWN_ENABLED, Boolean.class);
@@ -97,6 +115,11 @@ public class JdbcMetadataSessionProperties
     public static boolean isTopNPushdownEnabled(ConnectorSession session)
     {
         return session.getProperty(TOPN_PUSHDOWN_ENABLED, Boolean.class);
+    }
+
+    public static boolean isBulkListColumns(ConnectorSession session)
+    {
+        return session.getProperty(BULK_LIST_COLUMNS, Boolean.class);
     }
 
     public static int getDomainCompactionThreshold(ConnectorSession session)

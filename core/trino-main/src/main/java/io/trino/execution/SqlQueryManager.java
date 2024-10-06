@@ -22,6 +22,8 @@ import io.airlift.concurrent.ThreadPoolExecutorMBean;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.trino.ExceededCpuLimitException;
 import io.trino.ExceededScanLimitException;
 import io.trino.Session;
@@ -29,6 +31,7 @@ import io.trino.execution.QueryExecution.QueryOutputInfo;
 import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.memory.ClusterMemoryManager;
 import io.trino.server.BasicQueryInfo;
+import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
@@ -55,6 +58,7 @@ import static io.trino.SystemSessionProperties.getQueryMaxCpuTime;
 import static io.trino.SystemSessionProperties.getQueryMaxScanPhysicalBytes;
 import static io.trino.execution.QueryState.RUNNING;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static io.trino.tracing.ScopedSpan.scopedSpan;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -67,6 +71,7 @@ public class SqlQueryManager
     private static final Logger log = Logger.get(SqlQueryManager.class);
 
     private final ClusterMemoryManager memoryManager;
+    private final Tracer tracer;
     private final QueryTracker<QueryExecution> queryTracker;
 
     private final Duration maxQueryCpuTime;
@@ -79,9 +84,10 @@ public class SqlQueryManager
     private final ThreadPoolExecutorMBean queryManagementExecutorMBean;
 
     @Inject
-    public SqlQueryManager(ClusterMemoryManager memoryManager, QueryManagerConfig queryManagerConfig)
+    public SqlQueryManager(ClusterMemoryManager memoryManager, Tracer tracer, QueryManagerConfig queryManagerConfig)
     {
         this.memoryManager = requireNonNull(memoryManager, "memoryManager is null");
+        this.tracer = requireNonNull(tracer, "tracer is null");
 
         this.maxQueryCpuTime = queryManagerConfig.getQueryMaxCpuTime();
         this.maxQueryScanPhysicalBytes = queryManagerConfig.getQueryMaxScanPhysicalBytes();
@@ -139,7 +145,7 @@ public class SqlQueryManager
                     try {
                         return queryExecution.getBasicQueryInfo();
                     }
-                    catch (RuntimeException ignored) {
+                    catch (RuntimeException _) {
                         return null;
                     }
                 })
@@ -197,6 +203,13 @@ public class SqlQueryManager
     }
 
     @Override
+    public ResultQueryInfo getResultQueryInfo(QueryId queryId)
+            throws NoSuchElementException
+    {
+        return queryTracker.getQuery(queryId).getResultQueryInfo();
+    }
+
+    @Override
     public Session getQuerySession(QueryId queryId)
             throws NoSuchElementException
     {
@@ -209,7 +222,7 @@ public class SqlQueryManager
         return queryTracker.getQuery(queryId).getSlug();
     }
 
-    public Plan getQueryPlan(QueryId queryId)
+    public Optional<Plan> getQueryPlan(QueryId queryId)
     {
         return queryTracker.getQuery(queryId).getQueryPlan();
     }
@@ -252,8 +265,12 @@ public class SqlQueryManager
             queryTracker.expireQuery(queryExecution.getQueryId());
         });
 
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryExecution.getQueryId())) {
-            queryExecution.start();
+        try (SetThreadName _ = new SetThreadName("Query-%s", queryExecution.getQueryId())) {
+            try (var ignoredStartScope = scopedSpan(tracer.spanBuilder("query-start")
+                    .setParent(Context.current().with(queryExecution.getSession().getQuerySpan()))
+                    .startSpan())) {
+                queryExecution.start();
+            }
         }
     }
 
@@ -298,6 +315,13 @@ public class SqlQueryManager
     public ThreadPoolExecutorMBean getManagementExecutor()
     {
         return queryManagementExecutorMBean;
+    }
+
+    @Managed
+    @Nested
+    public QueryTracker<QueryExecution> getQueryTracker()
+    {
+        return queryTracker;
     }
 
     /**

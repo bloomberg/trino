@@ -65,6 +65,7 @@ import io.trino.testing.TestingAccessControlManager.TestingPrivilege;
 import io.trino.testing.TestingGroupProvider;
 import io.trino.testing.TestingSession;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.lang.invoke.MethodHandles;
 import java.time.Duration;
@@ -118,7 +119,9 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
+@Execution(SAME_THREAD)
 public class TestAccessControl
         extends AbstractTestQueryFramework
 {
@@ -139,14 +142,14 @@ public class TestAccessControl
                 .setSchema("default")
                 .setPath(SqlPath.buildPath("mock.function", Optional.empty()))
                 .build();
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session)
+        QueryRunner queryRunner = DistributedQueryRunner.builder(session)
                 .setAdditionalModule(binder -> {
                     newOptionalBinder(binder, SystemSecurityMetadata.class)
                             .setBinding()
                             .to(TestingSystemSecurityMetadata.class)
                             .in(Scopes.SINGLETON);
                 })
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .setSystemAccessControl(new ForwardingSystemAccessControl()
                 {
                     @Override
@@ -170,7 +173,7 @@ public class TestAccessControl
                     }
                     return new MockConnectorTableHandle(schemaTableName);
                 })
-                .withListSchemaNames((connectorSession -> ImmutableList.of(DEFAULT_SCHEMA)))
+                .withListSchemaNames(connectorSession -> ImmutableList.of(DEFAULT_SCHEMA))
                 .withListTables((connectorSession, schemaName) -> {
                     if (schemaName.equals(DEFAULT_SCHEMA)) {
                         return ImmutableList.of(REDIRECTED_SOURCE);
@@ -210,12 +213,11 @@ public class TestAccessControl
                                 Optional.empty(),
                                 Optional.empty(),
                                 Optional.empty(),
-                                ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("test", BIGINT.getTypeId())),
+                                ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("test", BIGINT.getTypeId(), Optional.empty())),
                                 Optional.of(Duration.ZERO),
                                 Optional.of("comment"),
                                 Optional.of("owner"),
-                                ImmutableList.of(),
-                                ImmutableMap.of());
+                                ImmutableList.of());
                         return ImmutableMap.of(
                                 new SchemaTableName("default", "test_materialized_view"), materializedViewDefinition);
                     }
@@ -236,19 +238,19 @@ public class TestAccessControl
                 .withColumnProperties(() -> ImmutableList.of(
                         integerProperty("another_property", "description", 0, false),
                         stringProperty("string_column_property", "description", "", false)))
-                .withRedirectTable(((connectorSession, schemaTableName) -> {
+                .withRedirectTable((connectorSession, schemaTableName) -> {
                     if (schemaTableName.equals(SchemaTableName.schemaTableName(DEFAULT_SCHEMA, REDIRECTED_SOURCE))) {
                         return Optional.of(
                                 new CatalogSchemaTableName("mock", SchemaTableName.schemaTableName(DEFAULT_SCHEMA, REDIRECTED_TARGET)));
                     }
                     return Optional.empty();
-                }))
-                .withGetComment((schemaTableName -> {
+                })
+                .withGetComment(schemaTableName -> {
                     if (schemaTableName.getTableName().equals(REDIRECTED_TARGET)) {
                         return Optional.of("this is a redirected table");
                     }
                     return Optional.empty();
-                }))
+                })
                 .withFunctions(ImmutableList.<FunctionMetadata>builder()
                         .add(FunctionMetadata.scalarBuilder("my_function")
                                 .signature(Signature.builder().argumentType(BIGINT).returnType(BIGINT).build())
@@ -348,6 +350,8 @@ public class TestAccessControl
         assertAccessAllowed("SHOW CREATE TABLE lineitem", privilege("orders", SHOW_CREATE_TABLE));
         assertAccessDenied("SELECT my_function(1)", "Cannot execute function my_function", privilege("mock.function.my_function", EXECUTE_FUNCTION));
         assertAccessAllowed("SELECT my_function(1)", privilege("max", EXECUTE_FUNCTION));
+        assertAccessAllowed("SELECT abs(-10)", privilege("abs", EXECUTE_FUNCTION));
+        assertAccessAllowed("SELECT abs(-10)", privilege("system.builtin.abs", EXECUTE_FUNCTION));
         assertAccessAllowed("SHOW STATS FOR lineitem");
         assertAccessAllowed("SHOW STATS FOR lineitem", privilege("orders", SELECT_COLUMN));
         assertAccessAllowed("SHOW STATS FOR (SELECT * FROM lineitem)");
@@ -608,9 +612,10 @@ public class TestAccessControl
                 "Cannot execute function my_function",
                 new TestingPrivilege(Optional.empty(), "mock.function.my_function", EXECUTE_FUNCTION));
 
-        // builtin functions are always allowed, and there are no security checks
+        // inline and builtin functions are always allowed, and there are no security checks
         TestingPrivilege denyAllFunctionCalls = new TestingPrivilege(Optional.empty(), name -> true, EXECUTE_FUNCTION);
         assertAccessAllowed("SELECT abs(42)", denyAllFunctionCalls);
+        assertAccessAllowed("WITH FUNCTION foo() RETURNS int RETURN 42 SELECT foo()", denyAllFunctionCalls);
         assertAccessDenied("SELECT my_function(42)", "Cannot execute function my_function", denyAllFunctionCalls);
 
         TestingPrivilege denyNonMyFunctionCalls = new TestingPrivilege(Optional.empty(), name -> !name.equals("mock.function.my_function"), EXECUTE_FUNCTION);
@@ -734,6 +739,42 @@ public class TestAccessControl
     }
 
     @Test
+    public void testAddColumn()
+    {
+        reset();
+
+        String tableName = "test_add_column" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM orders", 0);
+
+        assertAccessDenied("ALTER TABLE " + tableName + " ADD COLUMN new_col char(100)", "Cannot add a column to table .*." + tableName + ".*", privilege(tableName, ADD_COLUMN));
+        assertAccessAllowed("ALTER TABLE " + tableName + " ADD COLUMN new_col char(100)", privilege(tableName + ".orderkey", ADD_COLUMN));
+    }
+
+    @Test
+    public void testDropColumn()
+    {
+        reset();
+
+        String tableName = "test_drop_column" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM orders", 0);
+
+        assertAccessDenied("ALTER TABLE " + tableName + " DROP COLUMN orderkey", "Cannot drop a column from table .*." + tableName + ".*", privilege(tableName, DROP_COLUMN));
+        assertAccessAllowed("ALTER TABLE " + tableName + " DROP COLUMN orderkey", privilege(tableName + ".orderkey", DROP_COLUMN));
+    }
+
+    @Test
+    public void testRenameColumn()
+    {
+        reset();
+
+        String tableName = "test_rename_column" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM orders", 0);
+
+        assertAccessDenied("ALTER TABLE " + tableName + " RENAME COLUMN orderkey TO renamed", "Cannot rename a column in table .*." + tableName + ".*", privilege(tableName, RENAME_COLUMN));
+        assertAccessAllowed("ALTER TABLE " + tableName + " RENAME COLUMN orderkey TO renamed", privilege(tableName + ".orderkey", RENAME_COLUMN));
+    }
+
+    @Test
     public void testSetColumnType()
     {
         reset();
@@ -743,6 +784,19 @@ public class TestAccessControl
 
         assertAccessDenied("ALTER TABLE " + tableName + " ALTER COLUMN orderkey SET DATA TYPE char(100)", "Cannot alter a column for table .*." + tableName + ".*", privilege(tableName, ALTER_COLUMN));
         assertAccessAllowed("ALTER TABLE " + tableName + " ALTER COLUMN orderkey SET DATA TYPE char(100)", privilege(tableName + ".orderkey", ALTER_COLUMN));
+    }
+
+    @Test
+    public void testDropNotNullConstraint()
+    {
+        reset();
+
+        String tableName = "test_drop_not_null" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " AS SELECT * FROM orders", 0);
+
+        assertAccessDenied("ALTER TABLE " + tableName + " ALTER COLUMN orderkey DROP NOT NULL", "Cannot alter a column for table .*." + tableName + ".*", privilege(tableName, ALTER_COLUMN));
+        assertThatThrownBy(() -> getQueryRunner().execute(getSession(), "ALTER TABLE " + tableName + " ALTER COLUMN orderkey DROP NOT NULL"))
+                .hasMessageContaining("Column is already nullable"); // Update this test once Black Hole connector supports a not null constraint
     }
 
     @Test
@@ -1033,7 +1087,7 @@ public class TestAccessControl
                 .build();
         getQueryRunner().execute(session, "USE tpch.tiny");
         assertThatThrownBy(() -> getQueryRunner().execute("USE not_exists_catalog.tiny"))
-                .hasMessageMatching("Catalog does not exist: not_exists_catalog");
+                .hasMessageMatching("Catalog 'not_exists_catalog' not found");
         assertThatThrownBy(() -> getQueryRunner().execute("USE tpch.not_exists_schema"))
                 .hasMessageMatching("Schema does not exist: tpch.not_exists_schema");
     }

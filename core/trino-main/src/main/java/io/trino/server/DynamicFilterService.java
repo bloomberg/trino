@@ -48,7 +48,6 @@ import io.trino.sql.DynamicFilters;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.SubPlan;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.planner.optimizations.PlanNodeSearcher;
 import io.trino.sql.planner.plan.DynamicFilterId;
 import io.trino.sql.planner.plan.DynamicFilterSourceNode;
@@ -124,7 +123,7 @@ public class DynamicFilterService
 
     public void registerQuery(SqlQueryExecution sqlQueryExecution, SubPlan fragmentedPlan)
     {
-        PlanNode queryPlan = sqlQueryExecution.getQueryPlan().getRoot();
+        PlanNode queryPlan = sqlQueryExecution.getQueryPlan().orElseThrow().getRoot();
         Set<DynamicFilterId> dynamicFilters = getProducedDynamicFilters(queryPlan);
         Set<DynamicFilterId> replicatedDynamicFilters = getReplicatedDynamicFilters(queryPlan);
 
@@ -277,8 +276,7 @@ public class DynamicFilterService
     public DynamicFilter createDynamicFilter(
             QueryId queryId,
             List<DynamicFilters.Descriptor> dynamicFilterDescriptors,
-            Map<Symbol, ColumnHandle> columnHandles,
-            TypeProvider typeProvider)
+            Map<Symbol, ColumnHandle> columnHandles)
     {
         Multimap<DynamicFilterId, DynamicFilters.Descriptor> symbolsMap = extractSourceSymbols(dynamicFilterDescriptors);
         Set<DynamicFilterId> dynamicFilters = ImmutableSet.copyOf(symbolsMap.keySet());
@@ -355,7 +353,7 @@ public class DynamicFilterService
 
                 TupleDomain<ColumnHandle> dynamicFilter = TupleDomain.intersect(
                         completedDynamicFilters.entrySet().stream()
-                                .map(filter -> translateSummaryToTupleDomain(context.getSession(), filter.getKey(), filter.getValue(), symbolsMap, columnHandles, typeProvider))
+                                .map(filter -> translateSummaryToTupleDomain(context.getSession(), filter.getKey(), filter.getValue(), symbolsMap, columnHandles))
                                 .collect(toImmutableList()));
 
                 // It could happen that two threads update currentDynamicFilter concurrently.
@@ -435,8 +433,7 @@ public class DynamicFilterService
             DynamicFilterId filterId,
             Domain summary,
             Multimap<DynamicFilterId, DynamicFilters.Descriptor> descriptorMultimap,
-            Map<Symbol, ColumnHandle> columnHandles,
-            TypeProvider typeProvider)
+            Map<Symbol, ColumnHandle> columnHandles)
     {
         Collection<DynamicFilters.Descriptor> descriptors = descriptorMultimap.get(filterId);
         return TupleDomain.withColumnDomains(descriptors.stream()
@@ -446,13 +443,15 @@ public class DynamicFilterService
                             return requireNonNull(columnHandles.get(probeSymbol), () -> format("Missing probe column for %s", probeSymbol));
                         },
                         descriptor -> {
-                            Type targetType = typeProvider.get(Symbol.from(descriptor.getInput()));
+                            Symbol symbol = Symbol.from(descriptor.getInput());
+                            Type targetType = symbol.type();
                             Domain updatedSummary = descriptor.applyComparison(summary);
                             if (!updatedSummary.getType().equals(targetType)) {
                                 return applySaturatedCasts(metadata, functionManager, typeOperators, session, updatedSummary, targetType);
                             }
                             return updatedSummary;
-                        })));
+                        },
+                        Domain::intersect)));
     }
 
     private static Set<DynamicFilterId> getLazyDynamicFilters(PlanFragment plan)
@@ -689,7 +688,7 @@ public class DynamicFilterService
 
         private final long start = System.nanoTime();
         private final AtomicReference<Duration> collectionDuration = new AtomicReference<>();
-        @GuardedBy("this")
+        // modifications @GuardedBy("this")
         private volatile boolean collected;
         private final SettableFuture<Domain> collectedDomainsFuture = SettableFuture.create();
 
@@ -764,17 +763,13 @@ public class DynamicFilterService
                 Domain summary = summaryDomains.poll();
                 // summary can be null as another concurrent summary compaction may be running
                 if (summary != null) {
-                    long originalSize = summary.getRetainedSizeInBytes();
-                    if (summary.getRetainedSizeInBytes() > domainSizeLimitInBytes) {
-                        summary = summary.simplify(1);
-                    }
-                    if (summary.getRetainedSizeInBytes() > domainSizeLimitInBytes) {
+                    long summarySize = summary.getRetainedSizeInBytes();
+                    if (summarySize > domainSizeLimitInBytes) {
                         sizeLimitExceeded = true;
                         allDomain = Domain.all(summary.getType());
-                        summaryDomainsRetainedSizeInBytes.addAndGet(-originalSize);
+                        summaryDomainsRetainedSizeInBytes.addAndGet(-summarySize);
                     }
                     else {
-                        summaryDomainsRetainedSizeInBytes.addAndGet(summary.getRetainedSizeInBytes() - originalSize);
                         summaryDomains.add(summary);
                     }
                 }
@@ -828,6 +823,10 @@ public class DynamicFilterService
             }
 
             Domain union = union(domains);
+            // Avoid large unions with domains that exceed size limit
+            if ((summaryDomainsRetainedSizeInBytes.get() - domainsRetainedSizeInBytes + union.getRetainedSizeInBytes()) > domainSizeLimitInBytes) {
+                union = union.simplify(1);
+            }
             summaryDomainsRetainedSizeInBytes.addAndGet(union.getRetainedSizeInBytes() - domainsRetainedSizeInBytes);
             long currentSize = summaryDomainsRetainedSizeInBytes.get();
             verify(currentSize >= 0, "currentSize is expected to be greater than or equal to zero: %s", currentSize);

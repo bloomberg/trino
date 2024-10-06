@@ -15,10 +15,25 @@ package io.trino.plugin.hive.metastore;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.VerifyException;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Longs;
+import io.airlift.compress.v3.Compressor;
+import io.airlift.compress.v3.zstd.ZstdCompressor;
 import io.airlift.slice.Slice;
+import io.trino.hive.thrift.metastore.ResourceType;
+import io.trino.hive.thrift.metastore.ResourceUri;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBasicStatistics;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.Storage;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.PartitionOfflineException;
 import io.trino.plugin.hive.TableOfflineException;
@@ -42,6 +57,7 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import jakarta.annotation.Nullable;
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 
@@ -51,13 +67,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Properties;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.hash.Hashing.sha256;
+import static com.google.common.io.BaseEncoding.base64Url;
+import static io.trino.hive.formats.HiveClassNames.AVRO_SERDE_CLASS;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.BUCKET_COUNT;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.BUCKET_FIELD_NAME;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
@@ -72,9 +92,9 @@ import static io.trino.plugin.hive.HiveMetadata.AVRO_SCHEMA_LITERAL_KEY;
 import static io.trino.plugin.hive.HiveMetadata.AVRO_SCHEMA_URL_KEY;
 import static io.trino.plugin.hive.HiveSplitManager.PRESTO_OFFLINE;
 import static io.trino.plugin.hive.HiveStorageFormat.AVRO;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.NUM_ROWS;
-import static io.trino.plugin.hive.util.HiveClassNames.AVRO_SERDE_CLASS;
+import static io.trino.plugin.hive.metastore.SparkMetastoreUtil.getSparkBasicStatistics;
 import static io.trino.plugin.hive.util.HiveUtil.makePartName;
+import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_COMMENTS;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.predicate.TupleDomain.withColumnDomains;
@@ -86,11 +106,16 @@ import static java.util.stream.Collectors.toList;
 
 public final class MetastoreUtil
 {
-    private static final String HIVE_PARTITION_VALUE_WILDCARD = "";
-
     private MetastoreUtil() {}
 
-    public static Properties getHiveSchema(Table table)
+    private static final String HIVE_PARTITION_VALUE_WILDCARD = "";
+    public static final String NUM_ROWS = "numRows";
+    public static final String NUM_FILES = "numFiles";
+    public static final String RAW_DATA_SIZE = "rawDataSize";
+    public static final String TOTAL_SIZE = "totalSize";
+    public static final Set<String> STATS_PROPERTIES = ImmutableSet.of(NUM_FILES, NUM_ROWS, RAW_DATA_SIZE, TOTAL_SIZE);
+
+    public static Map<String, String> getHiveSchema(Table table)
     {
         // Mimics function in Hive: MetaStoreUtils.getTableMetadata(Table)
         return getHiveSchema(
@@ -103,7 +128,7 @@ public final class MetastoreUtil
                 table.getPartitionColumns());
     }
 
-    public static Properties getHiveSchema(Partition partition, Table table)
+    public static Map<String, String> getHiveSchema(Partition partition, Table table)
     {
         // Mimics function in Hive: MetaStoreUtils.getSchema(Partition, Table)
         return getHiveSchema(
@@ -116,7 +141,7 @@ public final class MetastoreUtil
                 table.getPartitionColumns());
     }
 
-    private static Properties getHiveSchema(
+    private static Map<String, String> getHiveSchema(
             Storage sd,
             Optional<Storage> tableSd,
             List<Column> tableDataColumns,
@@ -128,33 +153,33 @@ public final class MetastoreUtil
         // Mimics function in Hive:
         // MetaStoreUtils.getSchema(StorageDescriptor, StorageDescriptor, Map<String, String>, String, String, List<FieldSchema>)
 
-        Properties schema = new Properties();
+        ImmutableMap.Builder<String, String> schema = ImmutableMap.builder();
 
-        schema.setProperty(FILE_INPUT_FORMAT, sd.getStorageFormat().getInputFormat());
-        schema.setProperty(FILE_OUTPUT_FORMAT, sd.getStorageFormat().getOutputFormat());
+        schema.put(FILE_INPUT_FORMAT, sd.getStorageFormat().getInputFormat());
+        schema.put(FILE_OUTPUT_FORMAT, sd.getStorageFormat().getOutputFormat());
 
-        schema.setProperty(META_TABLE_NAME, databaseName + "." + tableName);
-        schema.setProperty(META_TABLE_LOCATION, sd.getLocation());
+        schema.put(META_TABLE_NAME, databaseName + "." + tableName);
+        schema.put(META_TABLE_LOCATION, sd.getLocation());
 
         if (sd.getBucketProperty().isPresent()) {
-            schema.setProperty(BUCKET_FIELD_NAME, Joiner.on(",").join(sd.getBucketProperty().get().getBucketedBy()));
-            schema.setProperty(BUCKET_COUNT, Integer.toString(sd.getBucketProperty().get().getBucketCount()));
+            schema.put(BUCKET_FIELD_NAME, Joiner.on(",").join(sd.getBucketProperty().get().bucketedBy()));
+            schema.put(BUCKET_COUNT, Integer.toString(sd.getBucketProperty().get().bucketCount()));
         }
         else {
-            schema.setProperty(BUCKET_COUNT, "0");
+            schema.put(BUCKET_COUNT, "0");
         }
 
         for (Map.Entry<String, String> param : sd.getSerdeParameters().entrySet()) {
-            schema.setProperty(param.getKey(), (param.getValue() != null) ? param.getValue() : "");
+            schema.put(param.getKey(), (param.getValue() != null) ? param.getValue() : "");
         }
 
         if (sd.getStorageFormat().getSerde().equals(AVRO_SERDE_CLASS) && tableSd.isPresent()) {
             for (Map.Entry<String, String> param : tableSd.get().getSerdeParameters().entrySet()) {
-                schema.setProperty(param.getKey(), nullToEmpty(param.getValue()));
+                schema.put(param.getKey(), nullToEmpty(param.getValue()));
             }
         }
 
-        schema.setProperty(SERIALIZATION_LIB, sd.getStorageFormat().getSerde());
+        schema.put(SERIALIZATION_LIB, sd.getStorageFormat().getSerde());
 
         StringBuilder columnNameBuilder = new StringBuilder();
         StringBuilder columnTypeBuilder = new StringBuilder();
@@ -173,9 +198,9 @@ public final class MetastoreUtil
         }
         String columnNames = columnNameBuilder.toString();
         String columnTypes = columnTypeBuilder.toString();
-        schema.setProperty(META_TABLE_COLUMNS, columnNames);
-        schema.setProperty(META_TABLE_COLUMN_TYPES, columnTypes);
-        schema.setProperty("columns.comments", columnCommentBuilder.toString());
+        schema.put(META_TABLE_COLUMNS, columnNames);
+        schema.put(META_TABLE_COLUMN_TYPES, columnTypes);
+        schema.put(LIST_COLUMN_COMMENTS, columnCommentBuilder.toString());
 
         StringBuilder partString = new StringBuilder();
         String partStringSep = "";
@@ -192,20 +217,20 @@ public final class MetastoreUtil
             }
         }
         if (partString.length() > 0) {
-            schema.setProperty(META_TABLE_PARTITION_COLUMNS, partString.toString());
-            schema.setProperty(META_TABLE_PARTITION_COLUMN_TYPES, partTypesString.toString());
+            schema.put(META_TABLE_PARTITION_COLUMNS, partString.toString());
+            schema.put(META_TABLE_PARTITION_COLUMN_TYPES, partTypesString.toString());
         }
 
         if (parameters != null) {
             for (Map.Entry<String, String> entry : parameters.entrySet()) {
                 // add non-null parameters to the schema
                 if (entry.getValue() != null) {
-                    schema.setProperty(entry.getKey(), entry.getValue());
+                    schema.put(entry.getKey(), entry.getValue());
                 }
             }
         }
 
-        return schema;
+        return schema.buildKeepingLast();
     }
 
     public static ProtectMode getProtectMode(Partition partition)
@@ -415,6 +440,26 @@ public final class MetastoreUtil
         return withColumnDomains(domains);
     }
 
+    public static String metastoreFunctionName(String functionName, String signatureToken)
+    {
+        return "trino__%s__%s".formatted(functionName, sha256().hashUnencodedChars(signatureToken));
+    }
+
+    public static List<ResourceUri> toResourceUris(byte[] input)
+    {
+        Compressor compressor = ZstdCompressor.create();
+        byte[] compressed = new byte[compressor.maxCompressedLength(input.length)];
+        int outputSize = compressor.compress(input, 0, input.length, compressed, 0, compressed.length);
+
+        ImmutableList.Builder<ResourceUri> resourceUris = ImmutableList.builder();
+        for (int offset = 0; offset < outputSize; offset += 750) {
+            int length = Math.min(750, outputSize - offset);
+            String encoded = base64Url().encode(compressed, offset, length);
+            resourceUris.add(new ResourceUri(ResourceType.FILE, encoded));
+        }
+        return resourceUris.build();
+    }
+
     public static Map<String, String> adjustRowCount(Map<String, String> parameters, String description, long rowCountAdjustment)
     {
         String existingRowCount = parameters.get(NUM_ROWS);
@@ -428,5 +473,58 @@ public final class MetastoreUtil
         Map<String, String> copiedParameters = new HashMap<>(parameters);
         copiedParameters.put(NUM_ROWS, String.valueOf(newRowCount));
         return ImmutableMap.copyOf(copiedParameters);
+    }
+
+    public static HiveBasicStatistics getHiveBasicStatistics(Map<String, String> parameters)
+    {
+        OptionalLong numFiles = toLong(parameters.get(NUM_FILES));
+        OptionalLong numRows = toLong(parameters.get(NUM_ROWS));
+        OptionalLong inMemoryDataSizeInBytes = toLong(parameters.get(RAW_DATA_SIZE));
+        OptionalLong onDiskDataSizeInBytes = toLong(parameters.get(TOTAL_SIZE));
+        return new HiveBasicStatistics(numFiles, numRows, inMemoryDataSizeInBytes, onDiskDataSizeInBytes);
+    }
+
+    public static HiveBasicStatistics getBasicStatisticsWithSparkFallback(Map<String, String> parameters)
+    {
+        HiveBasicStatistics basicStatistics = getHiveBasicStatistics(parameters);
+        // Partitioned table without statistics
+        if (basicStatistics.getRowCount().isEmpty() || basicStatistics.getRowCount().getAsLong() == 0L) {
+            HiveBasicStatistics sparkBasicStatistics = getSparkBasicStatistics(parameters);
+            if (sparkBasicStatistics.getRowCount().isPresent()) {
+                return sparkBasicStatistics;
+            }
+        }
+
+        return basicStatistics;
+    }
+
+    public static Map<String, String> updateStatisticsParameters(Map<String, String> parameters, HiveBasicStatistics statistics)
+    {
+        ImmutableMap.Builder<String, String> result = ImmutableMap.builder();
+
+        parameters.forEach((key, value) -> {
+            if (!STATS_PROPERTIES.contains(key)) {
+                result.put(key, value);
+            }
+        });
+
+        statistics.getFileCount().ifPresent(count -> result.put(NUM_FILES, Long.toString(count)));
+        statistics.getRowCount().ifPresent(count -> result.put(NUM_ROWS, Long.toString(count)));
+        statistics.getInMemoryDataSizeInBytes().ifPresent(size -> result.put(RAW_DATA_SIZE, Long.toString(size)));
+        statistics.getOnDiskDataSizeInBytes().ifPresent(size -> result.put(TOTAL_SIZE, Long.toString(size)));
+
+        return result.buildOrThrow();
+    }
+
+    private static OptionalLong toLong(@Nullable String parameterValue)
+    {
+        if (parameterValue == null) {
+            return OptionalLong.empty();
+        }
+        Long longValue = Longs.tryParse(parameterValue);
+        if (longValue == null || longValue < 0) {
+            return OptionalLong.empty();
+        }
+        return OptionalLong.of(longValue);
     }
 }

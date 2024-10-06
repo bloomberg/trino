@@ -13,15 +13,13 @@
  */
 package io.trino.plugin.iceberg.functions.tablechanges;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
 import io.trino.plugin.iceberg.IcebergFileFormat;
-import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
 
-import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
@@ -38,10 +36,10 @@ public record TableChangesSplit(
         long fileSize,
         long fileRecordCount,
         IcebergFileFormat fileFormat,
-        List<HostAddress> addresses,
         String partitionSpecJson,
         String partitionDataJson,
-        SplitWeight splitWeight) implements ConnectorSplit
+        SplitWeight splitWeight,
+        Map<String, String> fileIoProperties) implements ConnectorSplit
 {
     private static final int INSTANCE_SIZE = SizeOf.instanceSize(TableChangesSplit.class);
 
@@ -50,22 +48,10 @@ public record TableChangesSplit(
         requireNonNull(changeType, "changeType is null");
         requireNonNull(path, "path is null");
         requireNonNull(fileFormat, "fileFormat is null");
-        addresses = ImmutableList.copyOf(requireNonNull(addresses, "addresses is null"));
         requireNonNull(partitionSpecJson, "partitionSpecJson is null");
         requireNonNull(partitionDataJson, "partitionDataJson is null");
         requireNonNull(splitWeight, "splitWeight is null");
-    }
-
-    @Override
-    public boolean isRemotelyAccessible()
-    {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return addresses;
+        fileIoProperties = ImmutableMap.copyOf(requireNonNull(fileIoProperties, "fileIoProperties is null"));
     }
 
     @Override
@@ -75,12 +61,12 @@ public record TableChangesSplit(
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return ImmutableMap.builder()
+        return ImmutableMap.<String, String>builder()
                 .put("path", path)
-                .put("start", start)
-                .put("length", length)
+                .put("start", String.valueOf(start))
+                .put("length", String.valueOf(length))
                 .buildOrThrow();
     }
 
@@ -89,10 +75,10 @@ public record TableChangesSplit(
     {
         return INSTANCE_SIZE
                 + estimatedSizeOf(path)
-                + estimatedSizeOf(addresses, HostAddress::getRetainedSizeInBytes)
                 + estimatedSizeOf(partitionSpecJson)
                 + estimatedSizeOf(partitionDataJson)
-                + splitWeight.getRetainedSizeInBytes();
+                + splitWeight.getRetainedSizeInBytes()
+                + estimatedSizeOf(fileIoProperties, SizeOf::estimatedSizeOf, SizeOf::estimatedSizeOf);
     }
 
     @Override

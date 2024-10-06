@@ -19,6 +19,7 @@ import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoInputFile;
+import io.trino.metastore.StorageFormat;
 import io.trino.orc.OrcDataSink;
 import io.trino.orc.OrcDataSource;
 import io.trino.orc.OrcDataSourceId;
@@ -33,7 +34,6 @@ import io.trino.plugin.hive.HiveFileWriterFactory;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
@@ -44,16 +44,17 @@ import org.weakref.jmx.Managed;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 import java.util.function.Supplier;
 
+import static io.trino.hive.formats.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
 import static io.trino.orc.metadata.OrcType.createRootOrcType;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
-import static io.trino.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
-import static io.trino.plugin.hive.HiveMetadata.PRESTO_VERSION_NAME;
+import static io.trino.plugin.hive.HiveMetadata.TRINO_QUERY_ID_NAME;
+import static io.trino.plugin.hive.HiveMetadata.TRINO_VERSION_NAME;
 import static io.trino.plugin.hive.HiveSessionProperties.getOrcOptimizedWriterMaxDictionaryMemory;
 import static io.trino.plugin.hive.HiveSessionProperties.getOrcOptimizedWriterMaxStripeRows;
 import static io.trino.plugin.hive.HiveSessionProperties.getOrcOptimizedWriterMaxStripeSize;
@@ -63,9 +64,9 @@ import static io.trino.plugin.hive.HiveSessionProperties.getOrcStringStatisticsL
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.HiveSessionProperties.isOrcOptimizedWriterValidate;
 import static io.trino.plugin.hive.acid.AcidSchema.ACID_COLUMN_NAMES;
-import static io.trino.plugin.hive.acid.AcidSchema.createAcidColumnPrestoTypes;
+import static io.trino.plugin.hive.acid.AcidSchema.createAcidColumnTrinoTypes;
 import static io.trino.plugin.hive.acid.AcidSchema.createRowType;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
 import static io.trino.plugin.hive.util.HiveUtil.getOrcWriterOptions;
@@ -125,7 +126,7 @@ public class OrcFileWriterFactory
             List<String> inputColumnNames,
             StorageFormat storageFormat,
             HiveCompressionCodec compressionCodec,
-            Properties schema,
+            Map<String, String> schema,
             ConnectorSession session,
             OptionalInt bucketNumber,
             AcidTransaction transaction,
@@ -140,7 +141,7 @@ public class OrcFileWriterFactory
         // an index to rearrange columns in the proper order
         List<String> fileColumnNames = getColumnNames(schema);
         List<Type> fileColumnTypes = getColumnTypes(schema).stream()
-                .map(hiveType -> hiveType.getType(typeManager, getTimestampPrecision(session)))
+                .map(hiveType -> getType(hiveType, typeManager, getTimestampPrecision(session)))
                 .collect(toList());
 
         int[] fileInputColumnIndexes = fileColumnNames.stream()
@@ -177,7 +178,7 @@ public class OrcFileWriterFactory
                 // by bucket and writeId.
                 Type rowType = createRowType(fileColumnNames, fileColumnTypes);
                 fileColumnNames = ACID_COLUMN_NAMES;
-                fileColumnTypes = createAcidColumnPrestoTypes(rowType);
+                fileColumnTypes = createAcidColumnTrinoTypes(rowType);
             }
 
             return Optional.of(new OrcFileWriter(
@@ -199,8 +200,8 @@ public class OrcFileWriterFactory
                             .withMaxStringStatisticsLimit(getOrcStringStatisticsLimit(session)),
                     fileInputColumnIndexes,
                     ImmutableMap.<String, String>builder()
-                            .put(PRESTO_VERSION_NAME, nodeVersion.toString())
-                            .put(PRESTO_QUERY_ID_NAME, session.getQueryId())
+                            .put(TRINO_VERSION_NAME, nodeVersion.toString())
+                            .put(TRINO_QUERY_ID_NAME, session.getQueryId())
                             .buildOrThrow(),
                     validationInputFactory,
                     getOrcOptimizedWriterValidateMode(session),

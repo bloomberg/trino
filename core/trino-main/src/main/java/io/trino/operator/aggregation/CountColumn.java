@@ -13,9 +13,10 @@
  */
 package io.trino.operator.aggregation;
 
+import io.trino.annotation.UsedByGeneratedCode;
 import io.trino.operator.aggregation.state.LongState;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
 import io.trino.spi.function.BlockIndex;
@@ -24,13 +25,14 @@ import io.trino.spi.function.CombineFunction;
 import io.trino.spi.function.Description;
 import io.trino.spi.function.InputFunction;
 import io.trino.spi.function.OutputFunction;
-import io.trino.spi.function.RemoveInputFunction;
 import io.trino.spi.function.SqlType;
 import io.trino.spi.function.TypeParameter;
+import io.trino.spi.function.WindowAccumulator;
+import io.trino.spi.function.WindowIndex;
 
 import static io.trino.spi.type.BigintType.BIGINT;
 
-@AggregationFunction("count")
+@AggregationFunction(value = "count", windowAccumulator = CountColumn.CountColumnWindowAccumulator.class)
 @Description("Counts the non-null values")
 public final class CountColumn
 {
@@ -40,19 +42,10 @@ public final class CountColumn
     @TypeParameter("T")
     public static void input(
             @AggregationState LongState state,
-            @BlockPosition @SqlType("T") Block block,
+            @BlockPosition @SqlType("T") ValueBlock block,
             @BlockIndex int position)
     {
         state.setValue(state.getValue() + 1);
-    }
-
-    @RemoveInputFunction
-    public static void removeInput(
-            @AggregationState LongState state,
-            @BlockPosition @SqlType("T") Block block,
-            @BlockIndex int position)
-    {
-        state.setValue(state.getValue() - 1);
     }
 
     @CombineFunction
@@ -65,5 +58,58 @@ public final class CountColumn
     public static void output(@AggregationState LongState state, BlockBuilder out)
     {
         BIGINT.writeLong(out, state.getValue());
+    }
+
+    public static class CountColumnWindowAccumulator
+            implements WindowAccumulator
+    {
+        private long count;
+
+        @UsedByGeneratedCode
+        public CountColumnWindowAccumulator() {}
+
+        private CountColumnWindowAccumulator(long count)
+        {
+            this.count = count;
+        }
+
+        @Override
+        public long getEstimatedSize()
+        {
+            return Long.BYTES;
+        }
+
+        @Override
+        public WindowAccumulator copy()
+        {
+            return new CountColumnWindowAccumulator(count);
+        }
+
+        @Override
+        public void addInput(WindowIndex index, int startPosition, int endPosition)
+        {
+            for (int i = startPosition; i <= endPosition; i++) {
+                if (!index.isNull(0, i)) {
+                    count++;
+                }
+            }
+        }
+
+        @Override
+        public boolean removeInput(WindowIndex index, int startPosition, int endPosition)
+        {
+            for (int i = startPosition; i <= endPosition; i++) {
+                if (!index.isNull(0, i)) {
+                    count--;
+                }
+            }
+            return true;
+        }
+
+        @Override
+        public void output(BlockBuilder blockBuilder)
+        {
+            BIGINT.writeLong(blockBuilder, count);
+        }
     }
 }

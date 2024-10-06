@@ -37,13 +37,11 @@ public class ParquetReaderConfig
 
     private ParquetReaderOptions options = new ParquetReaderOptions();
 
-    @Deprecated
     public boolean isIgnoreStatistics()
     {
         return options.isIgnoreStatistics();
     }
 
-    @Deprecated
     @Config("parquet.ignore-statistics")
     @ConfigDescription("Ignore statistics from Parquet to allow querying files with corrupted or incorrect statistics")
     public ParquetReaderConfig setIgnoreStatistics(boolean ignoreStatistics)
@@ -147,6 +145,19 @@ public class ParquetReaderConfig
     public DataSize getSmallFileThreshold()
     {
         return options.getSmallFileThreshold();
+    }
+
+    @Config("parquet.experimental.vectorized-decoding.enabled")
+    @ConfigDescription("Enable using Java Vector API for faster decoding of parquet files")
+    public ParquetReaderConfig setVectorizedDecodingEnabled(boolean vectorizedDecodingEnabled)
+    {
+        options = options.withVectorizedDecodingEnabled(vectorizedDecodingEnabled);
+        return this;
+    }
+
+    public boolean isVectorizedDecodingEnabled()
+    {
+        return options.isVectorizedDecodingEnabled();
     }
 
     public ParquetReaderOptions toParquetReaderOptions()

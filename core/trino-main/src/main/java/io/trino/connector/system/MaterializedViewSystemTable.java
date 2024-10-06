@@ -13,6 +13,7 @@
  */
 package io.trino.connector.system;
 
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.FullConnectorSession;
@@ -20,9 +21,9 @@ import io.trino.Session;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.QualifiedTablePrefix;
-import io.trino.metadata.ViewInfo;
 import io.trino.security.AccessControl;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
@@ -37,12 +38,15 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.LongTimestampWithTimeZone;
 
 import java.util.Optional;
+import java.util.Set;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.connector.system.jdbc.FilterUtil.isImpossibleObjectName;
 import static io.trino.connector.system.jdbc.FilterUtil.tablePrefix;
 import static io.trino.connector.system.jdbc.FilterUtil.tryGetSingleVarcharValue;
 import static io.trino.metadata.MetadataListing.getMaterializedViews;
 import static io.trino.metadata.MetadataListing.listCatalogNames;
+import static io.trino.metadata.MetadataListing.listMaterializedViews;
 import static io.trino.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
 import static io.trino.spi.connector.SystemTable.Distribution.SINGLE_COORDINATOR;
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
@@ -68,6 +72,8 @@ public class MaterializedViewSystemTable
             .column("comment", createUnboundedVarcharType())
             .column("definition", createUnboundedVarcharType())
             .build();
+
+    private static final Set<String> LISTING_ONLY_COLUMNS = ImmutableSet.of("catalog_name", "schema_name", "name");
 
     private final Metadata metadata;
     private final AccessControl accessControl;
@@ -95,9 +101,15 @@ public class MaterializedViewSystemTable
     public RecordCursor cursor(
             ConnectorTransactionHandle transactionHandle,
             ConnectorSession connectorSession,
-            TupleDomain<Integer> constraint)
+            TupleDomain<Integer> constraint,
+            Set<Integer> requiredColumns)
     {
         Session session = ((FullConnectorSession) connectorSession).getSession();
+        Set<String> requiredColumnNames = requiredColumns.stream()
+                .map(TABLE_DEFINITION.getColumns()::get)
+                .map(ColumnMetadata::getName)
+                .collect(toImmutableSet());
+
         InMemoryRecordSet.Builder displayTable = InMemoryRecordSet.builder(getTableMetadata());
 
         Domain catalogDomain = constraint.getDomain(0, VARCHAR);
@@ -109,6 +121,8 @@ public class MaterializedViewSystemTable
         }
 
         Optional<String> tableFilter = tryGetSingleVarcharValue(tableDomain);
+        boolean needNameOnly = LISTING_ONLY_COLUMNS.containsAll(requiredColumnNames);
+        boolean needFreshness = requiredColumnNames.contains("freshness") || requiredColumnNames.contains("last_fresh_time");
 
         listCatalogNames(session, metadata, accessControl, catalogDomain).forEach(catalogName -> {
             // TODO A connector may be able to pull information from multiple schemas at once, so pass the schema filter to the connector instead.
@@ -119,65 +133,102 @@ public class MaterializedViewSystemTable
                     if (isImpossibleObjectName(schemaName)) {
                         continue;
                     }
-                    addMaterializedViewForCatalog(session, displayTable, tablePrefix(catalogName, Optional.of(schemaName), tableFilter));
+                    addMaterializedViewForCatalog(session, displayTable, tablePrefix(catalogName, Optional.of(schemaName), tableFilter), needNameOnly, needFreshness);
                 }
             }
             else {
-                addMaterializedViewForCatalog(session, displayTable, tablePrefix(catalogName, Optional.empty(), tableFilter));
+                addMaterializedViewForCatalog(session, displayTable, tablePrefix(catalogName, Optional.empty(), tableFilter), needNameOnly, needFreshness);
             }
         });
 
         return displayTable.build().cursor();
     }
 
-    private void addMaterializedViewForCatalog(Session session, InMemoryRecordSet.Builder displayTable, QualifiedTablePrefix tablePrefix)
+    private void addMaterializedViewForCatalog(Session session, InMemoryRecordSet.Builder displayTable, QualifiedTablePrefix tablePrefix, boolean needNameOnly, boolean needFreshness)
     {
+        if (needNameOnly) {
+            listMaterializedViews(session, metadata, accessControl, tablePrefix).forEach(name ->
+                    displayTable.addRow(createMaterializedViewRow(
+                            tablePrefix.getCatalogName(),
+                            name.getSchemaName(),
+                            name.getTableName(),
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null)));
+            return;
+        }
+
         getMaterializedViews(session, metadata, accessControl, tablePrefix).forEach((tableName, definition) -> {
             QualifiedObjectName name = new QualifiedObjectName(tablePrefix.getCatalogName(), tableName.getSchemaName(), tableName.getTableName());
-            MaterializedViewFreshness freshness;
+            Optional<MaterializedViewFreshness> freshness = Optional.empty();
 
-            try {
-                freshness = metadata.getMaterializedViewFreshness(session, name);
-            }
-            catch (MaterializedViewNotFoundException e) {
-                // Ignore materialized view that was dropped during query execution (race condition)
-                return;
+            if (needFreshness) {
+                try {
+                    freshness = Optional.of(metadata.getMaterializedViewFreshness(session, name));
+                }
+                catch (MaterializedViewNotFoundException e) {
+                    // Ignore materialized view that was dropped during query execution (race condition)
+                    return;
+                }
             }
 
-            Object[] materializedViewRow = createMaterializedViewRow(name, freshness, definition);
-            displayTable.addRow(materializedViewRow);
+            displayTable.addRow(createMaterializedViewRow(
+                    name.catalogName(),
+                    name.schemaName(),
+                    name.objectName(),
+                    definition.getStorageTable()
+                            .map(CatalogSchemaTableName::getCatalogName)
+                            .orElse(""),
+                    definition.getStorageTable()
+                            .map(storageTable -> storageTable.getSchemaTableName().getSchemaName())
+                            .orElse(""),
+                    definition.getStorageTable()
+                            .map(storageTable -> storageTable.getSchemaTableName().getTableName())
+                            .orElse(""),
+                    // freshness
+                    freshness.map(MaterializedViewFreshness::getFreshness)
+                            .map(Enum::name)
+                            .orElse(null),
+                    // last_fresh_time
+                    freshness.flatMap(MaterializedViewFreshness::getLastFreshTime)
+                            .map(instant -> LongTimestampWithTimeZone.fromEpochSecondsAndFraction(
+                                    instant.getEpochSecond(),
+                                    (long) instant.getNano() * PICOSECONDS_PER_NANOSECOND,
+                                    UTC_KEY))
+                            .orElse(null),
+                    definition.getComment().orElse(""),
+                    definition.getOriginalSql()));
         });
     }
 
+    // Table schema as a Java method signature
     private static Object[] createMaterializedViewRow(
-            QualifiedObjectName name,
-            MaterializedViewFreshness freshness,
-            ViewInfo definition)
+            String catalogName,
+            String schemaName,
+            String name,
+            String storageCatalog,
+            String storageSchema,
+            String storageTable,
+            String freshness,
+            LongTimestampWithTimeZone lastFreshTime,
+            String comment,
+            String definition)
     {
         return new Object[] {
-                name.getCatalogName(),
-                name.getSchemaName(),
-                name.getObjectName(),
-                definition.getStorageTable()
-                        .map(CatalogSchemaTableName::getCatalogName)
-                        .orElse(""),
-                definition.getStorageTable()
-                        .map(storageTable -> storageTable.getSchemaTableName().getSchemaName())
-                        .orElse(""),
-                definition.getStorageTable()
-                        .map(storageTable -> storageTable.getSchemaTableName().getTableName())
-                        .orElse(""),
-                // freshness
-                freshness.getFreshness().name(),
-                // last_fresh_time
-                freshness.getLastFreshTime()
-                        .map(instant -> LongTimestampWithTimeZone.fromEpochSecondsAndFraction(
-                                instant.getEpochSecond(),
-                                (long) instant.getNano() * PICOSECONDS_PER_NANOSECOND,
-                                UTC_KEY))
-                        .orElse(null),
-                definition.getComment().orElse(""),
-                definition.getOriginalSql()
+                catalogName,
+                schemaName,
+                name,
+                storageCatalog,
+                storageSchema,
+                storageTable,
+                freshness,
+                lastFreshTime,
+                comment,
+                definition,
         };
     }
 }

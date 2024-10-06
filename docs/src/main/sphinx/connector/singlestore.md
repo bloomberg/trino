@@ -1,7 +1,7 @@
 ---
 myst:
   substitutions:
-    default_domain_compaction_threshold: '`32`'
+    default_domain_compaction_threshold: '`256`'
 ---
 
 # SingleStore connector
@@ -22,7 +22,6 @@ To connect to SingleStore, you need:
   3306 is the default port.
 
 (singlestore-configuration)=
-
 ## Configuration
 
 To configure the SingleStore connector, create a catalog properties file in
@@ -40,7 +39,8 @@ connection-password=secret
 
 The `connection-url` defines the connection information and parameters to pass
 to the SingleStore JDBC driver. The supported parameters for the URL are
-available in the [SingleStore JDBC driver documentation](https://docs.singlestore.com/db/v7.6/en/developer-resources/connect-with-application-development-tools/connect-with-java-jdbc/the-singlestore-jdbc-driver.html#connection-string-parameters).
+available in the [SingleStore JDBC driver
+documentation](https://docs.singlestore.com/db/latest/developer-resources/connect-with-application-development-tools/connect-with-java-jdbc/the-singlestore-jdbc-driver/#connection-string-parameters).
 
 The `connection-user` and `connection-password` are typically required and
 determine the user credentials for the connection, often a service user. You can
@@ -48,7 +48,6 @@ use {doc}`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
 (singlestore-tls)=
-
 ### Connection security
 
 If you have TLS configured with a globally-trusted certificate installed on your
@@ -64,7 +63,7 @@ connection-url=jdbc:singlestore://example.net:3306/?useSsl=true
 ```
 
 For more information on TLS configuration options, see the [JDBC driver
-documentation](https://docs.singlestore.com/db/v7.6/en/developer-resources/connect-with-application-development-tools/connect-with-java-jdbc/the-singlestore-jdbc-driver.html#tls-parameters).
+documentation](https://docs.singlestore.com/db/latest/developer-resources/connect-with-application-development-tools/connect-with-java-jdbc/the-singlestore-jdbc-driver/#tls-).
 
 ### Multiple SingleStore servers
 
@@ -81,9 +80,6 @@ will create a catalog named `sales` using the configured connector.
 ```
 
 ```{include} jdbc-domain-compaction-threshold.fragment
-```
-
-```{include} jdbc-procedures.fragment
 ```
 
 ```{include} jdbc-case-insensitive-matching.fragment
@@ -126,7 +122,6 @@ If you used a different name for your catalog properties file, use
 that catalog name instead of `example` in the above examples.
 
 (singlestore-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Singlestore each support types that the other does not, this
@@ -140,93 +135,92 @@ each direction.
 The connector maps Singlestore types to the corresponding Trino types following
 this table:
 
-```{eval-rst}
-.. list-table:: Singlestore to Trino type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
+:::{list-table} Singlestore to Trino type mapping
+:widths: 30, 30, 40
+:header-rows: 1
 
-  * - Singlestore type
-    - Trino type
-    - Notes
-  * - ``BIT``
-    - ``BOOLEAN``
-    -
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``TINYINT``
-    - ``TINYINT``
-    -
-  * - ``TINYINT UNSIGNED``
-    - ``SMALLINT``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``SMALLINT UNSIGNED``
-    - ``INTEGER``
-    -
-  * - ``INTEGER``
-    - ``INTEGER``
-    -
-  * - ``INTEGER UNSIGNED``
-    - ``BIGINT``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``BIGINT UNSIGNED``
-    - ``DECIMAL(20, 0)``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``REAL``
-    - ``DOUBLE``
-    -
-  * - ``DECIMAL(p, s)``
-    - ``DECIMAL(p, s)``
-    - See :ref:`Singlestore DECIMAL type handling <singlestore-decimal-handling>`
-  * - ``CHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``TINYTEXT``
-    - ``VARCHAR(255)``
-    -
-  * - ``TEXT``
-    - ``VARCHAR(65535)``
-    -
-  * - ``MEDIUMTEXT``
-    - ``VARCHAR(16777215)``
-    -
-  * - ``LONGTEXT``
-    - ``VARCHAR``
-    -
-  * - ``VARCHAR(n)``
-    - ``VARCHAR(n)``
-    -
-  * - ``LONGBLOB``
-    - ``VARBINARY``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIME``
-    - ``TIME(0)``
-    -
-  * - ``TIME(6)``
-    - ``TIME(6)``
-    -
-  * - ``DATETIME``
-    - ``TIMESTAMP(0)``
-    -
-  * - ``DATETIME(6)``
-    - ``TIMESTAMP(6)``
-    -
-  * - ``JSON``
-    - ``JSON``
-    -
-```
+* - Singlestore type
+  - Trino type
+  - Notes
+* - `BIT`
+  - `BOOLEAN`
+  -
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `TINYINT`
+  - `TINYINT`
+  -
+* - `TINYINT UNSIGNED`
+  - `SMALLINT`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `SMALLINT UNSIGNED`
+  - `INTEGER`
+  -
+* - `INTEGER`
+  - `INTEGER`
+  -
+* - `INTEGER UNSIGNED`
+  - `BIGINT`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `BIGINT UNSIGNED`
+  - `DECIMAL(20, 0)`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `REAL`
+  - `DOUBLE`
+  -
+* - `DECIMAL(p, s)`
+  - `DECIMAL(p, s)`
+  - See [Singlestore DECIMAL type handling](singlestore-decimal-handling)
+* - `CHAR(n)`
+  - `CHAR(n)`
+  -
+* - `TINYTEXT`
+  - `VARCHAR(255)`
+  -
+* - `TEXT`
+  - `VARCHAR(65535)`
+  -
+* - `MEDIUMTEXT`
+  - `VARCHAR(16777215)`
+  -
+* - `LONGTEXT`
+  - `VARCHAR`
+  -
+* - `VARCHAR(n)`
+  - `VARCHAR(n)`
+  -
+* - `LONGBLOB`
+  - `VARBINARY`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIME`
+  - `TIME(0)`
+  -
+* - `TIME(6)`
+  - `TIME(6)`
+  -
+* - `DATETIME`
+  - `TIMESTAMP(0)`
+  -
+* - `DATETIME(6)`
+  - `TIMESTAMP(6)`
+  -
+* - `JSON`
+  - `JSON`
+  -
+:::
 
 No other types are supported.
 
@@ -235,80 +229,78 @@ No other types are supported.
 The connector maps Trino types to the corresponding Singlestore types following
 this table:
 
-```{eval-rst}
-.. list-table:: Trino to Singlestore type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
+:::{list-table} Trino to Singlestore type mapping
+:widths: 30, 30, 40
+:header-rows: 1
 
-  * - Trino type
-    - Singlestore type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-    -
-  * - ``TINYINT``
-    - ``TINYINT``
-    -
-  * - ``SMALLINT``
-    - ``SMALLINT``
-    -
-  * - ``INTEGER``
-    - ``INTEGER``
-    -
-  * - ``BIGINT``
-    - ``BIGINT``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``REAL``
-    - ``FLOAT``
-    -
-  * - ``DECIMAL(p, s)``
-    - ``DECIMAL(p, s)``
-    - See :ref:`Singlestore DECIMAL type handling <singlestore-decimal-handling>`
-  * - ``CHAR(n)``
-    - ``CHAR(n)``
-    -
-  * - ``VARCHAR(65535)``
-    - ``TEXT``
-    -
-  * - ``VARCHAR(16777215)``
-    - ``MEDIUMTEXT``
-    -
-  * - ``VARCHAR``
-    - ``LONGTEXT``
-    -
-  * - ``VARCHAR(n)``
-    - ``VARCHAR(n)``
-    -
-  * - ``VARBINARY``
-    - ``LONGBLOB``
-    -
-  * - ``DATE``
-    - ``DATE``
-    -
-  * - ``TIME(0)``
-    - ``TIME``
-    -
-  * - ``TIME(6)``
-    - ``TIME(6)``
-    -
-  * - ``TIMESTAMP(0)``
-    - ``DATETIME``
-    -
-  * - ``TIMESTAMP(6)``
-    - ``DATETIME(6)``
-    -
-  * - ``JSON``
-    - ``JSON``
-    -
-```
+* - Trino type
+  - Singlestore type
+  - Notes
+* - `BOOLEAN`
+  - `BOOLEAN`
+  -
+* - `TINYINT`
+  - `TINYINT`
+  -
+* - `SMALLINT`
+  - `SMALLINT`
+  -
+* - `INTEGER`
+  - `INTEGER`
+  -
+* - `BIGINT`
+  - `BIGINT`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `REAL`
+  - `FLOAT`
+  -
+* - `DECIMAL(p, s)`
+  - `DECIMAL(p, s)`
+  - See [Singlestore DECIMAL type handling](singlestore-decimal-handling)
+* - `CHAR(n)`
+  - `CHAR(n)`
+  -
+* - `VARCHAR(65535)`
+  - `TEXT`
+  -
+* - `VARCHAR(16777215)`
+  - `MEDIUMTEXT`
+  -
+* - `VARCHAR`
+  - `LONGTEXT`
+  -
+* - `VARCHAR(n)`
+  - `VARCHAR(n)`
+  -
+* - `VARBINARY`
+  - `LONGBLOB`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIME(0)`
+  - `TIME`
+  -
+* - `TIME(6)`
+  - `TIME(6)`
+  -
+* - `TIMESTAMP(0)`
+  - `DATETIME`
+  -
+* - `TIMESTAMP(6)`
+  - `DATETIME(6)`
+  -
+* - `JSON`
+  - `JSON`
+  -
+:::
 
 No other types are supported.
 
 (singlestore-decimal-handling)=
-
 ```{include} decimal-type-handling.fragment
 ```
 
@@ -316,7 +308,6 @@ No other types are supported.
 ```
 
 (singlestore-sql-support)=
-
 ## SQL support
 
 The connector provides read access and write access to data and metadata in
@@ -335,10 +326,20 @@ statements, the connector supports the following features:
 - {doc}`/sql/create-schema`
 - {doc}`/sql/drop-schema`
 
+```{include} sql-update-limitation.fragment
+```
+
 ```{include} sql-delete-limitation.fragment
 ```
 
 ```{include} alter-table-limitation.fragment
+```
+
+### Procedures
+
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
 ```
 
 ## Performance
@@ -347,7 +348,6 @@ The connector includes a number of performance improvements, detailed in the
 following sections.
 
 (singlestore-pushdown)=
-
 ### Pushdown
 
 The connector supports pushdown for a number of operations:

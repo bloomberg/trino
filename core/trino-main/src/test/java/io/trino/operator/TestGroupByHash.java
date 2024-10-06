@@ -27,7 +27,6 @@ import io.trino.spi.block.VariableWidthBlock;
 import io.trino.spi.type.BigintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
-import io.trino.sql.gen.JoinCompiler;
 import io.trino.testing.TestingSession;
 import org.junit.jupiter.api.Test;
 
@@ -46,14 +45,11 @@ import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.type.TypeTestUtils.getHashBlock;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
 
 public class TestGroupByHash
 {
     private static final int MAX_GROUP_ID = 500;
     private static final Session TEST_SESSION = TestingSession.testSessionBuilder().build();
-    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(new TypeOperators());
     private static final int BIGINT_EXPECTED_REHASH = 20;
     // first rehash moves from the initial capacity to 1024 (batch size) and last hash moves to 1024 * 1024,
     // which is 1 initial rehash + 10 additional rehashes
@@ -77,7 +73,7 @@ public class TestGroupByHash
                         true,
                         expectedSize,
                         true,
-                        JOIN_COMPILER,
+                        new FlatHashStrategyCompiler(new TypeOperators()),
                         updateMemory);
             };
         }
@@ -95,16 +91,16 @@ public class TestGroupByHash
                     Page page = new Page(block, hashBlock);
                     for (int addValuesTries = 0; addValuesTries < 10; addValuesTries++) {
                         groupByHash.addPage(page).process();
-                        assertEquals(groupByHash.getGroupCount(), tries == 0 ? value + 1 : MAX_GROUP_ID);
+                        assertThat(groupByHash.getGroupCount()).isEqualTo(tries == 0 ? value + 1 : MAX_GROUP_ID);
 
                         // add the page again using get group ids and make sure the group count didn't change
                         int[] groupIds = getGroupIds(groupByHash, page);
-                        assertEquals(groupByHash.getGroupCount(), tries == 0 ? value + 1 : MAX_GROUP_ID);
+                        assertThat(groupByHash.getGroupCount()).isEqualTo(tries == 0 ? value + 1 : MAX_GROUP_ID);
 
                         // verify the first position
-                        assertEquals(groupIds.length, 1);
+                        assertThat(groupIds.length).isEqualTo(1);
                         int groupId = groupIds[0];
-                        assertEquals(groupId, value);
+                        assertThat(groupId).isEqualTo(value);
                     }
                 }
             }
@@ -124,7 +120,7 @@ public class TestGroupByHash
 
             groupByHash.addPage(page).process();
 
-            assertEquals(groupByHash.getGroupCount(), 1);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(1);
 
             Work<int[]> work = groupByHash.getGroupIds(page);
             if (groupByHashType == GroupByHashType.FLAT) {
@@ -136,10 +132,10 @@ public class TestGroupByHash
             work.process();
             int[] groupIds = work.getResult();
 
-            assertEquals(groupByHash.getGroupCount(), 1);
-            assertEquals(groupIds.length, 2);
-            assertEquals(groupIds[0], 0);
-            assertEquals(groupIds[1], 0);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(1);
+            assertThat(groupIds.length).isEqualTo(2);
+            assertThat(groupIds[0]).isEqualTo(0);
+            assertThat(groupIds[1]).isEqualTo(0);
         }
     }
 
@@ -157,15 +153,15 @@ public class TestGroupByHash
 
             groupByHash.addPage(page).process();
 
-            assertEquals(groupByHash.getGroupCount(), 2);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(2);
 
             int[] groupIds = getGroupIds(groupByHash, page);
-            assertEquals(groupByHash.getGroupCount(), 2);
-            assertEquals(groupIds.length, 4);
-            assertEquals(groupIds[0], 0);
-            assertEquals(groupIds[1], 0);
-            assertEquals(groupIds[2], 1);
-            assertEquals(groupIds[3], 1);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(2);
+            assertThat(groupIds.length).isEqualTo(4);
+            assertThat(groupIds[0]).isEqualTo(0);
+            assertThat(groupIds[1]).isEqualTo(0);
+            assertThat(groupIds[2]).isEqualTo(1);
+            assertThat(groupIds[3]).isEqualTo(1);
         }
     }
 
@@ -208,10 +204,10 @@ public class TestGroupByHash
                     Page page = new Page(block, hashBlock);
                     for (int addValuesTries = 0; addValuesTries < 10; addValuesTries++) {
                         int[] groupIds = getGroupIds(groupByHash, page);
-                        assertEquals(groupByHash.getGroupCount(), tries == 0 ? value + 1 : MAX_GROUP_ID);
-                        assertEquals(groupIds.length, 1);
+                        assertThat(groupByHash.getGroupCount()).isEqualTo(tries == 0 ? value + 1 : MAX_GROUP_ID);
+                        assertThat(groupIds.length).isEqualTo(1);
                         long groupId = groupIds[0];
-                        assertEquals(groupId, value);
+                        assertThat(groupId).isEqualTo(value);
                     }
                 }
             }
@@ -228,9 +224,9 @@ public class TestGroupByHash
 
             int[] groupIds = getGroupIds(groupByHash, new Page(valuesBlock, hashBlock));
             for (int i = 0; i < valuesBlock.getPositionCount(); i++) {
-                assertEquals(groupIds[i], i);
+                assertThat(groupIds[i]).isEqualTo(i);
             }
-            assertEquals(groupByHash.getGroupCount(), 100);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(100);
 
             PageBuilder pageBuilder = new PageBuilder(ImmutableList.of(BIGINT, BIGINT));
             for (int i = 0; i < groupByHash.getGroupCount(); i++) {
@@ -240,9 +236,9 @@ public class TestGroupByHash
             Page page = pageBuilder.build();
             // Ensure that all blocks have the same positionCount
             for (int i = 0; i < page.getChannelCount(); i++) {
-                assertEquals(page.getBlock(i).getPositionCount(), 100);
+                assertThat(page.getBlock(i).getPositionCount()).isEqualTo(100);
             }
-            assertEquals(page.getPositionCount(), 100);
+            assertThat(page.getPositionCount()).isEqualTo(100);
             BlockAssertions.assertBlockEquals(BIGINT, page.getBlock(0), valuesBlock);
             BlockAssertions.assertBlockEquals(BIGINT, page.getBlock(1), hashBlock);
         }
@@ -261,7 +257,7 @@ public class TestGroupByHash
 
             GroupByHash groupByHash = groupByHashType.createGroupByHash();
             groupByHash.getGroupIds(new Page(valuesBlock, hashBlock)).process();
-            assertEquals(groupByHash.getGroupCount(), 50);
+            assertThat(groupByHash.getGroupCount()).isEqualTo(50);
 
             PageBuilder pageBuilder = new PageBuilder(ImmutableList.of(BIGINT, BIGINT));
             for (int i = 0; i < groupByHash.getGroupCount(); i++) {
@@ -269,7 +265,7 @@ public class TestGroupByHash
                 groupByHash.appendValuesTo(i, pageBuilder);
             }
             Page outputPage = pageBuilder.build();
-            assertEquals(outputPage.getPositionCount(), 50);
+            assertThat(outputPage.getPositionCount()).isEqualTo(50);
             BlockAssertions.assertBlockEquals(BIGINT, outputPage.getBlock(0), createLongSequenceBlock(0, 50));
         }
     }
@@ -305,14 +301,14 @@ public class TestGroupByHash
 
         // Create GroupByHash with tiny size
         AtomicInteger rehashCount = new AtomicInteger();
-        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, JOIN_COMPILER, () -> {
+        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, new FlatHashStrategyCompiler(new TypeOperators()), () -> {
             rehashCount.incrementAndGet();
             return true;
         });
         groupByHash.addPage(new Page(valuesBlock, hashBlock)).process();
 
         // assert we call update memory twice every time we rehash; the rehash count = log2(length / FILL_RATIO)
-        assertEquals(rehashCount.get(), 2 * VARCHAR_EXPECTED_REHASH);
+        assertThat(rehashCount.get()).isEqualTo(2 * VARCHAR_EXPECTED_REHASH);
     }
 
     @Test
@@ -326,14 +322,14 @@ public class TestGroupByHash
 
         // Create GroupByHash with tiny size
         AtomicInteger rehashCount = new AtomicInteger();
-        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, JOIN_COMPILER, () -> {
+        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, new FlatHashStrategyCompiler(new TypeOperators()), () -> {
             rehashCount.incrementAndGet();
             return true;
         });
         groupByHash.addPage(new Page(valuesBlock, hashBlock)).process();
 
         // assert we call update memory twice every time we rehash; the rehash count = log2(length / FILL_RATIO)
-        assertEquals(rehashCount.get(), 2 * BIGINT_EXPECTED_REHASH);
+        assertThat(rehashCount.get()).isEqualTo(2 * BIGINT_EXPECTED_REHASH);
     }
 
     @Test
@@ -361,53 +357,53 @@ public class TestGroupByHash
         int yields = 0;
 
         // test addPage
-        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, JOIN_COMPILER, updateMemory);
+        GroupByHash groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, new FlatHashStrategyCompiler(new TypeOperators()), updateMemory);
         boolean finish = false;
         Work<?> addPageWork = groupByHash.addPage(page);
         while (!finish) {
             finish = addPageWork.process();
             if (!finish) {
-                assertEquals(currentQuota.get(), allowedQuota.get());
+                assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                 // assert if we are blocked, we are going to be blocked again without changing allowedQuota
-                assertFalse(addPageWork.process());
-                assertEquals(currentQuota.get(), allowedQuota.get());
+                assertThat(addPageWork.process()).isFalse();
+                assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                 yields++;
                 allowedQuota.getAndAdd(6);
             }
         }
 
         // assert there is not anything missing
-        assertEquals(length, groupByHash.getGroupCount());
+        assertThat(length).isEqualTo(groupByHash.getGroupCount());
         // assert we yield for every 3 rehashes
         // currentQuota is essentially the count we have successfully rehashed multiplied by 2 (as updateMemory is called twice per rehash)
-        assertEquals(currentQuota.get(), 2 * expectedRehash);
-        assertEquals(currentQuota.get() / 3 / 2, yields);
+        assertThat(currentQuota.get()).isEqualTo(2 * expectedRehash);
+        assertThat(currentQuota.get() / 3 / 2).isEqualTo(yields);
 
         // test getGroupIds
         currentQuota.set(0);
         allowedQuota.set(6);
         yields = 0;
-        groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, JOIN_COMPILER, updateMemory);
+        groupByHash = createGroupByHash(ImmutableList.of(type), true, 1, false, new FlatHashStrategyCompiler(new TypeOperators()), updateMemory);
 
         finish = false;
         Work<int[]> getGroupIdsWork = groupByHash.getGroupIds(page);
         while (!finish) {
             finish = getGroupIdsWork.process();
             if (!finish) {
-                assertEquals(currentQuota.get(), allowedQuota.get());
+                assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                 // assert if we are blocked, we are going to be blocked again without changing allowedQuota
-                assertFalse(getGroupIdsWork.process());
-                assertEquals(currentQuota.get(), allowedQuota.get());
+                assertThat(getGroupIdsWork.process()).isFalse();
+                assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                 yields++;
                 allowedQuota.getAndAdd(6);
             }
         }
         // assert there is not anything missing
-        assertEquals(length, groupByHash.getGroupCount());
-        assertEquals(length, getGroupIdsWork.getResult().length);
+        assertThat(length).isEqualTo(groupByHash.getGroupCount());
+        assertThat(length).isEqualTo(getGroupIdsWork.getResult().length);
         // rehash count is the same as above
-        assertEquals(currentQuota.get(), 2 * expectedRehash);
-        assertEquals(currentQuota.get() / 3 / 2, yields);
+        assertThat(currentQuota.get()).isEqualTo(2 * expectedRehash);
+        assertThat(currentQuota.get() / 3 / 2).isEqualTo(yields);
     }
 
     @Test
@@ -440,22 +436,22 @@ public class TestGroupByHash
             while (!finish) {
                 finish = addPageWork.process();
                 if (!finish) {
-                    assertEquals(currentQuota.get(), allowedQuota.get());
+                    assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                     // assert if we are blocked, we are going to be blocked again without changing allowedQuota
-                    assertFalse(addPageWork.process());
-                    assertEquals(currentQuota.get(), allowedQuota.get());
+                    assertThat(addPageWork.process()).isFalse();
+                    assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                     yields++;
                     allowedQuota.getAndAdd(6);
                 }
             }
 
             // assert there is not anything missing
-            assertEquals(dictionaryLength, groupByHash.getGroupCount());
+            assertThat(dictionaryLength).isEqualTo(groupByHash.getGroupCount());
             // assert we yield for every 3 rehashes
             // currentQuota is essentially the count we have successfully rehashed multiplied by 2 (as updateMemory is called twice per rehash)
             // the rehash count is 10 = log(1_000 / 0.75)
-            assertEquals(currentQuota.get(), 2 * (groupByHashType == GroupByHashType.FLAT ? 4 : 13));
-            assertEquals(currentQuota.get() / 3 / 2, yields);
+            assertThat(currentQuota.get()).isEqualTo(2 * (groupByHashType == GroupByHashType.FLAT ? 4 : 13));
+            assertThat(currentQuota.get() / 3 / 2).isEqualTo(yields);
 
             // test getGroupIds
             currentQuota.set(0);
@@ -468,23 +464,23 @@ public class TestGroupByHash
             while (!finish) {
                 finish = getGroupIdsWork.process();
                 if (!finish) {
-                    assertEquals(currentQuota.get(), allowedQuota.get());
+                    assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                     // assert if we are blocked, we are going to be blocked again without changing allowedQuota
-                    assertFalse(getGroupIdsWork.process());
-                    assertEquals(currentQuota.get(), allowedQuota.get());
+                    assertThat(getGroupIdsWork.process()).isFalse();
+                    assertThat(currentQuota.get()).isEqualTo(allowedQuota.get());
                     yields++;
                     allowedQuota.getAndAdd(6);
                 }
             }
 
             // assert there is not anything missing
-            assertEquals(dictionaryLength, groupByHash.getGroupCount());
-            assertEquals(dictionaryLength, getGroupIdsWork.getResult().length);
+            assertThat(dictionaryLength).isEqualTo(groupByHash.getGroupCount());
+            assertThat(dictionaryLength).isEqualTo(getGroupIdsWork.getResult().length);
             // assert we yield for every 3 rehashes
             // currentQuota is essentially the count we have successfully rehashed multiplied by 2 (as updateMemory is called twice per rehash)
             // the rehash count is 10 = log2(1_000 / 0.75)
-            assertEquals(currentQuota.get(), 2 * (groupByHashType == GroupByHashType.FLAT ? 4 : 13));
-            assertEquals(currentQuota.get() / 3 / 2, yields);
+            assertThat(currentQuota.get()).isEqualTo(2 * (groupByHashType == GroupByHashType.FLAT ? 4 : 13));
+            assertThat(currentQuota.get() / 3 / 2).isEqualTo(yields);
         }
     }
 
@@ -496,7 +492,7 @@ public class TestGroupByHash
                 ImmutableList.of(BIGINT, BIGINT),
                 false,
                 100,
-                JOIN_COMPILER,
+                new FlatHashStrategyCompiler(new TypeOperators()),
                 NOOP);
         Block firstBlock = BlockAssertions.createLongDictionaryBlock(0, 1000, 10);
         Block secondBlock = BlockAssertions.createLongDictionaryBlock(0, 1000, 10);
@@ -524,7 +520,7 @@ public class TestGroupByHash
                 ImmutableList.of(BIGINT, BIGINT, BIGINT, BIGINT, BIGINT),
                 false,
                 100,
-                JOIN_COMPILER,
+                new FlatHashStrategyCompiler(new TypeOperators()),
                 NOOP);
 
         GroupByHash lowCardinalityGroupByHash = createGroupByHash(
@@ -532,7 +528,7 @@ public class TestGroupByHash
                 ImmutableList.of(BIGINT, BIGINT, BIGINT, BIGINT),
                 false,
                 100,
-                JOIN_COMPILER,
+                new FlatHashStrategyCompiler(new TypeOperators()),
                 NOOP);
         Block sameValueBlock = BlockAssertions.createLongRepeatBlock(0, 100);
         Block block1 = BlockAssertions.createLongDictionaryBlock(0, 100, 1);
@@ -565,7 +561,7 @@ public class TestGroupByHash
                 ImmutableList.of(BIGINT, BIGINT),
                 false,
                 100,
-                JOIN_COMPILER,
+                new FlatHashStrategyCompiler(new TypeOperators()),
                 NOOP);
 
         Block dictionary = new LongArrayBlock(2, Optional.empty(), new long[] {0, 1});
@@ -630,7 +626,7 @@ public class TestGroupByHash
 
     private static void assertGroupByHashWork(Page page, List<Type> types, Class<?> clazz)
     {
-        GroupByHash groupByHash = createGroupByHash(types, false, 100, true, JOIN_COMPILER, NOOP);
+        GroupByHash groupByHash = createGroupByHash(types, false, 100, true, new FlatHashStrategyCompiler(new TypeOperators()), NOOP);
         Work<int[]> work = groupByHash.getGroupIds(page);
         // Compare by name since classes are private
         assertThat(work).isInstanceOf(clazz);

@@ -18,6 +18,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 
@@ -27,7 +28,6 @@ import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,15 +61,12 @@ public final class JwkDecoder
             return Optional.empty();
         }
         String keyId = key.getKid().get();
-        switch (key.getKty()) {
-            case "RSA":
-                return tryDecodeRsaKey(keyId, key);
-            case "EC":
-                return tryDecodeEcKey(keyId, key);
-            default:
-                // ignore non unknown keys
-                return Optional.empty();
-        }
+        return switch (key.getKty()) {
+            case "RSA" -> tryDecodeRsaKey(keyId, key);
+            case "EC" -> tryDecodeEcKey(keyId, key);
+            // ignore non unknown keys
+            default -> Optional.empty();
+        };
     }
 
     public static Optional<JwkRsaPublicKey> tryDecodeRsaKey(String keyId, Key key)
@@ -249,15 +246,17 @@ public final class JwkDecoder
     {
         private final String kty;
         private final Optional<String> kid;
-        private final Map<String, Object> other = new HashMap<>();
+        private final Map<String, Object> other;
 
         @JsonCreator
         public Key(
                 @JsonProperty("kty") String kty,
-                @JsonProperty("kid") Optional<String> kid)
+                @JsonProperty("kid") Optional<String> kid,
+                @JsonAnySetter Map<String, Object> other)
         {
             this.kty = requireNonNull(kty, "kty is null");
             this.kid = requireNonNull(kid, "kid is null");
+            this.other = ImmutableMap.copyOf(other);
         }
 
         public String getKty()
@@ -277,12 +276,6 @@ public final class JwkDecoder
                 return Optional.of((String) value);
             }
             return Optional.empty();
-        }
-
-        @JsonAnySetter
-        public void set(String name, Object value)
-        {
-            other.put(name, value);
         }
     }
 }

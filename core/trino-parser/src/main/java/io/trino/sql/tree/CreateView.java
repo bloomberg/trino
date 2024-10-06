@@ -35,18 +35,21 @@ public class CreateView
     private final boolean replace;
     private final Optional<String> comment;
     private final Optional<Security> security;
+    private final List<Property> properties;
 
-    public CreateView(QualifiedName name, Query query, boolean replace, Optional<String> comment, Optional<Security> security)
+    @Deprecated
+    public CreateView(QualifiedName name, Query query, boolean replace, Optional<String> comment, Optional<Security> security, List<Property> properties)
     {
-        this(Optional.empty(), name, query, replace, comment, security);
+        super(Optional.empty());
+        this.name = requireNonNull(name, "name is null");
+        this.query = requireNonNull(query, "query is null");
+        this.replace = replace;
+        this.comment = requireNonNull(comment, "comment is null");
+        this.security = requireNonNull(security, "security is null");
+        this.properties = ImmutableList.copyOf(requireNonNull(properties, "properties is null"));
     }
 
-    public CreateView(NodeLocation location, QualifiedName name, Query query, boolean replace, Optional<String> comment, Optional<Security> security)
-    {
-        this(Optional.of(location), name, query, replace, comment, security);
-    }
-
-    private CreateView(Optional<NodeLocation> location, QualifiedName name, Query query, boolean replace, Optional<String> comment, Optional<Security> security)
+    public CreateView(NodeLocation location, QualifiedName name, Query query, boolean replace, Optional<String> comment, Optional<Security> security, List<Property> properties)
     {
         super(location);
         this.name = requireNonNull(name, "name is null");
@@ -54,6 +57,7 @@ public class CreateView
         this.replace = replace;
         this.comment = requireNonNull(comment, "comment is null");
         this.security = requireNonNull(security, "security is null");
+        this.properties = ImmutableList.copyOf(properties);
     }
 
     public QualifiedName getName()
@@ -81,6 +85,11 @@ public class CreateView
         return security;
     }
 
+    public List<Property> getProperties()
+    {
+        return properties;
+    }
+
     @Override
     public <R, C> R accept(AstVisitor<R, C> visitor, C context)
     {
@@ -90,13 +99,16 @@ public class CreateView
     @Override
     public List<Node> getChildren()
     {
-        return ImmutableList.of(query);
+        return ImmutableList.<Node>builder()
+                .add(query)
+                .addAll(properties)
+                .build();
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(name, query, replace, security);
+        return Objects.hash(name, query, replace, security, properties);
     }
 
     @Override
@@ -111,9 +123,10 @@ public class CreateView
         CreateView o = (CreateView) obj;
         return Objects.equals(name, o.name)
                 && Objects.equals(query, o.query)
-                && Objects.equals(replace, o.replace)
+                && replace == o.replace
                 && Objects.equals(comment, o.comment)
-                && Objects.equals(security, o.security);
+                && Objects.equals(security, o.security)
+                && Objects.equals(properties, o.properties);
     }
 
     @Override
@@ -125,6 +138,7 @@ public class CreateView
                 .add("replace", replace)
                 .add("comment", comment)
                 .add("security", security)
+                .add("properties", properties)
                 .toString();
     }
 }

@@ -19,7 +19,7 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.TestingColumnHandle;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
 import io.trino.sql.planner.plan.IndexJoinNode;
-import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.planner.plan.TableScanNode;
 import org.junit.jupiter.api.Test;
@@ -32,7 +32,7 @@ import static io.trino.sql.planner.SchedulingOrderVisitor.scheduleOrder;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.emptyMap;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestSchedulingOrderVisitor
 {
@@ -42,8 +42,8 @@ public class TestSchedulingOrderVisitor
         PlanBuilder planBuilder = new PlanBuilder(new PlanNodeIdAllocator(), PLANNER_CONTEXT, TEST_SESSION);
         TableScanNode a = planBuilder.tableScan(emptyList(), emptyMap());
         TableScanNode b = planBuilder.tableScan(emptyList(), emptyMap());
-        List<PlanNodeId> order = scheduleOrder(planBuilder.join(JoinNode.Type.INNER, a, b));
-        assertEquals(order, ImmutableList.of(b.getId(), a.getId()));
+        List<PlanNodeId> order = scheduleOrder(planBuilder.join(JoinType.INNER, a, b));
+        assertThat(order).isEqualTo(ImmutableList.of(b.getId(), a.getId()));
     }
 
     @Test
@@ -53,7 +53,7 @@ public class TestSchedulingOrderVisitor
         TableScanNode a = planBuilder.tableScan(emptyList(), emptyMap());
         TableScanNode b = planBuilder.tableScan(emptyList(), emptyMap());
         List<PlanNodeId> order = scheduleOrder(planBuilder.indexJoin(IndexJoinNode.Type.INNER, a, b));
-        assertEquals(order, ImmutableList.of(b.getId(), a.getId()));
+        assertThat(order).isEqualTo(ImmutableList.of(b.getId(), a.getId()));
     }
 
     @Test
@@ -72,6 +72,6 @@ public class TestSchedulingOrderVisitor
                 Optional.empty(),
                 a,
                 b));
-        assertEquals(order, ImmutableList.of(b.getId(), a.getId()));
+        assertThat(order).isEqualTo(ImmutableList.of(b.getId(), a.getId()));
     }
 }

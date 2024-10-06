@@ -30,6 +30,8 @@ import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_104;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_113;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_122;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_133;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS_143;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_91;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
@@ -50,12 +52,11 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.entry;
-import static org.testng.Assert.assertEquals;
 
 public class TestDeltaLakeColumnMappingMode
         extends BaseTestDeltaLakeS3Storage
 {
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_DATABRICKS_133, DELTA_LAKE_DATABRICKS_143, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS})
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testColumnMappingModeNone()
     {
@@ -140,6 +141,79 @@ public class TestDeltaLakeColumnMappingMode
     }
 
     @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingDataProvider")
+    public void testChangingColumnMappingModeViaCreateOrReplaceTableOnTrino(String mode)
+    {
+        String tableName = "test_cortas_column_mapping_" + randomNameSuffix();
+        onTrino().executeQuery("" +
+                "CREATE TABLE delta.default." + tableName +
+                "(x INT) " +
+                "WITH (" +
+                " location = 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'" +
+                ")");
+
+        assertTableReaderAndWriterVersion("default", tableName, "1", "2");
+
+        // Replace table with a different column mode
+        onTrino().executeQuery("" +
+                "CREATE OR REPLACE TABLE delta.default." + tableName +
+                "(x INT) " +
+                "WITH (" +
+                " location = 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'," +
+                " column_mapping_mode = '" + mode + "'" +
+                ")");
+
+        assertTableReaderAndWriterVersion("default", tableName, "2", "5");
+
+        // Revert back to `none` column mode
+        onTrino().executeQuery("" +
+                "CREATE OR REPLACE TABLE delta.default." + tableName +
+                "(x INT) " +
+                "WITH (" +
+                " location = 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'," +
+                " column_mapping_mode = 'none'" +
+                ")");
+
+        assertTableReaderAndWriterVersion("default", tableName, "2", "5");
+
+        onTrino().executeQuery("DROP TABLE delta.default." + tableName);
+    }
+
+    @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingDataProvider")
+    public void testChangingColumnMappingModeViaCreateOrReplaceTableOnDelta(String mode)
+    {
+        String tableName = "test_cortas_column_mapping_" + randomNameSuffix();
+        onDelta().executeQuery("" +
+                "CREATE TABLE default." + tableName +
+                "(x INT) " +
+                "USING delta " +
+                "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'");
+
+        assertTableReaderAndWriterVersion("default", tableName, "1", "2");
+
+        // Replace table with a different column mode
+        onDelta().executeQuery("" +
+                "CREATE OR REPLACE TABLE default." + tableName +
+                "(x INT) " +
+                "USING delta " +
+                "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'" +
+                "TBLPROPERTIES ('delta.columnMapping.mode'='" + mode + "')");
+
+        assertTableReaderAndWriterVersion("default", tableName, "2", "5");
+
+        // Revert back to `none` column mode
+        onDelta().executeQuery("" +
+                "CREATE OR REPLACE TABLE default." + tableName +
+                "(x INT) " +
+                "USING delta " +
+                "LOCATION 's3://" + bucketName + "/databricks-compatibility-test-" + tableName + "'" +
+                "TBLPROPERTIES ('delta.columnMapping.mode'='none')");
+
+        assertTableReaderAndWriterVersion("default", tableName, "2", "5");
+
+        onTrino().executeQuery("DROP TABLE delta.default." + tableName);
+    }
+
+    @Test(groups = {DELTA_LAKE_OSS, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingDataProvider")
     public void testDeltaColumnMappingModeReaderAndWriterVersion(String mode)
     {
         testColumnMappingModeReaderAndWriterVersion(tableName -> onDelta().executeQuery("" +
@@ -156,15 +230,12 @@ public class TestDeltaLakeColumnMappingMode
 
         createTable.accept(tableName);
 
-        assertThat(getTablePropertyOnDelta("default", tableName, "delta.minReaderVersion"))
-                .isEqualTo("2");
-        assertThat(getTablePropertyOnDelta("default", tableName, "delta.minWriterVersion"))
-                .isEqualTo("5");
+        assertTableReaderAndWriterVersion("default", tableName, "2", "5");
 
         onTrino().executeQuery("DROP TABLE delta.default." + tableName);
     }
 
-    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingDataProvider")
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_DATABRICKS_104, DELTA_LAKE_DATABRICKS_113, DELTA_LAKE_DATABRICKS_122, DELTA_LAKE_DATABRICKS_133, DELTA_LAKE_DATABRICKS_143, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, PROFILE_SPECIFIC_TESTS}, dataProvider = "columnMappingDataProvider")
     @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testTrinoColumnMappingMode(String mode)
     {
@@ -280,8 +351,8 @@ public class TestDeltaLakeColumnMappingMode
 
             // Verify column comments
             onTrino().executeQuery("COMMENT ON COLUMN delta.default." + tableName + ".mixed_case IS 'test column comment'");
-            assertEquals(getColumnCommentOnTrino("default", tableName, "mixed_case"), "test column comment");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "mixed_case"), "test column comment");
+            assertThat(getColumnCommentOnTrino("default", tableName, "mixed_case")).isEqualTo("test column comment");
+            assertThat(getColumnCommentOnDelta("default", tableName, "mixed_case")).isEqualTo("test column comment");
         }
         finally {
             dropDeltaTableWithRetry("default." + tableName);
@@ -324,11 +395,11 @@ public class TestDeltaLakeColumnMappingMode
                 " column_mapping_mode = 'name'" +
                 ")");
         try {
-            assertEquals(getTableCommentOnTrino("default", tableName), "test table comment");
-            assertEquals(getTableCommentOnDelta("default", tableName), "test table comment");
+            assertThat(getTableCommentOnTrino("default", tableName)).isEqualTo("test table comment");
+            assertThat(getTableCommentOnDelta("default", tableName)).isEqualTo("test table comment");
 
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test column comment");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test column comment");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test column comment");
+            assertThat(getColumnCommentOnDelta("default", tableName, "col")).isEqualTo("test column comment");
         }
         finally {
             onTrino().executeQuery("DROP TABLE delta.default." + tableName);
@@ -350,12 +421,12 @@ public class TestDeltaLakeColumnMappingMode
                 ")");
         try {
             onTrino().executeQuery("COMMENT ON TABLE delta.default." + tableName + " IS 'test comment by trino'");
-            assertEquals(getTableCommentOnTrino("default", tableName), "test comment by trino");
-            assertEquals(getTableCommentOnDelta("default", tableName), "test comment by trino");
+            assertThat(getTableCommentOnTrino("default", tableName)).isEqualTo("test comment by trino");
+            assertThat(getTableCommentOnDelta("default", tableName)).isEqualTo("test comment by trino");
 
             onDelta().executeQuery("COMMENT ON TABLE default." + tableName + " IS 'test comment by delta'");
-            assertEquals(getTableCommentOnTrino("default", tableName), "test comment by delta");
-            assertEquals(getTableCommentOnDelta("default", tableName), "test comment by delta");
+            assertThat(getTableCommentOnTrino("default", tableName)).isEqualTo("test comment by delta");
+            assertThat(getTableCommentOnDelta("default", tableName)).isEqualTo("test comment by delta");
         }
         finally {
             dropDeltaTableWithRetry("default." + tableName);
@@ -377,12 +448,12 @@ public class TestDeltaLakeColumnMappingMode
 
         try {
             onTrino().executeQuery("COMMENT ON COLUMN delta.default." + tableName + ".col IS 'test column comment by trino'");
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test column comment by trino");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test column comment by trino");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test column comment by trino");
+            assertThat(getColumnCommentOnDelta("default", tableName, "col")).isEqualTo("test column comment by trino");
 
             onDelta().executeQuery("ALTER TABLE default." + tableName + " ALTER COLUMN col COMMENT 'test column comment by delta'");
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test column comment by delta");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test column comment by delta");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test column comment by delta");
+            assertThat(getColumnCommentOnDelta("default", tableName, "col")).isEqualTo("test column comment by delta");
         }
         finally {
             dropDeltaTableWithRetry("default." + tableName);
@@ -1118,7 +1189,7 @@ public class TestDeltaLakeColumnMappingMode
             onTrino().executeQuery("ALTER TABLE delta.default." + tableName + " RENAME COLUMN upper_col TO new_col");
             assertThat(getColumnNamesOnDelta("default", tableName))
                     .containsExactly("new_col", "UPPER_PART");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "new_col"), "test comment");
+            assertThat(getColumnCommentOnDelta("default", tableName, "new_col")).isEqualTo("test comment");
             assertQueryFailure(() -> onTrino().executeQuery("INSERT INTO delta.default." + tableName + " (new_col) VALUES NULL"))
                     .hasMessageContaining("NULL value not allowed for NOT NULL column: new_col");
 
@@ -1137,6 +1208,14 @@ public class TestDeltaLakeColumnMappingMode
         finally {
             dropDeltaTableWithRetry(tableName);
         }
+    }
+
+    private void assertTableReaderAndWriterVersion(String schemaName, String tableName, String minReaderVersion, String minWriterVersion)
+    {
+        assertThat(getTablePropertyOnDelta(schemaName, tableName, "delta.minReaderVersion"))
+                .isEqualTo(minReaderVersion);
+        assertThat(getTablePropertyOnDelta(schemaName, tableName, "delta.minWriterVersion"))
+                .isEqualTo(minWriterVersion);
     }
 
     @DataProvider

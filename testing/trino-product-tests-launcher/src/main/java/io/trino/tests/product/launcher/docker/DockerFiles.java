@@ -39,7 +39,7 @@ import static java.util.UUID.randomUUID;
 public final class DockerFiles
         implements AutoCloseable
 {
-    public static final String ROOT_PATH = "docker/presto-product-tests/";
+    public static final String ROOT_PATH = "docker/trino-product-tests/";
 
     private static final Logger log = Logger.get(DockerFiles.class);
 
@@ -57,7 +57,11 @@ public final class DockerFiles
         }
         if (dockerFilesHostPath != null) {
             Failsafe.with(RetryPolicy.builder().withMaxAttempts(5).build())
-                    .run(() -> deleteRecursively(dockerFilesHostPath, ALLOW_INSECURE));
+                    .run(() -> {
+                        synchronized (this) {
+                            deleteRecursively(dockerFilesHostPath, ALLOW_INSECURE);
+                        }
+                    });
             dockerFilesHostPath = null;
         }
         closed = true;

@@ -5,38 +5,25 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>429-SNAPSHOT</version>
+        <version>461-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-bigquery</artifactId>
     <packaging>trino-plugin</packaging>
-    <description>Trino - BigQuery Connector</description>
+    <description>Trino - BigQuery connector</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
+        <air.test.jvm.additional-arguments>${air.test.jvm.additional-arguments.default} --add-opens=java.base/java.nio=ALL-UNNAMED</air.test.jvm.additional-arguments>
     </properties>
 
     <dependencyManagement>
         <dependencies>
             <dependency>
-                <groupId>com.google.cloud</groupId>
-                <artifactId>libraries-bom</artifactId>
-                <version>26.23.0</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-
-            <dependency>
                 <groupId>io.opencensus</groupId>
                 <artifactId>opencensus-api</artifactId>
                 <version>0.31.1</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.apache.commons</groupId>
-                <artifactId>commons-lang3</artifactId>
-                <version>3.11</version>
             </dependency>
 
             <dependency>
@@ -49,12 +36,6 @@
                 <groupId>org.conscrypt</groupId>
                 <artifactId>conscrypt-openjdk-uber</artifactId>
                 <version>2.5.2</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.threeten</groupId>
-                <artifactId>threetenbp</artifactId>
-                <version>1.6.8</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -113,6 +94,11 @@
         </dependency>
 
         <dependency>
+            <groupId>com.google.api.grpc</groupId>
+            <artifactId>proto-google-common-protos</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>com.google.auth</groupId>
             <artifactId>google-auth-library-credentials</artifactId>
         </dependency>
@@ -148,10 +134,6 @@
                 <exclusion>
                     <groupId>com.google.guava</groupId>
                     <artifactId>listenablefuture</artifactId>
-                </exclusion>
-                <exclusion>
-                    <groupId>com.google.re2j</groupId>
-                    <artifactId>re2j</artifactId>
                 </exclusion>
                 <exclusion>
                     <groupId>commons-logging</groupId>
@@ -257,6 +239,16 @@
         </dependency>
 
         <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-apache-httpclient-4.3</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-grpc-1.6</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>io.trino</groupId>
             <artifactId>trino-cache</artifactId>
         </dependency>
@@ -289,6 +281,13 @@
         <dependency>
             <groupId>org.apache.arrow</groupId>
             <artifactId>arrow-vector</artifactId>
+            <exclusions>
+                <!-- conflicts with version from google-cloud-bigquery -->
+                <exclusion>
+                    <groupId>com.google.flatbuffers</groupId>
+                    <artifactId>flatbuffers-java</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -311,6 +310,12 @@
         <dependency>
             <groupId>org.apache.httpcomponents</groupId>
             <artifactId>httpcore</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20240303</version>
         </dependency>
 
         <dependency>
@@ -355,6 +360,12 @@
         </dependency>
 
         <dependency>
+            <groupId>com.google.errorprone</groupId>
+            <artifactId>error_prone_annotations</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>log-manager</artifactId>
             <scope>runtime</scope>
@@ -362,7 +373,19 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
+            <artifactId>junit-extensions</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
             <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-trace</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -376,12 +399,6 @@
             <groupId>io.trino</groupId>
             <artifactId>trino-exchange-filesystem</artifactId>
             <scope>test</scope>
-            <exclusions>
-                <exclusion>
-                    <groupId>com.google.re2j</groupId>
-                    <artifactId>re2j</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -471,15 +488,8 @@
         </dependency>
 
         <dependency>
-            <groupId>org.mockito</groupId>
-            <artifactId>mockito-core</artifactId>
-            <version>3.2.4</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.testng</groupId>
-            <artifactId>testng</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -487,33 +497,14 @@
     <build>
         <plugins>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <dependencies>
-                    <!-- allow both JUnit and TestNG -->
-                    <dependency>
-                        <groupId>org.apache.maven.surefire</groupId>
-                        <artifactId>surefire-junit-platform</artifactId>
-                        <version>${dep.plugin.surefire.version}</version>
-                    </dependency>
-                    <dependency>
-                        <groupId>org.apache.maven.surefire</groupId>
-                        <artifactId>surefire-testng</artifactId>
-                        <version>${dep.plugin.surefire.version}</version>
-                    </dependency>
-                    <dependency>
-                        <groupId>org.junit.jupiter</groupId>
-                        <artifactId>junit-jupiter-engine</artifactId>
-                        <version>${dep.junit.version}</version>
-                    </dependency>
-                </dependencies>
-            </plugin>
-            <plugin>
                 <groupId>org.basepom.maven</groupId>
                 <artifactId>duplicate-finder-maven-plugin</artifactId>
                 <configuration>
                     <ignoredResourcePatterns>
                         <ignoredResourcePattern>arrow-git.properties</ignoredResourcePattern>
+                        <ignoredResourcePattern>LICENSE-EDL-1.0.txt</ignoredResourcePattern>
+                        <ignoredResourcePattern>LICENSE-EPL-1.0.txt</ignoredResourcePattern>
+                        <ignoredResourcePattern>about.html</ignoredResourcePattern>
                     </ignoredResourcePatterns>
                 </configuration>
             </plugin>
@@ -535,16 +526,18 @@
                             <excludes>
                                 <!-- If you are adding entry here also add an entry to cloud-tests or cloud-tests-case-insensitive-mapping profile below -->
                                 <exclude>**/TestBigQueryAvroConnectorTest.java</exclude>
-                                <exclude>**/TestBigQueryArrowConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestBigQueryWithDifferentProjectIdConnectorSmokeTest.java</exclude>
                                 <exclude>**/TestBigQueryMetadataCaching.java</exclude>
                                 <exclude>**/TestBigQueryAvroTypeMapping.java</exclude>
                                 <exclude>**/TestBigQueryArrowTypeMapping.java</exclude>
+                                <exclude>**/TestBigQueryArrowSerialization.java</exclude>
                                 <exclude>**/TestBigQueryMetadata.java</exclude>
+                                <exclude>**/TestBigQuerySplitManager.java</exclude>
                                 <exclude>**/TestBigQueryInstanceCleaner.java</exclude>
                                 <exclude>**/TestBigQueryCaseInsensitiveMapping.java</exclude>
                                 <exclude>**/TestBigQuery*FailureRecoveryTest.java</exclude>
-                                <exclude>**/TestBigQueryWithProxyConnectorSmokeTest.java</exclude>
+                                <exclude>**/TestBigQueryWithProxyTest.java</exclude>
+                                <exclude>**/TestBigQueryParentProjectId.java</exclude>
                             </excludes>
                         </configuration>
                     </plugin>
@@ -553,7 +546,7 @@
         </profile>
 
         <profile>
-            <id>cloud-tests</id>
+            <id>cloud-tests-1</id>
             <activation>
                 <activeByDefault>false</activeByDefault>
             </activation>
@@ -565,13 +558,7 @@
                         <configuration>
                             <includes>
                                 <include>**/TestBigQueryAvroConnectorTest.java</include>
-                                <include>**/TestBigQueryWithDifferentProjectIdConnectorSmokeTest.java</include>
-                                <include>**/TestBigQueryMetadataCaching.java</include>
-                                <include>**/TestBigQueryAvroTypeMapping.java</include>
-                                <include>**/TestBigQueryMetadata.java</include>
-                                <include>**/TestBigQueryInstanceCleaner.java</include>
-                                <include>**/TestBigQuery*FailureRecoveryTest.java</include>
-                                <include>**/TestBigQueryWithProxyConnectorSmokeTest.java</include>
+                                <include>**/TestBigQueryParentProjectId.java</include>
                             </includes>
                         </configuration>
                     </plugin>
@@ -602,15 +589,11 @@
             </build>
         </profile>
 
-        <!-- Separate profile for Arrow related tests since they require extra JVM args -->
         <profile>
-            <id>cloud-tests-arrow</id>
+            <id>cloud-tests-2</id>
             <activation>
                 <activeByDefault>false</activeByDefault>
             </activation>
-            <properties>
-                <air.test.jvm.additional-arguments>--add-opens=java.base/java.nio=ALL-UNNAMED</air.test.jvm.additional-arguments>
-            </properties>
             <build>
                 <plugins>
                     <plugin>
@@ -618,8 +601,16 @@
                         <artifactId>maven-surefire-plugin</artifactId>
                         <configuration>
                             <includes>
-                                <include>**/TestBigQueryArrowConnectorSmokeTest.java</include>
+                                <include>**/TestBigQueryWithDifferentProjectIdConnectorSmokeTest.java</include>
+                                <include>**/TestBigQueryWithProxyTest.java</include>
+                                <include>**/TestBigQueryArrowSerialization.java</include>
                                 <include>**/TestBigQueryArrowTypeMapping.java</include>
+                                <include>**/TestBigQueryAvroTypeMapping.java</include>
+                                <include>**/TestBigQueryMetadataCaching.java</include>
+                                <include>**/TestBigQueryMetadata.java</include>
+                                <include>**/TestBigQuerySplitManager.java</include>
+                                <include>**/TestBigQuery*FailureRecoveryTest.java</include>
+                                <include>**/TestBigQueryInstanceCleaner.java</include>
                             </includes>
                         </configuration>
                     </plugin>

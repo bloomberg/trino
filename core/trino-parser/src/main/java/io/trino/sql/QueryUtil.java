@@ -25,7 +25,6 @@ import io.trino.sql.tree.GroupBy;
 import io.trino.sql.tree.Identifier;
 import io.trino.sql.tree.LogicalExpression;
 import io.trino.sql.tree.Node;
-import io.trino.sql.tree.NullLiteral;
 import io.trino.sql.tree.Offset;
 import io.trino.sql.tree.OrderBy;
 import io.trino.sql.tree.QualifiedName;
@@ -34,7 +33,6 @@ import io.trino.sql.tree.QueryBody;
 import io.trino.sql.tree.QuerySpecification;
 import io.trino.sql.tree.Relation;
 import io.trino.sql.tree.Row;
-import io.trino.sql.tree.SearchedCaseExpression;
 import io.trino.sql.tree.Select;
 import io.trino.sql.tree.SelectItem;
 import io.trino.sql.tree.SingleColumn;
@@ -43,7 +41,6 @@ import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.Table;
 import io.trino.sql.tree.TableSubquery;
 import io.trino.sql.tree.Values;
-import io.trino.sql.tree.WhenClause;
 import io.trino.sql.tree.WindowDefinition;
 
 import java.util.List;
@@ -130,11 +127,6 @@ public final class QueryUtil
     public static Expression equal(Expression left, Expression right)
     {
         return new ComparisonExpression(ComparisonExpression.Operator.EQUAL, left, right);
-    }
-
-    public static Expression caseWhen(Expression operand, Expression result)
-    {
-        return new SearchedCaseExpression(ImmutableList.of(new WhenClause(operand, result)), Optional.empty());
     }
 
     public static Expression functionCall(String name, Expression... arguments)
@@ -254,7 +246,7 @@ public final class QueryUtil
 
     public static Query singleValueQuery(String columnName, String value)
     {
-        Relation values = values(row(new StringLiteral((value))));
+        Relation values = values(row(new StringLiteral(value)));
         return simpleQuery(
                 selectList(new AllColumns()),
                 aliased(values, "t", ImmutableList.of(columnName)));
@@ -268,28 +260,10 @@ public final class QueryUtil
                 aliased(values, "t", ImmutableList.of(columnName)));
     }
 
-    // TODO pass column types
-    public static Query emptyQuery(List<String> columns)
-    {
-        Select select = selectList(columns.stream()
-                .map(column -> new SingleColumn(new NullLiteral(), QueryUtil.identifier(column)))
-                .toArray(SelectItem[]::new));
-        Optional<Expression> where = Optional.of(FALSE_LITERAL);
-        return query(new QuerySpecification(
-                select,
-                Optional.empty(),
-                where,
-                Optional.empty(),
-                Optional.empty(),
-                ImmutableList.of(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty()));
-    }
-
     public static Query query(QueryBody body)
     {
         return new Query(
+                ImmutableList.of(),
                 Optional.empty(),
                 body,
                 Optional.empty(),

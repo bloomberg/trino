@@ -20,8 +20,7 @@ import io.trino.testing.QueryRunner;
 import io.trino.testing.sql.TestTable;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
@@ -31,6 +30,7 @@ import static com.google.common.collect.Streams.stream;
 import static io.trino.testing.sql.TestTable.fromColumns;
 import static io.trino.tpch.TpchTable.ORDERS;
 import static java.lang.String.format;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestSqlServerTableStatistics
         extends BaseJdbcTableStatisticsTest
@@ -42,11 +42,10 @@ public class TestSqlServerTableStatistics
             throws Exception
     {
         sqlServer = closeAfterClass(new TestingSqlServer());
-        return SqlServerQueryRunner.createSqlServerQueryRunner(
-                sqlServer,
-                Map.of(),
-                Map.of("case-insensitive-name-matching", "true"),
-                List.of(ORDERS));
+        return SqlServerQueryRunner.builder(sqlServer)
+                .addConnectorProperties(Map.of("case-insensitive-name-matching", "true"))
+                .setInitialTables(List.of(ORDERS))
+                .build();
     }
 
     @Override
@@ -211,7 +210,7 @@ public class TestSqlServerTableStatistics
     @Test
     public void testPartitionedTable()
     {
-        throw new SkipException("Not implemented"); // TODO
+        abort("Not implemented"); // TODO
     }
 
     @Override
@@ -236,10 +235,11 @@ public class TestSqlServerTableStatistics
         }
     }
 
+    @Test
     @Override
     public void testMaterializedView()
     {
-        throw new SkipException("see testIndexedView");
+        abort("see testIndexedView");
     }
 
     @Test
@@ -275,8 +275,7 @@ public class TestSqlServerTableStatistics
     }
 
     @Override
-    @Test(dataProvider = "testCaseColumnNamesDataProvider")
-    public void testCaseColumnNames(String tableName)
+    protected void testCaseColumnNames(String tableName)
     {
         sqlServer.execute("" +
                 "SELECT " +

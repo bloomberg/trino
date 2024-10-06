@@ -16,9 +16,9 @@ package io.trino.connector;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
-import io.trino.spi.HostAddress;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
@@ -611,7 +611,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return input -> {
                     if (input == null) {
@@ -660,7 +660,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new IdentityPassThroughFunctionProcessor();
             }
@@ -751,7 +751,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new RepeatFunctionProcessor(((RepeatFunctionHandle) handle).getCount());
             }
@@ -849,7 +849,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new EmptyOutputProcessor();
             }
@@ -907,7 +907,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new EmptyOutputWithPassThroughProcessor();
             }
@@ -983,7 +983,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 BlockBuilder resultBuilder = BOOLEAN.createBlockBuilder(null, 1);
                 BOOLEAN.writeBoolean(resultBuilder, true);
@@ -1044,7 +1044,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new PassThroughInputProcessor();
             }
@@ -1143,7 +1143,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 return new TestInputProcessor();
             }
@@ -1207,7 +1207,7 @@ public class TestingTableFunctions
                 implements TableFunctionProcessorProvider
         {
             @Override
-            public TableFunctionDataProcessor getDataProcessor(ConnectorTableFunctionHandle handle)
+            public TableFunctionDataProcessor getDataProcessor(ConnectorSession session, ConnectorTableFunctionHandle handle)
             {
                 BlockBuilder builder = BOOLEAN.createBlockBuilder(null, 1);
                 BOOLEAN.writeBoolean(builder, true);
@@ -1370,21 +1370,9 @@ public class TestingTableFunctions
             }
 
             @Override
-            public boolean isRemotelyAccessible()
+            public Map<String, String> getSplitInfo()
             {
-                return true;
-            }
-
-            @Override
-            public List<HostAddress> getAddresses()
-            {
-                return ImmutableList.of();
-            }
-
-            @Override
-            public Object getInfo()
-            {
-                return count;
+                return ImmutableMap.of("count", String.valueOf(count));
             }
 
             @Override

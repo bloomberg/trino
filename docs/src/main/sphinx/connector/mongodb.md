@@ -59,6 +59,8 @@ The following configuration properties are available:
 | `mongodb.write-concern`                  | The write concern                                                          |
 | `mongodb.required-replica-set`           | The required replica set name                                              |
 | `mongodb.cursor-batch-size`              | The number of elements to return in a batch                                |
+| `mongodb.allow-local-scheduling`         | Assign MongoDB splits to a specific worker                                 |
+| `mongodb.dynamic-filtering.wait-timeout` | Duration to wait for completion of dynamic filters during split generation |
 
 ### `mongodb.connection-url`
 
@@ -203,8 +205,22 @@ Do not use a batch size of `1`.
 
 This property is optional; the default is `0`.
 
-(table-definition-label)=
+### `mongodb.allow-local-scheduling`
 
+Set the value of this property to `true` if Trino and MongoDB share the same
+cluster, and specific MongoDB splits should be processed on the same worker and
+MongoDB node. Note that a shared deployment is not recommended, and enabling
+this property can lead to resource contention.
+
+This property is optional, and defaults to false.
+
+### `mongodb.dynamic-filtering.wait-timeout`
+
+Duration to wait for completion of dynamic filters during split generation.
+
+This property is optional; the default is `5s`.
+
+(table-definition-label)=
 ## Table definition
 
 MongoDB maintains table definitions on the special collection where `mongodb.schema-collection` configuration value specifies.
@@ -315,23 +331,23 @@ SELECT CAST(_id AS VARCHAR), * FROM orders WHERE _id = ObjectId('55b151633864d64
 The first four bytes of each [ObjectId](https://docs.mongodb.com/manual/reference/method/ObjectId) represent
 an embedded timestamp of its creation time. Trino provides a couple of functions to take advantage of this MongoDB feature.
 
-```{eval-rst}
-.. function:: objectid_timestamp(ObjectId) -> timestamp
+:::{function} objectid_timestamp(ObjectId) -> timestamp
+Extracts the TIMESTAMP WITH TIME ZONE from a given ObjectId:
 
-    Extracts the TIMESTAMP WITH TIME ZONE from a given ObjectId::
-
-        SELECT objectid_timestamp(ObjectId('507f191e810c19729de860ea'));
-        -- 2012-10-17 20:46:22.000 UTC
+```sql
+SELECT objectid_timestamp(ObjectId('507f191e810c19729de860ea'));
+-- 2012-10-17 20:46:22.000 UTC
 ```
+:::
 
-```{eval-rst}
-.. function:: timestamp_objectid(timestamp) -> ObjectId
+:::{function} timestamp_objectid(timestamp) -> ObjectId
+Creates an ObjectId from a TIMESTAMP WITH TIME ZONE:
 
-    Creates an ObjectId from a TIMESTAMP WITH TIME ZONE::
-
-        SELECT timestamp_objectid(TIMESTAMP '2021-08-07 17:51:36 +00:00');
-        -- 61 0e c8 28 00 00 00 00 00 00 00 00
+```sql
+SELECT timestamp_objectid(TIMESTAMP '2021-08-07 17:51:36 +00:00');
+-- 61 0e c8 28 00 00 00 00 00 00 00 00
 ```
+:::
 
 In MongoDB, you can filter all the documents created after `2021-08-07 17:51:36`
 with a query like this:
@@ -348,8 +364,13 @@ FROM collection
 WHERE _id > timestamp_objectid(TIMESTAMP '2021-08-07 17:51:36 +00:00');
 ```
 
-(mongodb-type-mapping)=
+(mongodb-fte-support)=
+### Fault-tolerant execution support
 
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
+
+(mongodb-type-mapping)=
 ## Type mapping
 
 Because Trino and MongoDB each support types that the other does not, this
@@ -363,51 +384,50 @@ each direction.
 The connector maps MongoDB types to the corresponding Trino types following
 this table:
 
-```{eval-rst}
-.. list-table:: MongoDB to Trino type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
+:::{list-table} MongoDB to Trino type mapping
+:widths: 30, 20, 50
+:header-rows: 1
 
-  * - MongoDB type
-    - Trino type
-    - Notes
-  * - ``Boolean``
-    - ``BOOLEAN``
-    -
-  * - ``Int32``
-    - ``BIGINT``
-    -
-  * - ``Int64``
-    - ``BIGINT``
-    -
-  * - ``Double``
-    - ``DOUBLE``
-    -
-  * - ``Decimal128``
-    - ``DECIMAL(p, s)``
-    -
-  * - ``Date``
-    - ``TIMESTAMP(3)``
-    -
-  * - ``String``
-    - ``VARCHAR``
-    -
-  * - ``Binary``
-    - ``VARBINARY``
-    -
-  * - ``ObjectId``
-    - ``ObjectId``
-    -
-  * - ``Object``
-    - ``ROW``
-    -
-  * - ``Array``
-    - ``ARRAY``
-    -   Map to ``ROW`` if the element type is not unique.
-  * - ``DBRef``
-    - ``ROW``
-    -
-```
+* - MongoDB type
+  - Trino type
+  - Notes
+* - `Boolean`
+  - `BOOLEAN`
+  -
+* - `Int32`
+  - `BIGINT`
+  -
+* - `Int64`
+  - `BIGINT`
+  -
+* - `Double`
+  - `DOUBLE`
+  -
+* - `Decimal128`
+  - `DECIMAL(p, s)`
+  -
+* - `Date`
+  - `TIMESTAMP(3)`
+  -
+* - `String`
+  - `VARCHAR`
+  -
+* - `Binary`
+  - `VARBINARY`
+  -
+* - `ObjectId`
+  - `ObjectId`
+  -
+* - `Object`
+  - `ROW`
+  -
+* - `Array`
+  - `ARRAY`
+  -  Map to `ROW` if the element type is not unique.
+* - `DBRef`
+  - `ROW`
+  -
+:::
 
 No other types are supported.
 
@@ -416,39 +436,37 @@ No other types are supported.
 The connector maps Trino types to the corresponding MongoDB types following
 this table:
 
-```{eval-rst}
-.. list-table:: Trino to MongoDB type mapping
-  :widths: 30, 20
-  :header-rows: 1
+:::{list-table} Trino to MongoDB type mapping
+:widths: 30, 20
+:header-rows: 1
 
-  * - Trino type
-    - MongoDB type
-  * - ``BOOLEAN``
-    - ``Boolean``
-  * - ``BIGINT``
-    - ``Int64``
-  * - ``DOUBLE``
-    - ``Double``
-  * - ``DECIMAL(p, s)``
-    - ``Decimal128``
-  * - ``TIMESTAMP(3)``
-    - ``Date``
-  * - ``VARCHAR``
-    - ``String``
-  * - ``VARBINARY``
-    - ``Binary``
-  * - ``ObjectId``
-    - ``ObjectId``
-  * - ``ROW``
-    - ``Object``
-  * - ``ARRAY``
-    - ``Array``
-```
+* - Trino type
+  - MongoDB type
+* - `BOOLEAN`
+  - `Boolean`
+* - `BIGINT`
+  - `Int64`
+* - `DOUBLE`
+  - `Double`
+* - `DECIMAL(p, s)`
+  - `Decimal128`
+* - `TIMESTAMP(3)`
+  - `Date`
+* - `VARCHAR`
+  - `String`
+* - `VARBINARY`
+  - `Binary`
+* - `ObjectId`
+  - `ObjectId`
+* - `ROW`
+  - `Object`
+* - `ARRAY`
+  - `Array`
+:::
 
 No other types are supported.
 
 (mongodb-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -472,21 +490,13 @@ The connector supports `ALTER TABLE RENAME TO`, `ALTER TABLE ADD COLUMN`
 and `ALTER TABLE DROP COLUMN` operations.
 Other uses of `ALTER TABLE` are not supported.
 
-(mongodb-fte-support)=
-
-## Fault-tolerant execution support
-
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
-
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access MongoDB.
 
 (mongodb-query-function)=
-
-### `query(database, collection, filter) -> table`
+#### `query(database, collection, filter) -> table`
 
 The `query` function allows you to query the underlying MongoDB directly. It
 requires syntax native to MongoDB, because the full query is pushed down and

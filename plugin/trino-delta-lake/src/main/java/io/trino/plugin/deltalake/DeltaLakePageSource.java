@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Throwables.throwIfInstanceOf;
@@ -95,34 +96,34 @@ public class DeltaLakePageSource
         Block partitionsBlock = null;
 
         for (DeltaLakeColumnHandle column : columns) {
-            if (column.isBaseColumn() && partitionKeys.containsKey(column.getBasePhysicalColumnName())) {
-                Type type = column.getBaseType();
-                Object prefilledValue = deserializePartitionValue(column, partitionKeys.get(column.getBasePhysicalColumnName()));
+            if (column.isBaseColumn() && partitionKeys.containsKey(column.basePhysicalColumnName())) {
+                Type type = column.baseType();
+                Object prefilledValue = deserializePartitionValue(column, partitionKeys.get(column.basePhysicalColumnName()));
                 prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(type, prefilledValue);
                 delegateIndexes[outputIndex] = -1;
             }
-            else if (column.getBaseColumnName().equals(PATH_COLUMN_NAME)) {
+            else if (column.baseColumnName().equals(PATH_COLUMN_NAME)) {
                 prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(PATH_TYPE, utf8Slice(path));
                 delegateIndexes[outputIndex] = -1;
             }
-            else if (column.getBaseColumnName().equals(FILE_SIZE_COLUMN_NAME)) {
+            else if (column.baseColumnName().equals(FILE_SIZE_COLUMN_NAME)) {
                 prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(FILE_SIZE_TYPE, fileSize);
                 delegateIndexes[outputIndex] = -1;
             }
-            else if (column.getBaseColumnName().equals(FILE_MODIFIED_TIME_COLUMN_NAME)) {
+            else if (column.baseColumnName().equals(FILE_MODIFIED_TIME_COLUMN_NAME)) {
                 long packedTimestamp = packDateTimeWithZone(fileModifiedTime, UTC_KEY);
                 prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(FILE_MODIFIED_TIME_TYPE, packedTimestamp);
                 delegateIndexes[outputIndex] = -1;
             }
-            else if (column.getBaseColumnName().equals(ROW_ID_COLUMN_NAME)) {
+            else if (column.baseColumnName().equals(ROW_ID_COLUMN_NAME)) {
                 rowIdIndex = outputIndex;
                 pathBlock = Utils.nativeValueToBlock(VARCHAR, utf8Slice(path));
                 partitionsBlock = Utils.nativeValueToBlock(VARCHAR, wrappedBuffer(PARTITIONS_CODEC.toJsonBytes(partitionValues.orElseThrow(() -> new IllegalStateException("partitionValues not provided")))));
                 delegateIndexes[outputIndex] = delegateIndex;
                 delegateIndex++;
             }
-            else if (missingColumnNames.contains(column.getBaseColumnName())) {
-                prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(column.getBaseType(), null);
+            else if (missingColumnNames.contains(column.baseColumnName())) {
+                prefilledBlocks[outputIndex] = Utils.nativeValueToBlock(column.baseType(), null);
                 delegateIndexes[outputIndex] = -1;
             }
             else {
@@ -160,6 +161,12 @@ public class DeltaLakePageSource
     public boolean isFinished()
     {
         return delegate.isFinished();
+    }
+
+    @Override
+    public CompletableFuture<?> isBlocked()
+    {
+        return delegate.isBlocked();
     }
 
     @Override
@@ -208,7 +215,7 @@ public class DeltaLakePageSource
                 rowIndexBlock,
                 RunLengthEncodedBlock.create(partitionsBlock, positions),
         };
-        return RowBlock.fromFieldBlocks(positions, Optional.empty(), fields);
+        return RowBlock.fromFieldBlocks(positions, fields);
     }
 
     @Override

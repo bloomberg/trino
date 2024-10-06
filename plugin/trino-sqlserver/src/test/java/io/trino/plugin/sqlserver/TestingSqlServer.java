@@ -64,7 +64,7 @@ public final class TestingSqlServer
             .build();
 
     private static final DockerImageName IMAGE_NAME = DockerImageName.parse("mcr.microsoft.com/mssql/server");
-    public static final String DEFAULT_VERSION = "2017-CU13";
+    public static final String DEFAULT_VERSION = "2017-latest";
     public static final String LATEST_VERSION = "2019-CU13-ubuntu-20.04";
 
     private final MSSQLServerContainer<?> container;
@@ -141,16 +141,23 @@ public final class TestingSqlServer
         // to be disabled for tests.
         container.withUrlParam("encrypt", "false");
 
-        Closeable cleanup = startOrReuse(container);
         try {
-            setUpDatabase(sqlExecutorForContainer(container), databaseName, databaseSetUp);
-        }
-        catch (Exception e) {
-            closeAllSuppress(e, cleanup);
-            throw e;
-        }
+            Closeable cleanup = startOrReuse(container);
+            try {
+                setUpDatabase(sqlExecutorForContainer(container), databaseName, databaseSetUp);
+            }
+            catch (Exception e) {
+                closeAllSuppress(e, cleanup);
+                throw e;
+            }
 
-        return new InitializedState(container, databaseName, cleanup);
+            return new InitializedState(container, databaseName, cleanup);
+        }
+        catch (Throwable e) {
+            try (container) {
+                throw e;
+            }
+        }
     }
 
     private static void setUpDatabase(SqlExecutor executor, String databaseName, BiConsumer<SqlExecutor, String> databaseSetUp)

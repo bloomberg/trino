@@ -16,37 +16,40 @@ package io.trino.plugin.deltalake;
 import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Maps;
+import com.google.common.collect.Sets;
 import com.google.common.io.Resources;
 import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.execution.QueryInfo;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.Table;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.ColumnMappingMode;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.HiveCompressionCodec;
+import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.plugin.tpch.TpchPlugin;
+import io.trino.spi.connector.ColumnMetadata;
+import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.TableDeleteNode;
 import io.trino.sql.planner.plan.TableFinishNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.testing.BaseConnectorTest;
-import io.trino.testing.DataProviders;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.MaterializedRow;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.containers.Minio;
 import io.trino.testing.minio.MinioClient;
 import io.trino.testing.sql.TestTable;
+import io.trino.testing.sql.TestView;
 import io.trino.testing.sql.TrinoSqlExecutor;
 import org.intellij.lang.annotations.Language;
-import org.testng.SkipException;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
-import java.nio.file.Path;
 import java.time.ZonedDateTime;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,15 +65,20 @@ import static com.google.common.collect.Sets.union;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.deltalake.DeltaLakeCdfPageSink.CHANGE_DATA_FOLDER_NAME;
 import static io.trino.plugin.deltalake.DeltaLakeMetadata.CHANGE_DATA_FEED_COLUMN_NAMES;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_AS_OPERATION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_OR_REPLACE_TABLE_OPERATION;
+import static io.trino.plugin.deltalake.DeltaLakeMetadata.CREATE_TABLE_OPERATION;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
+import static io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.getColumnMetadata;
 import static io.trino.plugin.deltalake.transactionlog.TransactionLogUtil.TRANSACTION_LOG_DIRECTORY;
-import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
+import static io.trino.plugin.hive.TableType.MANAGED_TABLE;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.buildInitialPrivilegeSet;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
+import static io.trino.spi.type.IntegerType.INTEGER;
+import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
-import static io.trino.testing.DataProviders.cartesianProduct;
-import static io.trino.testing.DataProviders.toDataProvider;
-import static io.trino.testing.DataProviders.trueFalse;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.copyTpchTables;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.EXECUTE_FUNCTION;
@@ -79,16 +87,18 @@ import static io.trino.testing.TestingAccessControlManager.privilege;
 import static io.trino.testing.TestingConnectorBehavior.SUPPORTS_CREATE_SCHEMA;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static io.trino.testing.containers.Minio.MINIO_ACCESS_KEY;
+import static io.trino.testing.containers.Minio.MINIO_REGION;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
+import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Map.entry;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestDeltaLakeConnectorTest
         extends BaseConnectorTest
@@ -108,13 +118,11 @@ public class TestDeltaLakeConnectorTest
         minio.createBucket(bucketName);
         minioClient = closeAfterClass(minio.createMinioClient());
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
+        QueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
                         .setCatalog(DELTA_CATALOG)
                         .setSchema(SCHEMA)
                         .build())
                 .build();
-        Path metastoreDirectory = queryRunner.getCoordinator().getBaseDataDir().resolve("file-metastore");
-        metastore = createTestingFileHiveMetastore(metastoreDirectory.toFile());
         try {
             queryRunner.installPlugin(new TpchPlugin());
             queryRunner.createCatalog("tpch", "tpch");
@@ -122,19 +130,30 @@ public class TestDeltaLakeConnectorTest
             queryRunner.installPlugin(new DeltaLakePlugin());
             queryRunner.createCatalog(DELTA_CATALOG, DeltaLakeConnectorFactory.CONNECTOR_NAME, ImmutableMap.<String, String>builder()
                     .put("hive.metastore", "file")
-                    .put("hive.metastore.catalog.dir", metastoreDirectory.toString())
+                    .put("hive.metastore.catalog.dir", queryRunner.getCoordinator().getBaseDataDir().resolve("file-metastore").toString())
                     .put("hive.metastore.disable-location-checks", "true")
-                    .put("hive.s3.aws-access-key", MINIO_ACCESS_KEY)
-                    .put("hive.s3.aws-secret-key", MINIO_SECRET_KEY)
-                    .put("hive.s3.endpoint", minio.getMinioAddress())
-                    .put("hive.s3.path-style-access", "true")
+                    // required by the file metastore
+                    .put("fs.hadoop.enabled", "true")
+                    .put("fs.native-s3.enabled", "true")
+                    .put("s3.aws-access-key", MINIO_ACCESS_KEY)
+                    .put("s3.aws-secret-key", MINIO_SECRET_KEY)
+                    .put("s3.region", MINIO_REGION)
+                    .put("s3.endpoint", minio.getMinioAddress())
+                    .put("s3.path-style-access", "true")
+                    .put("s3.streaming.part-size", "5MB") // minimize memory usage
+                    .put("delta.metastore.store-table-metadata", "true")
                     .put("delta.enable-non-concurrent-writes", "true")
                     .put("delta.register-table-procedure.enabled", "true")
                     .buildOrThrow());
+            metastore = TestingDeltaLakeUtils.getConnectorService(queryRunner, HiveMetastoreFactory.class)
+                    .createMetastore(Optional.empty());
 
             queryRunner.execute("CREATE SCHEMA " + SCHEMA + " WITH (location = 's3://" + bucketName + "/" + SCHEMA + "')");
             queryRunner.execute("CREATE SCHEMA schemawithoutunderscore WITH (location = 's3://" + bucketName + "/schemawithoutunderscore')");
-            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, queryRunner.getDefaultSession(), REQUIRED_TPCH_TABLES);
+            copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, REQUIRED_TPCH_TABLES);
+
+            metastore = TestingDeltaLakeUtils.getConnectorService(queryRunner, HiveMetastoreFactory.class)
+                    .createMetastore(Optional.empty());
         }
         catch (Throwable e) {
             closeAllSuppress(e, queryRunner);
@@ -144,27 +163,22 @@ public class TestDeltaLakeConnectorTest
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
-    public void tearDown()
-    {
-        minioClient = null; // closed by closeAfterClass
-    }
-
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
+            case SUPPORTS_CREATE_OR_REPLACE_TABLE,
+                 SUPPORTS_REPORTING_WRITTEN_BYTES -> true;
             case SUPPORTS_ADD_FIELD,
-                    SUPPORTS_AGGREGATION_PUSHDOWN,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_DROP_FIELD,
-                    SUPPORTS_LIMIT_PUSHDOWN,
-                    SUPPORTS_PREDICATE_PUSHDOWN,
-                    SUPPORTS_RENAME_FIELD,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN -> false;
+                 SUPPORTS_AGGREGATION_PUSHDOWN,
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_DROP_FIELD,
+                 SUPPORTS_LIMIT_PUSHDOWN,
+                 SUPPORTS_PREDICATE_PUSHDOWN,
+                 SUPPORTS_RENAME_FIELD,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_TOPN_PUSHDOWN -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -209,15 +223,17 @@ public class TestDeltaLakeConnectorTest
                 "|Target file already exists: .*/_delta_log/\\d+.json" +
                 "|Conflicting concurrent writes found\\..*" +
                 "|Multiple live locks found for:.*" +
-                "|Target file was created during locking: .*";
+                "|Target file was created during locking: .*" +
+                "|Conflict detected while writing Transaction Log .* to S3";
     }
 
     @Override
     protected Optional<DataMappingTestSetup> filterCaseSensitiveDataMappingTestData(DataMappingTestSetup dataMappingTestSetup)
     {
         String typeName = dataMappingTestSetup.getTrinoTypeName();
-        if (typeName.equals("char(1)")) {
-            return Optional.of(dataMappingTestSetup.asUnsupported());
+        if (typeName.equals("char(3)")) {
+            // Use explicitly padded literal in char mapping test due to whitespace padding on coercion to varchar
+            return Optional.of(new DataMappingTestSetup(typeName, "'ab '", dataMappingTestSetup.getHighValueLiteral()));
         }
         return Optional.of(dataMappingTestSetup);
     }
@@ -228,10 +244,12 @@ public class TestDeltaLakeConnectorTest
         String typeName = dataMappingTestSetup.getTrinoTypeName();
         if (typeName.equals("time") ||
                 typeName.equals("time(6)") ||
-                typeName.equals("timestamp") ||
-                typeName.equals("timestamp(6) with time zone") ||
-                typeName.equals("char(3)")) {
+                typeName.equals("timestamp(6) with time zone")) {
             return Optional.of(dataMappingTestSetup.asUnsupported());
+        }
+        if (typeName.equals("char(3)")) {
+            // Use explicitly padded literal in char mapping test due to whitespace padding on coercion to varchar
+            return Optional.of(new DataMappingTestSetup(typeName, "'ab '", dataMappingTestSetup.getHighValueLiteral()));
         }
         return Optional.of(dataMappingTestSetup);
     }
@@ -239,7 +257,7 @@ public class TestDeltaLakeConnectorTest
     @Override
     protected TestTable createTableWithDefaultColumns()
     {
-        throw new SkipException("Delta Lake does not support columns with a default value");
+        return abort("Delta Lake does not support columns with a default value");
     }
 
     @Override
@@ -315,6 +333,36 @@ public class TestDeltaLakeConnectorTest
     }
 
     @Test
+    public void testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition()
+    {
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.ID);
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.NAME);
+        testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode.NONE);
+    }
+
+    private void testPartialFilterWhenPartitionColumnOrderIsDifferentFromTableDefinition(ColumnMappingMode columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_delete_with_partial_filter_composed_partition",
+                "(_bigint BIGINT, _date DATE, _varchar VARCHAR) WITH (column_mapping_mode='" + columnMappingMode + "', partitioned_by = ARRAY['_varchar', '_date'])")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES  (1, CAST('2019-09-10' AS DATE), 'a'), (2, CAST('2019-09-10' AS DATE), 'a')", 2);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (3, null, 'c'), (4, CAST('2019-09-08' AS DATE), 'd')", 2);
+            assertUpdate("UPDATE " + table.getName() + " SET _bigint = 10 WHERE _bigint =  BIGINT '1'", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE _date =  DATE '2019-09-08'", 1);
+
+            assertQuery(
+                    "SELECT * FROM " + table.getName(),
+                    """
+                    VALUES
+                        (10, DATE '2019-09-10', 'a'),
+                        (2, DATE '2019-09-10', 'a'),
+                        (3, null, 'c')
+                    """);
+        }
+    }
+
+    @Test
     public void testCreateTableWithAllPartitionColumns()
     {
         String tableName = "test_create_table_all_partition_columns_" + randomNameSuffix();
@@ -362,6 +410,7 @@ public class TestDeltaLakeConnectorTest
                 "Using array, map or row type on partitioned columns is unsupported");
     }
 
+    @Test
     @Override
     public void testShowCreateSchema()
     {
@@ -373,6 +422,7 @@ public class TestDeltaLakeConnectorTest
                         ")", getSession().getCatalog().orElseThrow(), schemaName, bucketName));
     }
 
+    @Test
     @Override
     public void testDropNonEmptySchemaWithTable()
     {
@@ -388,6 +438,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP SCHEMA " + schemaName);
     }
 
+    @Test
     @Override
     public void testDropColumn()
     {
@@ -397,15 +448,19 @@ public class TestDeltaLakeConnectorTest
                 .hasMessageContaining("Cannot drop column from table using column mapping mode NONE");
     }
 
+    @Test
     @Override
-    public void testAddAndDropColumnName(String columnName)
+    public void testAddAndDropColumnName()
     {
-        // Override because the connector doesn't support dropping columns with 'none' column mapping
-        // There are some tests in in io.trino.tests.product.deltalake.TestDeltaLakeColumnMappingMode
-        assertThatThrownBy(() -> super.testAddAndDropColumnName(columnName))
-                .hasMessageContaining("Cannot drop column from table using column mapping mode NONE");
+        for (String columnName : testColumnNameDataProvider()) {
+            // Override because the connector doesn't support dropping columns with 'none' column mapping
+            // There are some tests in in io.trino.tests.product.deltalake.TestDeltaLakeColumnMappingMode
+            assertThatThrownBy(() -> testAddAndDropColumnName(columnName, requiresDelimiting(columnName)))
+                    .hasMessageContaining("Cannot drop column from table using column mapping mode NONE");
+        }
     }
 
+    @Test
     @Override
     public void testDropAndAddColumnWithSameName()
     {
@@ -415,13 +470,15 @@ public class TestDeltaLakeConnectorTest
                 .hasMessageContaining("Cannot drop column from table using column mapping mode NONE");
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
+    @Test
+    public void testDropPartitionColumn()
+    {
+        testDropPartitionColumn(ColumnMappingMode.ID);
+        testDropPartitionColumn(ColumnMappingMode.NAME);
+    }
+
     public void testDropPartitionColumn(ColumnMappingMode mode)
     {
-        if (mode == ColumnMappingMode.NONE) {
-            throw new SkipException("Tested in testDropColumn");
-        }
-
         String tableName = "test_drop_partition_column_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + "(data int, part int) WITH (partitioned_by = ARRAY['part'], column_mapping_mode = '" + mode + "')");
 
@@ -441,6 +498,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
+    @Test
     @Override
     public void testRenameColumn()
     {
@@ -450,6 +508,7 @@ public class TestDeltaLakeConnectorTest
                 .hasMessageContaining("Cannot rename column in table using column mapping mode NONE");
     }
 
+    @Test
     @Override
     public void testRenameColumnWithComment()
     {
@@ -459,13 +518,15 @@ public class TestDeltaLakeConnectorTest
                 .hasMessageContaining("Cannot rename column in table using column mapping mode NONE");
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testDeltaRenameColumnWithComment(ColumnMappingMode mode)
+    @Test
+    public void testDeltaRenameColumnWithComment()
     {
-        if (mode == ColumnMappingMode.NONE) {
-            throw new SkipException("The connector doesn't support renaming columns with 'none' column mapping");
-        }
+        testDeltaRenameColumnWithComment(ColumnMappingMode.ID);
+        testDeltaRenameColumnWithComment(ColumnMappingMode.NAME);
+    }
 
+    private void testDeltaRenameColumnWithComment(ColumnMappingMode mode)
+    {
         String tableName = "test_rename_column_" + randomNameSuffix();
         assertUpdate("" +
                 "CREATE TABLE " + tableName +
@@ -476,14 +537,15 @@ public class TestDeltaLakeConnectorTest
                 "column_mapping_mode = '" + mode + "')");
 
         assertUpdate("ALTER TABLE " + tableName + " RENAME COLUMN col TO new_col");
-        assertEquals(getColumnComment(tableName, "new_col"), "test column comment");
+        assertThat(getColumnComment(tableName, "new_col")).isEqualTo("test column comment");
 
         assertUpdate("ALTER TABLE " + tableName + " RENAME COLUMN part TO new_part");
-        assertEquals(getColumnComment(tableName, "new_part"), "test partition comment");
+        assertThat(getColumnComment(tableName, "new_part")).isEqualTo("test partition comment");
 
         assertUpdate("DROP TABLE " + tableName);
     }
 
+    @Test
     @Override
     public void testAlterTableRenameColumnToLongName()
     {
@@ -493,25 +555,79 @@ public class TestDeltaLakeConnectorTest
                 .hasMessageContaining("Cannot rename column in table using column mapping mode NONE");
     }
 
+    @Test
     @Override
-    public void testRenameColumnName(String columnName)
+    public void testRenameColumnName()
     {
-        // Override because the connector doesn't support renaming columns with 'none' column mapping
-        // There are some tests in in io.trino.tests.product.deltalake.TestDeltaLakeColumnMappingMode
-        assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                .hasMessageContaining("Cannot rename column in table using column mapping mode NONE");
+        for (String columnName : testColumnNameDataProvider()) {
+            // Override because the connector doesn't support renaming columns with 'none' column mapping
+            // There are some tests in in io.trino.tests.product.deltalake.TestDeltaLakeColumnMappingMode
+            assertThatThrownBy(() -> testRenameColumnName(columnName, requiresDelimiting(columnName)))
+                    .hasMessageContaining("Cannot rename column in table using column mapping mode NONE");
+        }
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
-        // Delta Lake doesn't have a char type
-        assertThatThrownBy(super::testCharVarcharComparison)
-                .hasStackTraceContaining("Unsupported type: char(3)");
+        // with char->varchar coercion on table creation, this is essentially varchar/varchar comparison
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_varchar",
+                "(k, v) AS VALUES" +
+                        "   (-1, CAST(NULL AS CHAR(3))), " +
+                        "   (3, CAST('   ' AS CHAR(3)))," +
+                        "   (6, CAST('x  ' AS CHAR(3)))")) {
+            // varchar of length shorter than column's length
+            assertThat(query("SELECT k, v FROM " + table.getName() + " WHERE v = CAST('  ' AS varchar(2))")).returnsEmptyResult();
+            // varchar of length longer than column's length
+            assertThat(query("SELECT k, v FROM " + table.getName() + " WHERE v = CAST('    ' AS varchar(4))")).returnsEmptyResult();
+            // value that's not all-spaces
+            assertThat(query("SELECT k, v FROM " + table.getName() + " WHERE v = CAST('x ' AS varchar(2))")).returnsEmptyResult();
+            // exact match
+            assertQuery("SELECT k, v FROM " + table.getName() + " WHERE v = CAST('   ' AS varchar(3))", "VALUES (3, '   ')");
+        }
     }
 
-    @Test(dataProvider = "timestampValues")
-    public void testTimestampPredicatePushdown(String value)
+    @Test
+    public void testCreateTableWithCompressionCodec()
+    {
+        for (HiveCompressionCodec compressionCodec : HiveCompressionCodec.values()) {
+            testCreateTableWithCompressionCodec(compressionCodec);
+        }
+    }
+
+    private void testCreateTableWithCompressionCodec(HiveCompressionCodec compressionCodec)
+    {
+        Session session = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "compression_codec", compressionCodec.name())
+                .build();
+        String tableName = "test_table_with_compression_" + compressionCodec;
+        String createTableSql = format("CREATE TABLE %s AS TABLE tpch.tiny.nation", tableName);
+        if (compressionCodec == HiveCompressionCodec.LZ4) {
+            // TODO (https://github.com/trinodb/trino/issues/9142) Support LZ4 compression with native Parquet writer
+            assertQueryFails(session, createTableSql, "Unsupported codec: " + compressionCodec);
+            return;
+        }
+        assertUpdate(session, createTableSql, 25);
+        assertQuery("SELECT * FROM " + tableName, "SELECT * FROM nation");
+        assertQuery("SELECT count(*) FROM " + tableName, "VALUES 25");
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testTimestampPredicatePushdown()
+    {
+        testTimestampPredicatePushdown("1965-10-31 01:00:08.123 UTC");
+        testTimestampPredicatePushdown("1965-10-31 01:00:08.999 UTC");
+        testTimestampPredicatePushdown("1970-01-01 01:13:42.000 America/Bahia_Banderas"); // There is a gap in JVM zone
+        testTimestampPredicatePushdown("1970-01-01 00:00:00.000 Asia/Kathmandu");
+        testTimestampPredicatePushdown("2018-10-28 01:33:17.456 Europe/Vilnius");
+        testTimestampPredicatePushdown("9999-12-31 23:59:59.999 UTC");
+    }
+
+    private void testTimestampPredicatePushdown(String value)
     {
         String tableName = "test_parquet_timestamp_predicate_pushdown_" + randomNameSuffix();
 
@@ -519,16 +635,16 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("CREATE TABLE " + tableName + " (t TIMESTAMP WITH TIME ZONE)");
         assertUpdate("INSERT INTO " + tableName + " VALUES (TIMESTAMP '" + value + "')", 1);
 
-        DistributedQueryRunner queryRunner = (DistributedQueryRunner) getQueryRunner();
-        MaterializedResultWithQueryId queryResult = queryRunner.executeWithQueryId(
+        QueryRunner queryRunner = getQueryRunner();
+        MaterializedResultWithPlan queryResult = queryRunner.executeWithPlan(
                 getSession(),
                 "SELECT * FROM " + tableName + " WHERE t < TIMESTAMP '" + value + "'");
-        assertEquals(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes(), 0);
+        assertThat(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes()).isEqualTo(0);
 
-        queryResult = queryRunner.executeWithQueryId(
+        queryResult = queryRunner.executeWithPlan(
                 getSession(),
                 "SELECT * FROM " + tableName + " WHERE t > TIMESTAMP '" + value + "'");
-        assertEquals(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes(), 0);
+        assertThat(getQueryInfo(queryRunner, queryResult).getQueryStats().getProcessedInputDataSize().toBytes()).isEqualTo(0);
 
         assertQueryStats(
                 getSession(),
@@ -617,16 +733,95 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @DataProvider
-    public Object[][] timestampValues()
+    @Test
+    public void testTimestampWithTimeZoneOptimization()
     {
-        return new Object[][] {
-                {"1965-10-31 01:00:08.123 UTC"},
-                {"1965-10-31 01:00:08.999 UTC"},
-                {"1970-01-01 01:13:42.000 America/Bahia_Banderas"}, // There is a gap in JVM zone
-                {"1970-01-01 00:00:00.000 Asia/Kathmandu"},
-                {"2018-10-28 01:33:17.456 Europe/Vilnius"},
-                {"9999-12-31 23:59:59.999 UTC"}};
+        String tableName = "test_timestamp_tz_optimization_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + "(id INT, part TIMESTAMP WITH TIME ZONE) WITH (partitioned_by = ARRAY['part'])");
+        assertUpdate(
+                "INSERT INTO " + tableName + " VALUES " +
+                        "(1, NULL)," +
+                        "(2, TIMESTAMP '0001-01-01 00:00:00.000 UTC')," +
+                        "(3, TIMESTAMP '2023-11-21 09:19:00.000 +02:00')," +
+                        "(4, TIMESTAMP '2005-09-10 13:00:00.000 UTC')",
+                4);
+
+        // date_trunc optimization
+        assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('day', part) >= TIMESTAMP '2005-09-10 07:00:00.000 +07:00'"))
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(3, TIMESTAMP '2023-11-21 07:19:00.000 UTC')," +
+                        "(4, TIMESTAMP '2005-09-10 13:00:00.000 UTC')");
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('day', part) = TIMESTAMP '2005-09-10 00:00:00.000 +07:00'"))
+                .isReplacedWithEmptyValues();
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('hour', part) >= TIMESTAMP '2005-09-10 13:00:00.001 +00:00'"))
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(3, TIMESTAMP '2023-11-21 07:19:00.000 UTC')");
+
+        // the DATE is upcast to timestamp_tz using the session time zone (Asia/Kathmandu).
+        // part is in UTC, so there is no match for date_trunc.
+        assertThat(query(
+                Session.builder(getSession())
+                        .setTimeZoneKey(getTimeZoneKey("Asia/Kathmandu"))
+                        .build(),
+                "SELECT * FROM " + tableName + " WHERE date_trunc('day', part) = DATE '2005-09-10'"))
+                .isReplacedWithEmptyValues();
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE date_trunc('week', part) >= TIMESTAMP '2005-09-10 00:00:00.000 +00:00'"))
+                .isNotFullyPushedDown(FilterNode.class);
+
+        // cast timestamp_tz as DATE optimization
+        assertThat(query("SELECT * FROM " + tableName + " WHERE cast(part AS date) >= DATE '2005-09-10'"))
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(3, TIMESTAMP '2023-11-21 07:19:00.000 UTC')," +
+                        "(4, TIMESTAMP '2005-09-10 13:00:00.000 UTC')");
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE cast(part AS date) = DATE '2005-10-10'"))
+                .isFullyPushedDown()
+                .returnsEmptyResult();
+
+        // year function optimization
+        assertThat(query("SELECT * FROM " + tableName + " WHERE year(part) >= 2005"))
+                .isFullyPushedDown()
+                .matches("VALUES " +
+                        "(3, TIMESTAMP '2023-11-21 07:19:00.000 UTC')," +
+                        "(4, TIMESTAMP '2005-09-10 13:00:00.000 UTC')");
+
+        assertThat(query("SELECT * FROM " + tableName + " WHERE year(part) = 2006"))
+                .isFullyPushedDown()
+                .returnsEmptyResult();
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testShowStatsForTimestampWithTimeZone()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_stats_timestamptz_", "(x TIMESTAMP(3) WITH TIME ZONE) WITH (checkpoint_interval = 2)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '+10000-01-02 13:34:56.123 +01:00')", 1);
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .result()
+                    .projected("column_name", "low_value", "high_value")
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            "('x', '+10000-01-02 12:34:56.123 UTC', '+10000-01-02 12:34:56.123 UTC')," +
+                            "(null, null, null)");
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '-9999-01-02 13:34:56.123 +01:00')", 1);
+            assertThat(query("SHOW STATS FOR " + table.getName()))
+                    .result()
+                    .projected("column_name", "low_value", "high_value")
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            // The negative timestamp is discarded by TransactionLogParser.START_OF_MODERN_ERA_DATE
+                            "('x', '+10000-01-02 12:34:56.123 UTC', '+10000-01-02 12:34:56.123 UTC')," +
+                            "(null, null, null)");
+        }
     }
 
     @Test
@@ -658,9 +853,9 @@ public class TestDeltaLakeConnectorTest
         }
     }
 
-    private QueryInfo getQueryInfo(DistributedQueryRunner queryRunner, MaterializedResultWithQueryId queryResult)
+    private QueryInfo getQueryInfo(QueryRunner queryRunner, MaterializedResultWithPlan queryResult)
     {
-        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.getQueryId());
+        return queryRunner.getCoordinator().getQueryManager().getFullQueryInfo(queryResult.queryId());
     }
 
     @Test
@@ -725,6 +920,38 @@ public class TestDeltaLakeConnectorTest
                     "SELECT x, a FROM " + table.getName(),
                     "VALUES ('first', 'new column'), ('second', 'new column')");
         }
+    }
+
+    @Test
+    public void testDropNotNullConstraintWithColumnMapping()
+    {
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.ID);
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.NAME);
+        testDropNotNullConstraintWithColumnMapping(ColumnMappingMode.NONE);
+    }
+
+    private void testDropNotNullConstraintWithColumnMapping(ColumnMappingMode mode)
+    {
+        String tableName = "test_drop_not_null_" + randomNameSuffix();
+
+        assertUpdate("CREATE TABLE " + tableName + "(" +
+                " data integer NOT NULL COMMENT 'test comment'," +
+                " part integer NOT NULL COMMENT 'test part comment')" +
+                "WITH (partitioned_by = ARRAY['part'], column_mapping_mode = '" + mode + "')");
+        assertUpdate("ALTER TABLE " + tableName + " ALTER COLUMN data DROP NOT NULL");
+        assertThat(columnIsNullable(tableName, "data")).isTrue();
+        assertThat(columnIsNullable(tableName, "part")).isFalse();
+
+        assertUpdate("ALTER TABLE " + tableName + " ALTER COLUMN part DROP NOT NULL");
+        assertThat(columnIsNullable(tableName, "data")).isTrue();
+        assertThat(columnIsNullable(tableName, "part")).isTrue();
+        assertThat(getColumnComment(tableName, "data")).isEqualTo("test comment");
+        assertThat(getColumnComment(tableName, "part")).isEqualTo("test part comment");
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (NULL, NULL)", 1);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (NULL, NULL)");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -838,8 +1065,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
-    @Test(dataProvider = "partitionedProvider")
-    public void testMergeUpdateWithVariousLayouts(String partitionPhase)
+    @Test
+    public void testMergeUpdateWithVariousLayouts()
+    {
+        testMergeUpdateWithVariousLayouts("");
+        testMergeUpdateWithVariousLayouts(", partitioned_by = ARRAY['customer']");
+        testMergeUpdateWithVariousLayouts(", partitioned_by = ARRAY['purchase']");
+    }
+
+    private void testMergeUpdateWithVariousLayouts(String partitionPhase)
     {
         String targetTable = "merge_formats_target_" + randomNameSuffix();
         String sourceTable = "merge_formats_source_" + randomNameSuffix();
@@ -864,18 +1098,16 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
-    @DataProvider
-    public Object[][] partitionedProvider()
+    @Test
+    @Override
+    public void testMergeMultipleOperations()
     {
-        return new Object[][] {
-                {""},
-                {", partitioned_by = ARRAY['customer']"},
-                {", partitioned_by = ARRAY['purchase']"}
-        };
+        testMergeMultipleOperations("");
+        testMergeMultipleOperations(", partitioned_by = ARRAY['customer']");
+        testMergeMultipleOperations(", partitioned_by = ARRAY['purchase']");
     }
 
-    @Test(dataProvider = "partitionedProvider")
-    public void testMergeMultipleOperations(String partitioning)
+    private void testMergeMultipleOperations(String partitioning)
     {
         int targetCustomerCount = 32;
         String targetTable = "merge_multiple_" + randomNameSuffix();
@@ -959,8 +1191,18 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
-    @Test(dataProvider = "targetWithDifferentPartitioning")
-    public void testMergeMultipleRowsMatchFails(String createTableSql)
+    @Test
+    @Override
+    public void testMergeMultipleRowsMatchFails()
+    {
+        testMergeMultipleRowsMatchFails("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')");
+        testMergeMultipleRowsMatchFails("CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])");
+        testMergeMultipleRowsMatchFails("CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])");
+        testMergeMultipleRowsMatchFails("CREATE TABLE %s (purchases INT, customer VARCHAR, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])");
+        testMergeMultipleRowsMatchFails("CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])");
+    }
+
+    private void testMergeMultipleRowsMatchFails(String createTableSql)
     {
         String targetTable = "merge_multiple_target_" + randomNameSuffix();
         String sourceTable = "merge_multiple_source_" + randomNameSuffix();
@@ -984,20 +1226,40 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
-    @DataProvider
-    public Object[][] targetWithDifferentPartitioning()
+    @Test
+    public void testMergeWithDifferentPartitioning()
     {
-        return new Object[][] {
-                {"CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')"},
-                {"CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])"},
-                {"CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])"},
-                {"CREATE TABLE %s (purchases INT, customer VARCHAR, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])"},
-                {"CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])"}
-        };
+        testMergeWithDifferentPartitioning(
+                "target_partitioned_source_and_target_partitioned",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])");
+        testMergeWithDifferentPartitioning(
+                "target_partitioned_source_and_target_partitioned",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])");
+        testMergeWithDifferentPartitioning(
+                "target_flat_source_partitioned_by_customer",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
+                "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])");
+        testMergeWithDifferentPartitioning(
+                "target_partitioned_by_customer_source_flat",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')");
+        testMergeWithDifferentPartitioning(
+                "target_bucketed_by_customer_source_flat",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')");
+        testMergeWithDifferentPartitioning(
+                "target_partitioned_source_partitioned",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])");
+        testMergeWithDifferentPartitioning(
+                "target_partitioned_target_partitioned",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])");
     }
 
-    @Test(dataProvider = "targetAndSourceWithDifferentPartitioning")
-    public void testMergeWithDifferentPartitioning(String testDescription, String createTargetTableSql, String createSourceTableSql)
+    private void testMergeWithDifferentPartitioning(String testDescription, String createTargetTableSql, String createSourceTableSql)
     {
         String targetTable = format("%s_target_%s", testDescription, randomNameSuffix());
         String sourceTable = format("%s_source_%s", testDescription, randomNameSuffix());
@@ -1022,138 +1284,154 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + targetTable);
     }
 
-    @DataProvider
-    public Object[][] targetAndSourceWithDifferentPartitioning()
+    @Test
+    public void testTableWithNonNullableColumns()
     {
-        return new Object[][] {
-                {
-                        "target_partitioned_source_and_target_partitioned",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                },
-                {
-                        "target_partitioned_source_and_target_partitioned",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                },
-                {
-                        "target_flat_source_partitioned_by_customer",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
-                        "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])"
-                },
-                {
-                        "target_partitioned_by_customer_source_flat",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
-                },
-                {
-                        "target_bucketed_by_customer_source_flat",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
-                },
-                {
-                        "target_partitioned_source_partitioned",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                },
-                {
-                        "target_partitioned_target_partitioned",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])",
-                }
-        };
+        testTableWithNonNullableColumns(ColumnMappingMode.ID);
+        testTableWithNonNullableColumns(ColumnMappingMode.NAME);
+        testTableWithNonNullableColumns(ColumnMappingMode.NONE);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testTableWithNonNullableColumns(ColumnMappingMode mode)
+    private void testTableWithNonNullableColumns(ColumnMappingMode mode)
     {
         String tableName = "test_table_with_non_nullable_columns_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + "(col1 INTEGER NOT NULL, col2 INTEGER, col3 INTEGER) WITH (column_mapping_mode='" + mode + "')");
         assertUpdate("INSERT INTO " + tableName + " VALUES(1, 10, 100)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES(2, 20, 200)", 1);
-        assertThatThrownBy(() -> query("INSERT INTO " + tableName + " VALUES(null, 30, 300)"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
-        assertThatThrownBy(() -> query("INSERT INTO " + tableName + " VALUES(TRY(5/0), 40, 400)"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("INSERT INTO " + tableName + " VALUES(null, 30, 300)"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("INSERT INTO " + tableName + " VALUES(TRY(5/0), 40, 400)"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
-        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = NULL where col3 = 100"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
-        assertThatThrownBy(() -> query("UPDATE " + tableName + " SET col1 = TRY(5/0) where col3 = 200"))
-                .hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("UPDATE " + tableName + " SET col1 = NULL where col3 = 100"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
+        assertThat(query("UPDATE " + tableName + " SET col1 = TRY(5/0) where col3 = 200"))
+                .failure().hasMessageContaining("NULL value not allowed for NOT NULL column: col1");
 
         assertQuery("SELECT * FROM " + tableName, "VALUES(1, 10, 100), (2, 20, 200)");
     }
 
-    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
-    public void testCreateTableWithChangeDataFeedColumnName(String columnName)
+    @Test
+    public void testCreateTableWithChangeDataFeedColumnName()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "(" + columnName + " int)")) {
-            assertTableColumnNames(table.getName(), columnName);
-        }
+        for (String columnName : CHANGE_DATA_FEED_COLUMN_NAMES) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "(" + columnName + " int)")) {
+                assertTableColumnNames(table.getName(), columnName);
+            }
 
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "AS SELECT 1 AS " + columnName)) {
-            assertTableColumnNames(table.getName(), columnName);
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_table_cdf", "AS SELECT 1 AS " + columnName)) {
+                assertTableColumnNames(table.getName(), columnName);
+            }
         }
     }
 
-    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
-    public void testUnsupportedCreateTableWithChangeDataFeed(String columnName)
+    @Test
+    public void testCreateTableWithChangeDataFeed()
     {
-        String tableName = "test_unsupported_create_table_cdf" + randomNameSuffix();
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cdf", "(x int) WITH (change_data_feed_enabled = true)")) {
+            assertThat(query("SELECT * FROM \"" + table.getName() + "$properties\""))
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            "('delta.enableChangeDataFeed', 'true')," +
+                            "('delta.enableDeletionVectors', 'false')," +
+                            "('delta.minReaderVersion', '1')," +
+                            "('delta.minWriterVersion', '4')");
+        }
 
-        assertQueryFails(
-                "CREATE TABLE " + tableName + "(" + columnName + " int) WITH (change_data_feed_enabled = true)",
-                "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
-
-        assertQueryFails(
-                "CREATE TABLE " + tableName + " WITH (change_data_feed_enabled = true) AS SELECT 1 AS " + columnName,
-                "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        // timestamp type requires reader version 3 and writer version 7
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cdf", "(x timestamp) WITH (change_data_feed_enabled = true)")) {
+            assertThat(query("SELECT * FROM \"" + table.getName() + "$properties\""))
+                    .skippingTypesCheck()
+                    .matches("VALUES " +
+                            "('delta.enableChangeDataFeed', 'true')," +
+                            "('delta.enableDeletionVectors', 'false')," +
+                            "('delta.minReaderVersion', '3')," +
+                            "('delta.minWriterVersion', '7')," +
+                            "('delta.feature.timestampNtz', 'supported')," +
+                            "('delta.feature.changeDataFeed', 'supported')");
+        }
     }
 
-    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
-    public void testUnsupportedAddColumnWithChangeDataFeed(String columnName)
+    @Test
+    public void testUnsupportedChangeDataFeedAndDeletionVector()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column", "(col int) WITH (change_data_feed_enabled = true)")) {
+        // TODO https://github.com/trinodb/trino/issues/23620 Fix incorrect CDF entry when deletion vector is enabled
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_cdf_dv",
+                "(x int) WITH (change_data_feed_enabled = true, deletion_vectors_enabled = true)")) {
+            assertQueryFails("INSERT INTO " + table.getName() + " VALUES 1", "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+            assertQueryFails("UPDATE " + table.getName() + " SET x = 1", "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+            assertQueryFails("DELETE FROM " + table.getName(), "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+            assertQueryFails("MERGE INTO " + table.getName() + " USING (VALUES 42) t(dummy) ON false WHEN NOT MATCHED THEN INSERT VALUES (1)", "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+            assertQueryFails("TRUNCATE TABLE " + table.getName(), "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+            assertQueryFails("ALTER TABLE " + table.getName() + " EXECUTE optimize", "Writing to tables with both change data feed and deletion vectors enabled is not supported");
+
+            // TODO https://github.com/trinodb/trino/issues/22809 Add support for vacuuming tables with deletion vectors
+            assertQueryFails("CALL system.vacuum(current_schema, '" + table.getName() + "', '7d')", "Cannot execute vacuum procedure with deletionVectors writer features");
+        }
+    }
+
+    @Test
+    public void testUnsupportedCreateTableWithChangeDataFeed()
+    {
+        for (String columnName : CHANGE_DATA_FEED_COLUMN_NAMES) {
+            String tableName = "test_unsupported_create_table_cdf" + randomNameSuffix();
+
             assertQueryFails(
-                    "ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int",
-                    "\\QColumn name %s is forbidden when change data feed is enabled\\E".formatted(columnName));
-            assertTableColumnNames(table.getName(), "col");
+                    "CREATE TABLE " + tableName + "(" + columnName + " int) WITH (change_data_feed_enabled = true)",
+                    "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
 
-            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = false");
-            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int");
-            assertTableColumnNames(table.getName(), "col", columnName);
-        }
-    }
-
-    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
-    public void testUnsupportedRenameColumnWithChangeDataFeed(String columnName)
-    {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_rename_column", "(col int) WITH (change_data_feed_enabled = true)")) {
             assertQueryFails(
-                    "ALTER TABLE " + table.getName() + " RENAME COLUMN col TO " + columnName,
-                    "Cannot rename column when change data feed is enabled");
-            assertTableColumnNames(table.getName(), "col");
+                    "CREATE TABLE " + tableName + " WITH (change_data_feed_enabled = true) AS SELECT 1 AS " + columnName,
+                    "\\QUnable to use [%s] when change data feed is enabled\\E".formatted(columnName));
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         }
     }
 
-    @Test(dataProvider = "changeDataFeedColumnNamesDataProvider")
-    public void testUnsupportedSetTablePropertyWithChangeDataFeed(String columnName)
+    @Test
+    public void testUnsupportedAddColumnWithChangeDataFeed()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_properties", "(" + columnName + " int)")) {
-            assertQueryFails(
-                    "ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = true",
-                    "\\QUnable to enable change data feed because table contains [%s] columns\\E".formatted(columnName));
-            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
-                    .doesNotContain("change_data_feed_enabled = true");
+        for (String columnName : CHANGE_DATA_FEED_COLUMN_NAMES) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column", "(col int) WITH (change_data_feed_enabled = true)")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int",
+                        "\\QColumn name %s is forbidden when change data feed is enabled\\E".formatted(columnName));
+                assertTableColumnNames(table.getName(), "col");
+
+                assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = false");
+                assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN " + columnName + " int");
+                assertTableColumnNames(table.getName(), "col", columnName);
+            }
         }
     }
 
-    @DataProvider
-    public Object[][] changeDataFeedColumnNamesDataProvider()
+    @Test
+    public void testUnsupportedRenameColumnWithChangeDataFeed()
     {
-        return CHANGE_DATA_FEED_COLUMN_NAMES.stream().collect(toDataProvider());
+        for (String columnName : CHANGE_DATA_FEED_COLUMN_NAMES) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_rename_column", "(col int) WITH (change_data_feed_enabled = true)")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " RENAME COLUMN col TO " + columnName,
+                        "Cannot rename column when change data feed is enabled");
+                assertTableColumnNames(table.getName(), "col");
+            }
+        }
+    }
+
+    @Test
+    public void testUnsupportedSetTablePropertyWithChangeDataFeed()
+    {
+        for (String columnName : CHANGE_DATA_FEED_COLUMN_NAMES) {
+            try (TestTable table = new TestTable(getQueryRunner()::execute, "test_set_properties", "(" + columnName + " int)")) {
+                assertQueryFails(
+                        "ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = true",
+                        "\\QUnable to enable change data feed because table contains [%s] columns\\E".formatted(columnName));
+                assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                        .doesNotContain("change_data_feed_enabled = true");
+            }
+        }
     }
 
     @Test
@@ -1167,7 +1445,14 @@ public class TestDeltaLakeConnectorTest
                 .contains("change_data_feed_enabled = true");
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
+    @Test
+    public void testCreateTableWithColumnMappingMode()
+    {
+        testCreateTableWithColumnMappingMode(ColumnMappingMode.ID);
+        testCreateTableWithColumnMappingMode(ColumnMappingMode.NAME);
+        testCreateTableWithColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
     public void testCreateTableWithColumnMappingMode(ColumnMappingMode mode)
     {
         testCreateTableColumnMappingMode(mode, tableName -> {
@@ -1176,16 +1461,30 @@ public class TestDeltaLakeConnectorTest
         });
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCreateTableAsSelectWithColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testCreateTableAsSelectWithColumnMappingMode()
+    {
+        testCreateTableAsSelectWithColumnMappingMode(ColumnMappingMode.ID);
+        testCreateTableAsSelectWithColumnMappingMode(ColumnMappingMode.NAME);
+        testCreateTableAsSelectWithColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testCreateTableAsSelectWithColumnMappingMode(ColumnMappingMode mode)
     {
         testCreateTableColumnMappingMode(mode, tableName ->
                 assertUpdate("CREATE TABLE " + tableName + " WITH (column_mapping_mode='" + mode + "')" +
                         " AS SELECT 1 AS a_int, CAST(row(11) AS row(x integer)) AS a_row", 1));
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCreatePartitionTableAsSelectWithColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testCreatePartitionTableAsSelectWithColumnMappingMode()
+    {
+        testCreatePartitionTableAsSelectWithColumnMappingMode(ColumnMappingMode.ID);
+        testCreatePartitionTableAsSelectWithColumnMappingMode(ColumnMappingMode.NAME);
+        testCreatePartitionTableAsSelectWithColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testCreatePartitionTableAsSelectWithColumnMappingMode(ColumnMappingMode mode)
     {
         testCreateTableColumnMappingMode(mode, tableName ->
                 assertUpdate("CREATE TABLE " + tableName + " WITH (column_mapping_mode='" + mode + "', partitioned_by=ARRAY['a_int'])" +
@@ -1211,13 +1510,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testDropAndAddColumnShowStatsForColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testDropAndAddColumnShowStatsForColumnMappingMode()
     {
-        if (mode == ColumnMappingMode.NONE) {
-            throw new SkipException("Delta Lake doesn't support dropping columns with 'none' column mapping");
-        }
+        testDropAndAddColumnShowStatsForColumnMappingMode(ColumnMappingMode.ID);
+        testDropAndAddColumnShowStatsForColumnMappingMode(ColumnMappingMode.NAME);
+    }
 
+    private void testDropAndAddColumnShowStatsForColumnMappingMode(ColumnMappingMode mode)
+    {
         String tableName = "test_drop_add_column_show_stats_for_column_mapping_mode_" + randomNameSuffix();
 
         assertUpdate("CREATE TABLE " + tableName + " (a_number INT, b_number INT) WITH (column_mapping_mode='" + mode + "')");
@@ -1259,13 +1560,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testRenameColumnShowStatsForColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testRenameColumnShowStatsForColumnMappingMode()
     {
-        if (mode == ColumnMappingMode.NONE) {
-            throw new SkipException("The connector doesn't support renaming columns with 'none' column mapping");
-        }
+        testRenameColumnShowStatsForColumnMappingMode(ColumnMappingMode.ID);
+        testRenameColumnShowStatsForColumnMappingMode(ColumnMappingMode.NAME);
+    }
 
+    private void testRenameColumnShowStatsForColumnMappingMode(ColumnMappingMode mode)
+    {
         String tableName = "test_rename_column_show_stats_for_column_mapping_mode_" + randomNameSuffix();
 
         assertUpdate("CREATE TABLE " + tableName + " (a_number INT, b_number INT) WITH (column_mapping_mode='" + mode + "')");
@@ -1295,8 +1598,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCommentOnTableForColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testCommentOnTableForColumnMappingMode()
+    {
+        testCommentOnTableForColumnMappingMode(ColumnMappingMode.ID);
+        testCommentOnTableForColumnMappingMode(ColumnMappingMode.NAME);
+        testCommentOnTableForColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testCommentOnTableForColumnMappingMode(ColumnMappingMode mode)
     {
         String tableName = "test_comment_on_table_for_column_mapping_mode_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a_number INT, b_number INT) WITH (column_mapping_mode='" + mode + "')");
@@ -1307,8 +1617,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCommentOnColumnForColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testCommentOnColumnForColumnMappingMode()
+    {
+        testCommentOnColumnForColumnMappingMode(ColumnMappingMode.ID);
+        testCommentOnColumnForColumnMappingMode(ColumnMappingMode.NAME);
+        testCommentOnColumnForColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testCommentOnColumnForColumnMappingMode(ColumnMappingMode mode)
     {
         String tableName = "test_comment_on_column_for_column_mapping_mode_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a_number INT, b_number INT) WITH (column_mapping_mode='" + mode + "')");
@@ -1319,8 +1636,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCreateTableWithCommentsForColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testCreateTableWithCommentsForColumnMappingMode()
+    {
+        testCreateTableWithCommentsForColumnMappingMode(ColumnMappingMode.ID);
+        testCreateTableWithCommentsForColumnMappingMode(ColumnMappingMode.NAME);
+        testCreateTableWithCommentsForColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testCreateTableWithCommentsForColumnMappingMode(ColumnMappingMode mode)
     {
         String tableName = "test_create_table_with_comments_for_column_mapping_mode_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (a_number INT COMMENT 'test column comment', b_number INT)  " +
@@ -1333,8 +1657,15 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testSpecialCharacterColumnNamesWithColumnMappingMode(ColumnMappingMode mode)
+    @Test
+    public void testSpecialCharacterColumnNamesWithColumnMappingMode()
+    {
+        testSpecialCharacterColumnNamesWithColumnMappingMode(ColumnMappingMode.ID);
+        testSpecialCharacterColumnNamesWithColumnMappingMode(ColumnMappingMode.NAME);
+        testSpecialCharacterColumnNamesWithColumnMappingMode(ColumnMappingMode.NONE);
+    }
+
+    private void testSpecialCharacterColumnNamesWithColumnMappingMode(ColumnMappingMode mode)
     {
         String tableName = "test_special_characters_column_namnes_with_column_mapping_mode_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (\";{}()\\n\\t=\" INT) " +
@@ -1351,8 +1682,18 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingWithTrueAndFalseDataProvider")
-    public void testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode mode, boolean partitioned)
+    @Test
+    public void testDeltaColumnMappingModeAllDataTypes()
+    {
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.ID, false);
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.ID, true);
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.NAME, false);
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.NAME, true);
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.NONE, false);
+        testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode.NONE, true);
+    }
+
+    private void testDeltaColumnMappingModeAllDataTypes(ColumnMappingMode mode, boolean partitioned)
     {
         String tableName = "test_column_mapping_mode_name_all_types_" + randomNameSuffix();
 
@@ -1462,8 +1803,18 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "columnMappingWithTrueAndFalseDataProvider")
-    public void testOptimizeProcedureColumnMappingMode(ColumnMappingMode mode, boolean partitioned)
+    @Test
+    public void testOptimizeProcedureColumnMappingMode()
+    {
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.ID, false);
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.ID, true);
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.NAME, false);
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.NAME, true);
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.NONE, false);
+        testOptimizeProcedureColumnMappingMode(ColumnMappingMode.NONE, true);
+    }
+
+    private void testOptimizeProcedureColumnMappingMode(ColumnMappingMode mode, boolean partitioned)
     {
         String tableName = "test_optimize_column_mapping_mode_" + randomNameSuffix();
 
@@ -1510,31 +1861,432 @@ public class TestDeltaLakeConnectorTest
     /**
      * @see deltalake.write_stats_as_json_column_mapping_id
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedNonPartitionedColumnMappingIdWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedNonPartitionedColumnMappingIdWrites()
             throws Exception
     {
-        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_id", statsAsJsonEnabled);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_id", true);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_id", false);
     }
 
     /**
      * @see deltalake.write_stats_as_json_column_mapping_name
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedNonPartitionedColumnMappingNameWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedNonPartitionedColumnMappingNameWrites()
             throws Exception
     {
-        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_name", statsAsJsonEnabled);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_name", true);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_name", false);
     }
 
     /**
      * @see deltalake.write_stats_as_json_column_mapping_none
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedNonPartitionedColumnMappingNoneWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedNonPartitionedColumnMappingNoneWrites()
             throws Exception
     {
-        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_none", statsAsJsonEnabled);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_none", true);
+        testSupportedNonPartitionedColumnMappingWrites("write_stats_as_json_column_mapping_none", false);
+    }
+
+    @Test
+    public void testCreateOrReplaceTableOnNonExistingTable()
+    {
+        String tableName = "create_or_replace_table" + randomNameSuffix();
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + tableName + " (id BIGINT)");
+            assertLatestTableOperation(tableName, CREATE_OR_REPLACE_TABLE_OPERATION);
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsSelectOnNonExistingTable()
+    {
+        String tableName = "create_or_replace_table_as_select_" + randomNameSuffix();
+        try {
+            assertUpdate("CREATE OR REPLACE TABLE " + tableName + " AS SELECT 1 as colA", 1);
+            assertLatestTableOperation(tableName, CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsSelectWithSwappedColumns()
+    {
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.ID);
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.NAME);
+        testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode.NONE);
+    }
+
+    private void testCreateOrReplaceTableAsSelectWithSwappedColumns(ColumnMappingMode columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_column",
+                "AS SELECT 'abc' colA, BIGINT '1' colB")) {
+            assertThat(query("SELECT colA, colB FROM " + table.getName()))
+                    .matches("VALUES (CAST('abc' AS VARCHAR), BIGINT '1')");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (column_mapping_mode='" + columnMappingMode.name() + "') AS SELECT BIGINT '42' colA, 'def' colB", 1);
+
+            assertThat(query("SELECT colA, colB FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('def' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableChangeUnpartitionedTableIntoPartitioned()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " AS SELECT BIGINT '22' a, CAST('some data' AS VARCHAR) b")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (partitioned_by=ARRAY['a']) AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b", 2);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('some data' AS VARCHAR)), (BIGINT '43', CAST('another data' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("partitioned_by = ARRAY['a']");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableChangePartitionedTableIntoUnpartitioned()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_",
+                "  WITH (partitioned_by=ARRAY['a']) AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT BIGINT '42' a, 'some data' b UNION ALL SELECT BIGINT '43' a, 'another data' b", 2);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .matches("VALUES (BIGINT '42', CAST('some data' AS VARCHAR)), (BIGINT '43', CAST('another data' AS VARCHAR))");
+
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_AS_OPERATION);
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .matches("CREATE TABLE delta.test_schema.%s \\(\n".formatted(table.getName()) +
+                            "   a bigint,\n" +
+                            "   b varchar\n" +
+                            "\\)\n" +
+                            "WITH \\(\n" +
+                            "   location = '.*'\n" +
+                            "\\)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableTableCommentIsRemoved()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_", " (a BIGINT) COMMENT 'This is a table'")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT COMMENT 'This is a column')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+
+            assertThat(getColumnComment(table.getName(), "a"))
+                    .isEqualTo("This is a column");
+            assertThat(getTableComment(getSession().getCatalog().orElseThrow(), getSession().getSchema().orElseThrow(), table.getName()))
+                    .isNull();
+            assertLatestTableOperation(table.getName(), CREATE_OR_REPLACE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithEnablingCdcProperty()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (c BIGINT) WITH (change_data_feed_enabled = true)",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithEnablingCdcProperty()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (change_data_feed_enabled = true) AS SELECT 1 new_column",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceOnCdcEnabledTables()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT) WITH (change_data_feed_enabled = true)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT)",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsOnCdcEnabledTables()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_with_cdc", " (a BIGINT) WITH (change_data_feed_enabled = true)")) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 1 new_column",
+                    "CREATE OR REPLACE is not supported for tables with change data feed enabled");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithSameLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_same_location_",
+                " (a BIGINT)")) {
+            String location = metastore.getTable("test_schema", table.getName()).orElseThrow().getStorage().getLocation();
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT) WITH (location = '" + location + "')");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (d BIGINT) WITH (location = '" + location + "/')");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithSameLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_with_same_location_",
+                " (a BIGINT)")) {
+            String location = metastore.getTable("test_schema", table.getName()).orElseThrow().getStorage().getLocation();
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '" + location + "') AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '" + location + "/') AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_change_location_", " (a BIGINT) ")) {
+            String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s')".formatted(location),
+                    "The provided location '%s' does not match the existing table location '.*'".formatted(location));
+
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s/')".formatted(location),
+                    "The provided location '%s/' does not match the existing table location '.*'".formatted(location));
+
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceAsTableWithChangeInLocationForManagedTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_create_or_replace_change_location_", " (a BIGINT) ")) {
+            String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s') AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%s' does not match the existing table location '.*'".formatted(location));
+
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s/')  AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%s/' does not match the existing table location '.*'".formatted(location));
+
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInLocationForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_change_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " (a BIGINT) WITH (location = '%s_2')".formatted(location),
+                    "The provided location '%1$s_2' does not match the existing table location '%1$s'".formatted(location));
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("location = '%s'".formatted(location));
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithChangeInLocationForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_create_or_replace_change_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertQueryFails(
+                    "CREATE OR REPLACE TABLE " + table.getName() + " WITH (location = '%s_2') AS SELECT 'a' colA".formatted(location),
+                    "The provided location '%1$s_2' does not match the existing table location '%1$s'".formatted(location));
+
+            assertThat((String) computeScalar("SHOW CREATE TABLE " + table.getName()))
+                    .contains("location = '%s'".formatted(location));
+            assertLatestTableOperation(table.getName(), CREATE_TABLE_OPERATION);
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithNoLocationSpecifiedForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA VARCHAR)");
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithNoLocationSpecifiedForExternalTable()
+    {
+        String location = "s3://%s/%s".formatted(bucketName, randomNameSuffix());
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT) WITH (location = '%s')".formatted(location))) {
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), EXTERNAL_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithNoLocationSpecifiedForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT)")) {
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA VARCHAR)");
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithNoLocationSpecifiedForManagedTable()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_no_location_",
+                " (a BIGINT)")) {
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 'abc' as colA", 1);
+            assertTableType("test_schema", table.getName(), MANAGED_TABLE.name());
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithStatsUpdated()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_for_stats_",
+                " AS SELECT 1 as colA")) {
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', null, 1.0, 0.0, null, '1', '1')," +
+                            "(null, null, null, null, 1.0, null, null)");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " (colA BIGINT) ");
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', 0.0, 0.0, 1.0, null, null, null)," +
+                            "(null, null, null, null, 0.0, null, null)");
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES null", 1);
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', 0.0, 0.0, 1.0, null, null, null)," +
+                            "(null, null, null, null, 1.0, null, null)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableAsWithStatsUpdated()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_for_stats_",
+                " AS SELECT 1 as colA")) {
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('cola', null, 1.0, 0.0, null, '1', '1')," +
+                            "(null, null, null, null, 1.0, null, null)");
+
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " AS SELECT 25 colb ", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (null)", 1);
+            assertQuery(
+                    "SHOW STATS FOR " + table.getName(),
+                    "VALUES" +
+                            "('colb', null, 1.0, 0.5, null, '25', '25')," +
+                            "(null, null, null, null, 2.0, null, null)");
+        }
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInColumnMappingToId()
+    {
+        testTableOperationWithChangeInColumnMappingMode("id");
+    }
+
+    @Test
+    public void testCreateOrReplaceTableWithChangeInColumnMappingToName()
+    {
+        testTableOperationWithChangeInColumnMappingMode("name");
+    }
+
+    public void testTableOperationWithChangeInColumnMappingMode(String columnMappingMode)
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "create_or_replace_with_change_column_mapping_",
+                " AS SELECT 1 as colA, 'B' as colB")) {
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " DROP COLUMN colA",
+                    "Cannot drop column from table using column mapping mode NONE");
+            assertQueryFails(
+                    "ALTER TABLE " + table.getName() + " RENAME COLUMN colA TO renamed_column",
+                    "Cannot rename column in table using column mapping mode NONE");
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " WITH (column_mapping_mode = '" + columnMappingMode + "') AS SELECT 25 colc, 'D' cold ", 1);
+            assertQuery("SELECT colc FROM " + table.getName(), "VALUES 25");
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN colc");
+            assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN cold TO colc");
+            assertQuery("SELECT colc FROM " + table.getName(), "VALUES 'D'");
+        }
+    }
+
+    private void assertLatestTableOperation(String tableName, String operation)
+    {
+        assertQuery("SELECT operation FROM \"%s$history\" ORDER BY version DESC LIMIT 1".formatted(tableName),
+                "VALUES '%s'".formatted(operation));
+    }
+
+    private void assertTableType(String schemaName, String tableName, String tableType)
+    {
+        assertThat(metastore.getTable(schemaName, tableName).orElseThrow().getTableType()).isEqualTo(tableType);
     }
 
     private void testSupportedNonPartitionedColumnMappingWrites(String resourceName, boolean statsAsJsonEnabled)
@@ -1550,7 +2302,7 @@ public class TestDeltaLakeConnectorTest
         minioClient.putObject(bucketName, entry.getBytes(UTF_8), targetPath);
         String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
 
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, tableLocation));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation));
         assertQueryReturnsEmptyResult("SELECT * FROM " + tableName);
 
         assertUpdate(
@@ -1619,31 +2371,34 @@ public class TestDeltaLakeConnectorTest
     /**
      * @see deltalake.write_stats_as_json_partition_column_mapping_id
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedPartitionedColumnMappingIdWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedPartitionedColumnMappingIdWrites()
             throws Exception
     {
-        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_id", statsAsJsonEnabled);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_id", true);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_id", false);
     }
 
     /**
      * @see deltalake.write_stats_as_json_partition_column_mapping_name
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedPartitionedColumnMappingNameWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedPartitionedColumnMappingNameWrites()
             throws Exception
     {
-        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_name", statsAsJsonEnabled);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_name", true);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_name", false);
     }
 
     /**
      * @see deltalake.write_stats_as_json_partition_column_mapping_none
      */
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
-    public void testSupportedPartitionedColumnMappingNoneWrites(boolean statsAsJsonEnabled)
+    @Test
+    public void testSupportedPartitionedColumnMappingNoneWrites()
             throws Exception
     {
-        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_none", statsAsJsonEnabled);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_none", true);
+        testSupportedPartitionedColumnMappingWrites("write_stats_as_json_partition_column_mapping_none", false);
     }
 
     private void testSupportedPartitionedColumnMappingWrites(String resourceName, boolean statsAsJsonEnabled)
@@ -1659,7 +2414,7 @@ public class TestDeltaLakeConnectorTest
         minioClient.putObject(bucketName, entry.getBytes(UTF_8), targetPath);
         String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
 
-        assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, tableName, tableLocation));
+        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation));
         assertQueryReturnsEmptyResult("SELECT * FROM " + tableName);
 
         assertUpdate(
@@ -1725,18 +2480,102 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @DataProvider
-    public Object[][] columnMappingWithTrueAndFalseDataProvider()
+    @Test
+    public void testDeltaColumnMappingModeAllPartitionTypesCheckpointing()
     {
-        return cartesianProduct(columnMappingModeDataProvider(), trueFalse());
+        testDeltaColumnMappingModeAllPartitionTypesCheckpointing(ColumnMappingMode.NONE);
+        testDeltaColumnMappingModeAllPartitionTypesCheckpointing(ColumnMappingMode.ID);
+        testDeltaColumnMappingModeAllPartitionTypesCheckpointing(ColumnMappingMode.NAME);
     }
 
-    @DataProvider
-    public Object[][] columnMappingModeDataProvider()
+    private void testDeltaColumnMappingModeAllPartitionTypesCheckpointing(ColumnMappingMode mode)
     {
-        return Arrays.stream(ColumnMappingMode.values())
-                .filter(mode -> mode != ColumnMappingMode.UNKNOWN)
-                .collect(toDataProvider());
+        String tableName = "test_column_mapping_mode_name_all_types_" + randomNameSuffix();
+
+        assertUpdate("""
+                CREATE TABLE %s (
+                    data INT,
+                    part_boolean BOOLEAN,
+                    part_tinyint TINYINT,
+                    part_smallint SMALLINT,
+                    part_int INT,
+                    part_bigint BIGINT,
+                    part_decimal_5_2 DECIMAL(5,2),
+                    part_decimal_21_3 DECIMAL(21,3),
+                    part_double DOUBLE,
+                    part_float REAL,
+                    part_varchar VARCHAR,
+                    part_date DATE,
+                    part_timestamp TIMESTAMP(3) WITH TIME ZONE
+                )
+                WITH (
+                    partitioned_by = ARRAY['part_boolean', 'part_tinyint', 'part_smallint', 'part_int', 'part_bigint', 'part_decimal_5_2', 'part_decimal_21_3', 'part_double', 'part_float', 'part_varchar', 'part_date', 'part_timestamp'],
+                    column_mapping_mode = '%s',
+                    checkpoint_interval = 3
+                )""".formatted(tableName, mode));
+
+        assertUpdate("""
+                INSERT INTO %s
+                    VALUES (
+                   1,
+                   true,
+                   1,
+                   10,
+                   100,
+                   1000,
+                   CAST('123.12' AS DECIMAL(5,2)),
+                   CAST('123456789012345678.123' AS DECIMAL(21,3)),
+                   DOUBLE '0',
+                   REAL '0',
+                   'a',
+                   DATE '2020-08-21',
+                   TIMESTAMP '2020-10-21 01:00:00.123 UTC')""".formatted(tableName), 1);
+        assertUpdate("""
+                INSERT INTO %s
+                    VALUES (
+                        2,
+                        true,
+                        2,
+                        20,
+                        200,
+                        2000,
+                        CAST('223.12' AS DECIMAL(5,2)),
+                        CAST('223456789012345678.123' AS DECIMAL(21,3)),
+                        DOUBLE '0',
+                        REAL '0',
+                        'b',
+                        DATE '2020-08-22',
+                        TIMESTAMP '2020-10-22 02:00:00.456 UTC')""".formatted(tableName), 1);
+        assertUpdate("""
+                INSERT INTO %s
+                    VALUES (
+                        3,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL)""".formatted(tableName), 1);
+
+        // Make sure that the checkpoint is being processed
+        assertUpdate("CALL system.flush_metadata_cache(schema_name => CURRENT_SCHEMA, table_name => '" + tableName + "')");
+        assertThat(query("""
+                SELECT data, part_boolean, part_tinyint, part_smallint, part_int, part_bigint, part_decimal_5_2, part_decimal_21_3, part_double , part_float, part_varchar, part_date, part_timestamp
+                FROM %s""".formatted(tableName)))
+                .skippingTypesCheck()
+                .matches("""
+                        VALUES
+                            (1, true, tinyint '1', smallint '10', integer '100', bigint '1000', decimal '123.12', decimal '123456789012345678.123', double '0', real '0', 'a', date '2020-08-21', TIMESTAMP '2020-10-21 01:00:00.123 UTC'),
+                            (2, true, tinyint '2', smallint '20', integer '200', bigint '2000', decimal '223.12', decimal '223456789012345678.123', double '0.0', real '0.0', 'b', date '2020-08-22', TIMESTAMP '2020-10-22 02:00:00.456 UTC'),
+                            (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)""");
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -1754,7 +2593,7 @@ public class TestDeltaLakeConnectorTest
         assertQueryFails("CREATE TABLE " + tableName + " WITH (column_mapping_mode = 'unknown') AS SELECT 1 a",
                 ".* \\QInvalid value [unknown]. Valid values: [ID, NAME, NONE]");
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Test
@@ -1793,6 +2632,21 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES change_data_feed_enabled = true");
         assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
                 .contains("change_data_feed_enabled = true");
+    }
+
+    @Test
+    public void testCreateTableWithExistingLocation()
+    {
+        String tableName = "test_legacy_create_table_" + randomNameSuffix();
+
+        assertQuerySucceeds("CREATE TABLE " + tableName + " AS SELECT 1 as a, 'INDIA' as b, true as c");
+        assertQuery("SELECT * FROM " + tableName, "VALUES (1, 'INDIA', true)");
+
+        String tableLocation = (String) computeScalar("SELECT DISTINCT regexp_replace(\"$path\", '/[^/]*$', '') FROM " + tableName);
+        assertUpdate("CALL system.unregister_table(CURRENT_SCHEMA, '" + tableName + "')");
+
+        assertQueryFails(format("CREATE TABLE %s (dummy int) with (location = '%s')", tableName, tableLocation),
+                ".*Using CREATE \\[OR REPLACE] TABLE with an existing table content is disallowed.*");
     }
 
     @Test
@@ -1848,7 +2702,7 @@ public class TestDeltaLakeConnectorTest
         assertExplain(
                 "EXPLAIN SELECT root.f2 FROM " + tableName,
                 "TableScan\\[table = (.*)]",
-                "root#f2 := root#f2:bigint:REGULAR");
+                "(.*) := (.*):bigint:REGULAR");
 
         Session sessionWithoutPushdown = Session.builder(getSession())
                 .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "projection_pushdown_enabled", "false")
@@ -1857,7 +2711,7 @@ public class TestDeltaLakeConnectorTest
                 sessionWithoutPushdown,
                 "EXPLAIN SELECT root.f2 FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr := \"root\"\\[2]",
+                "expr := root.1",
                 "root := root:row\\(f1 bigint, f2 bigint\\):REGULAR");
 
         assertUpdate("DROP TABLE " + tableName);
@@ -1874,16 +2728,23 @@ public class TestDeltaLakeConnectorTest
         assertExplain(
                 "EXPLAIN SELECT id, _row.child, _array[1].child, _map[1] FROM " + tableName,
                 "ScanProject\\[table = (.*)]",
-                "expr(.*) := \"_array(.*)\"\\[BIGINT '1']\\[1]",
+                "expr(.*) := .*\\$subscript\\(.*, bigint '1'\\).0",
                 "id(.*) := id:bigint:REGULAR",
                 // _array:array\\(row\\(child bigint\\)\\) is a symbol name, not a dereference expression.
-                "_array(.*) := _array:array\\(row\\(child bigint\\)\\):REGULAR",
-                "_map(.*) := _map:map\\(bigint, bigint\\):REGULAR",
-                "_row#child := _row#child:bigint:REGULAR");
+                "(.*) := _array:array\\(row\\(child bigint\\)\\):REGULAR",
+                "(.*) := _map:map\\(bigint, bigint\\):REGULAR",
+                "(.*) := _row#child:bigint:REGULAR");
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadCdfChanges(ColumnMappingMode mode)
+    @Test
+    public void testReadCdfChanges()
+    {
+        testReadCdfChanges(ColumnMappingMode.ID);
+        testReadCdfChanges(ColumnMappingMode.NAME);
+        testReadCdfChanges(ColumnMappingMode.NONE);
+    }
+
+    private void testReadCdfChanges(ColumnMappingMode mode)
     {
         String tableName = "test_basic_operations_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -1892,7 +2753,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url4', 'domain4', 4), ('url5', 'domain5', 2), ('url6', 'domain6', 6)", 3);
 
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url22' WHERE views = 2", 2);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -1908,14 +2769,14 @@ public class TestDeltaLakeConnectorTest
                         """);
 
         assertUpdate("DELETE FROM " + tableName + " WHERE views = 2", 2);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url22', 'domain2', 2, 'delete', BIGINT '4'),
                             ('url22', 'domain5', 2, 'delete', BIGINT '4')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "')) ORDER BY _commit_version, _change_type, domain",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "')) ORDER BY _commit_version, _change_type, domain",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -1933,8 +2794,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadCdfChangesOnPartitionedTable(ColumnMappingMode mode)
+    @Test
+    public void testReadCdfChangesOnPartitionedTable()
+    {
+        testReadCdfChangesOnPartitionedTable(ColumnMappingMode.ID);
+        testReadCdfChangesOnPartitionedTable(ColumnMappingMode.NAME);
+        testReadCdfChangesOnPartitionedTable(ColumnMappingMode.NONE);
+    }
+
+    private void testReadCdfChangesOnPartitionedTable(ColumnMappingMode mode)
     {
         String tableName = "test_basic_operations_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -1954,7 +2822,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url6', 'domain4', 2)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -1978,7 +2846,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url4', 'domain1', 400),
                                 ('url5', 'domain2', 500)
                         """);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url2', 'domain4', 2, 'delete', BIGINT '4'),
@@ -2013,7 +2881,7 @@ public class TestDeltaLakeConnectorTest
 
         assertUpdate("INSERT INTO " + tableName + " VALUES('url5', 5)", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 1, 'insert', BIGINT '1'),
@@ -2024,8 +2892,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadMergeChanges(ColumnMappingMode mode)
+    @Test
+    public void testReadMergeChanges()
+    {
+        testReadMergeChanges(ColumnMappingMode.ID);
+        testReadMergeChanges(ColumnMappingMode.NAME);
+        testReadMergeChanges(ColumnMappingMode.NONE);
+    }
+
+    private void testReadMergeChanges(ColumnMappingMode mode)
     {
         String tableName1 = "test_basic_operations_on_table_with_cdf_enabled_merge_into_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName1 + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -2054,7 +2929,7 @@ public class TestDeltaLakeConnectorTest
                                 ('url4', 'domain4', 44),
                                 ('url5', 'domain5', 50)
                         """);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName1 + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName1 + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2070,8 +2945,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadMergeChangesOnPartitionedTable(ColumnMappingMode mode)
+    @Test
+    public void testReadMergeChangesOnPartitionedTable()
+    {
+        testReadMergeChangesOnPartitionedTable(ColumnMappingMode.ID);
+        testReadMergeChangesOnPartitionedTable(ColumnMappingMode.NAME);
+        testReadMergeChangesOnPartitionedTable(ColumnMappingMode.NONE);
+    }
+
+    private void testReadMergeChangesOnPartitionedTable(ColumnMappingMode mode)
     {
         String targetTable = "test_basic_operations_on_partitioned_table_with_cdf_enabled_target_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + targetTable + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -2100,7 +2982,7 @@ public class TestDeltaLakeConnectorTest
                             ('url5', 'domain3', 5)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + targetTable + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + targetTable + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', 1),
@@ -2136,7 +3018,7 @@ public class TestDeltaLakeConnectorTest
                            ('url6', 'domain1', 600)
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + targetTable + "', 2))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + targetTable + "', 2))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'delete', BIGINT '3'),
@@ -2148,29 +3030,43 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCdfCommitTimestamp(ColumnMappingMode mode)
+    @Test
+    public void testCdfCommitTimestamp()
+    {
+        testCdfCommitTimestamp(ColumnMappingMode.ID);
+        testCdfCommitTimestamp(ColumnMappingMode.NAME);
+        testCdfCommitTimestamp(ColumnMappingMode.NONE);
+    }
+
+    private void testCdfCommitTimestamp(ColumnMappingMode mode)
     {
         String tableName = "test_cdf_commit_timestamp_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
                 "WITH (change_data_feed_enabled = true, column_mapping_mode = '" + mode + "')");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         ZonedDateTime historyCommitTimestamp = (ZonedDateTime) computeScalar("SELECT timestamp FROM \"" + tableName + "$history\" WHERE version = 1");
-        ZonedDateTime tableChangesCommitTimestamp = (ZonedDateTime) computeScalar("SELECT _commit_timestamp FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0)) WHERE _commit_Version = 1");
+        ZonedDateTime tableChangesCommitTimestamp = (ZonedDateTime) computeScalar("SELECT _commit_timestamp FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0)) WHERE _commit_Version = 1");
         assertThat(historyCommitTimestamp).isEqualTo(tableChangesCommitTimestamp);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadDifferentChangeRanges(ColumnMappingMode mode)
+    @Test
+    public void testReadDifferentChangeRanges()
+    {
+        testReadDifferentChangeRanges(ColumnMappingMode.ID);
+        testReadDifferentChangeRanges(ColumnMappingMode.NAME);
+        testReadDifferentChangeRanges(ColumnMappingMode.NONE);
+    }
+
+    private void testReadDifferentChangeRanges(ColumnMappingMode mode)
     {
         String tableName = "test_reading_ranges_of_changes_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
                 "WITH (change_data_feed_enabled = true, column_mapping_mode = '" + mode + "')");
-        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))");
+        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
-        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))");
+        assertQueryReturnsEmptyResult("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))");
 
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url22' WHERE domain = 'domain2'", 1);
         assertUpdate("UPDATE " + tableName + " SET page_url = 'url33' WHERE views = 3", 1);
@@ -2183,9 +3079,9 @@ public class TestDeltaLakeConnectorTest
                            ('url33', 'domain3', 3)
                         """);
 
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 1000))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 1000))",
                 "since_version: 1000 is higher then current table version: 6");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2198,7 +3094,7 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2211,7 +3107,7 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url2', 'domain2', 2, 'update_preimage', BIGINT '4'),
@@ -2221,13 +3117,20 @@ public class TestDeltaLakeConnectorTest
                             ('url1', 'domain1', 1, 'delete', BIGINT '6')
                         """);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 5))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 5))",
                 "VALUES ('url1', 'domain1', 1, 'delete', BIGINT '6')");
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 10))", "since_version: 10 is higher then current table version: 6");
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 10))", "since_version: 10 is higher then current table version: 6");
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadChangesOnTableWithColumnAdded(ColumnMappingMode mode)
+    @Test
+    public void testReadChangesOnTableWithColumnAdded()
+    {
+        testReadChangesOnTableWithColumnAdded(ColumnMappingMode.ID);
+        testReadChangesOnTableWithColumnAdded(ColumnMappingMode.NAME);
+        testReadChangesOnTableWithColumnAdded(ColumnMappingMode.NONE);
+    }
+
+    private void testReadChangesOnTableWithColumnAdded(ColumnMappingMode mode)
     {
         String tableName = "test_reading_changes_on_table_with_columns_added_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -2236,7 +3139,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN company VARCHAR");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2, 'starburst')", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, null, 'insert', BIGINT '1'),
@@ -2244,8 +3147,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadChangesOnTableWithRowColumn(ColumnMappingMode mode)
+    @Test
+    public void testReadChangesOnTableWithRowColumn()
+    {
+        testReadChangesOnTableWithRowColumn(ColumnMappingMode.ID);
+        testReadChangesOnTableWithRowColumn(ColumnMappingMode.NAME);
+        testReadChangesOnTableWithRowColumn(ColumnMappingMode.NONE);
+    }
+
+    private void testReadChangesOnTableWithRowColumn(ColumnMappingMode mode)
     {
         String tableName = "test_reading_changes_on_table_with_columns_added_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, costs ROW(month VARCHAR, amount BIGINT)) " +
@@ -2254,7 +3164,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', ROW('02', 19))", 1);
         assertUpdate("UPDATE " + tableName + " SET costs = ROW('02', 37) WHERE costs.month = '02'", 1);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', ROW('01', BIGINT '11') , 'insert', BIGINT '1'),
@@ -2263,7 +3173,7 @@ public class TestDeltaLakeConnectorTest
                             ('url2', ROW('02', BIGINT '37') , 'update_postimage', BIGINT '3')
                         """);
 
-        assertThat(query("SELECT costs.month, costs.amount, _commit_version FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))"))
+        assertThat(query("SELECT costs.month, costs.amount, _commit_version FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))"))
                 .matches("""
                         VALUES
                             (VARCHAR '01', BIGINT '11', BIGINT '1'),
@@ -2273,8 +3183,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCdfOnTableWhichDoesntHaveItEnabledInitially(ColumnMappingMode mode)
+    @Test
+    public void testCdfOnTableWhichDoesntHaveItEnabledInitially()
+    {
+        testCdfOnTableWhichDoesntHaveItEnabledInitially(ColumnMappingMode.ID);
+        testCdfOnTableWhichDoesntHaveItEnabledInitially(ColumnMappingMode.NAME);
+        testCdfOnTableWhichDoesntHaveItEnabledInitially(ColumnMappingMode.NONE);
+    }
+
+    private void testCdfOnTableWhichDoesntHaveItEnabledInitially(ColumnMappingMode mode)
     {
         String tableName = "test_cdf_on_table_without_it_initially_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -2282,7 +3199,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url1', 'domain1', 1)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url2', 'domain2', 2)", 1);
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2302,11 +3219,11 @@ public class TestDeltaLakeConnectorTest
                            ('url33', 'domain3', 3)
                         """);
 
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 "Change Data Feed is not enabled at version 4. Version contains 'remove' entries without 'cdc' entries");
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 "Change Data Feed is not enabled at version 4. Version contains 'remove' entries without 'cdc' entries");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 5))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 5))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'update_preimage', BIGINT '6'),
@@ -2315,8 +3232,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testReadChangesFromCtasTable(ColumnMappingMode mode)
+    @Test
+    public void testReadChangesFromCtasTable()
+    {
+        testReadChangesFromCtasTable(ColumnMappingMode.ID);
+        testReadChangesFromCtasTable(ColumnMappingMode.NAME);
+        testReadChangesFromCtasTable(ColumnMappingMode.NONE);
+    }
+
+    private void testReadChangesFromCtasTable(ColumnMappingMode mode)
     {
         String tableName = "test_basic_operations_on_table_with_cdf_enabled_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " WITH (change_data_feed_enabled = true, column_mapping_mode = '" + mode + "') " +
@@ -2325,7 +3249,7 @@ public class TestDeltaLakeConnectorTest
                         "('url2', 'domain2', 2)) t(page_url, domain, views)",
                 2);
 
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "'))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "'))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '0'),
@@ -2333,8 +3257,60 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testVacuumDeletesCdfFiles(ColumnMappingMode mode)
+    @Test
+    public void testVacuumTableUsingVersionDeletedCheckpoints()
+            throws Exception
+    {
+        Session sessionWithShortRetentionUnlocked = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "vacuum_min_retention", "0s")
+                .build();
+
+        String tableName = "test_vacuum_deleted_version_" + randomNameSuffix();
+        String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
+        String deltaLog = "%s/%s/_delta_log".formatted(SCHEMA, tableName);
+
+        assertUpdate("CREATE TABLE " + tableName + " WITH (location = '" + tableLocation + "', checkpoint_interval = 1) AS SELECT 1 id", 1);
+        Set<String> initialFiles = getActiveFiles(tableName);
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES 2", 1);
+        assertUpdate("UPDATE " + tableName + " SET id = 3 WHERE id = 1", 1);
+        Stopwatch timeSinceUpdate = Stopwatch.createStarted();
+
+        // Remove 0 and 1 versions
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(7);
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000000.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.checkpoint.parquet");
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(4);
+
+        assertQuery("SELECT * FROM " + tableName, "VALUES 2, 3");
+        Set<String> updatedFiles = getActiveFiles(tableName);
+
+        assertUpdate("CALL system.vacuum(schema_name => CURRENT_SCHEMA, table_name => '" + tableName + "', retention => '7d')");
+
+        // Verify VACUUM disregards updated file because it still fits during the retention time
+        assertThat(getAllDataFilesFromTableDirectory(tableName)).isEqualTo(Sets.union(initialFiles, updatedFiles));
+        assertQuery("SELECT * FROM " + tableName, "VALUES 2, 3");
+
+        MILLISECONDS.sleep(1_000 - timeSinceUpdate.elapsed(MILLISECONDS) + 1);
+        assertUpdate(sessionWithShortRetentionUnlocked, "CALL system.vacuum(schema_name => CURRENT_SCHEMA, table_name => '" + tableName + "', retention => '1s')");
+
+        assertThat(getAllDataFilesFromTableDirectory(tableName)).isEqualTo(updatedFiles);
+        assertQuery("SELECT * FROM " + tableName, "VALUES 2, 3");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testVacuumDeletesCdfFiles()
+            throws InterruptedException
+    {
+        testVacuumDeletesCdfFiles(ColumnMappingMode.ID);
+        testVacuumDeletesCdfFiles(ColumnMappingMode.NAME);
+        testVacuumDeletesCdfFiles(ColumnMappingMode.NONE);
+    }
+
+    private void testVacuumDeletesCdfFiles(ColumnMappingMode mode)
             throws InterruptedException
     {
         String tableName = "test_vacuum_correctly_deletes_cdf_files_" + randomNameSuffix();
@@ -2352,11 +3328,11 @@ public class TestDeltaLakeConnectorTest
         Set<String> allFilesFromCdfDirectory = getAllFilesFromCdfDirectory(tableName);
         assertThat(allFilesFromCdfDirectory).hasSizeGreaterThanOrEqualTo(3);
         long retention = timeSinceUpdate.elapsed().getSeconds();
-        getQueryRunner().execute(sessionWithShortRetentionUnlocked, "CALL delta.system.vacuum('test_schema', '" + tableName + "', '" + retention + "s')");
+        getQueryRunner().execute(sessionWithShortRetentionUnlocked, "CALL system.vacuum(CURRENT_SCHEMA, '" + tableName + "', '" + retention + "s')");
         allFilesFromCdfDirectory = getAllFilesFromCdfDirectory(tableName);
         assertThat(allFilesFromCdfDirectory).hasSizeBetween(1, 2);
-        assertQueryFails("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 2))", "Error opening Hive split.*/_change_data/.*The specified key does not exist.*");
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 3))",
+        assertQueryFails("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 2))", "Error opening Hive split.*/_change_data/.*");
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 3))",
                 """
                         VALUES
                             ('url3', 'domain3', 3, 'update_preimage', BIGINT '4'),
@@ -2364,8 +3340,15 @@ public class TestDeltaLakeConnectorTest
                         """);
     }
 
-    @Test(dataProvider = "columnMappingModeDataProvider")
-    public void testCdfWithOptimize(ColumnMappingMode mode)
+    @Test
+    public void testCdfWithOptimize()
+    {
+        testCdfWithOptimize(ColumnMappingMode.ID);
+        testCdfWithOptimize(ColumnMappingMode.NAME);
+        testCdfWithOptimize(ColumnMappingMode.NONE);
+    }
+
+    private void testCdfWithOptimize(ColumnMappingMode mode)
     {
         String tableName = "test_cdf_with_optimize_" + randomNameSuffix();
         assertUpdate("CREATE TABLE " + tableName + " (page_url VARCHAR, domain VARCHAR, views INTEGER) " +
@@ -2376,7 +3359,7 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("UPDATE " + tableName + " SET views = views * 30 WHERE views = 3", 1);
         computeActual("ALTER TABLE " + tableName + " EXECUTE OPTIMIZE");
         assertUpdate("INSERT INTO " + tableName + " VALUES('url10', 'domain10', 10)", 1);
-        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + tableName + "', 0))",
+        assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 """
                         VALUES
                             ('url1', 'domain1', 1, 'insert', BIGINT '1'),
@@ -2398,19 +3381,25 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("INSERT INTO " + tableName + " VALUES('url3', 'domain3', 3)", 1);
 
         assertAccessDenied(
-                "SELECT * FROM TABLE(system.table_changes('" + SCHEMA + "', '" + tableName + "', 0))",
+                "SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 "Cannot execute function .*",
                 privilege("delta.system.table_changes", EXECUTE_FUNCTION));
 
         assertAccessDenied(
-                "SELECT * FROM TABLE(system.table_changes('" + SCHEMA + "', '" + tableName + "', 0))",
+                "SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + tableName + "', 0))",
                 "Cannot select from columns .*",
                 privilege(tableName, SELECT_COLUMN));
 
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProviderClass = DataProviders.class, dataProvider = "trueFalse")
+    @Test
+    public void testTableWithTrailingSlashLocation()
+    {
+        testTableWithTrailingSlashLocation(true);
+        testTableWithTrailingSlashLocation(false);
+    }
+
     public void testTableWithTrailingSlashLocation(boolean partitioned)
     {
         String tableName = "test_table_with_trailing_slash_location_" + randomNameSuffix();
@@ -2435,8 +3424,56 @@ public class TestDeltaLakeConnectorTest
         assertUpdate("DROP TABLE " + tableName);
     }
 
-    @Test(dataProvider = "deleteFiltersForTable")
-    public void testDeleteWithFilter(String createTableSql, String deleteFilter, boolean pushDownDelete)
+    @Test
+    public void testDeleteWithFilter()
+    {
+        testDeleteWithFilter(
+                "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
+                "address = 'Antioch'",
+                false);
+        testDeleteWithFilter(
+                // delete filter applied on function over non-partitioned field
+                "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "starts_with(address, 'Antioch')",
+                false);
+        testDeleteWithFilter(
+                // delete filter applied on partitioned field
+                "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "address = 'Antioch'",
+                true);
+        testDeleteWithFilter(
+                // delete filter applied on partitioned field and on synthesized field
+                "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "address = 'Antioch' AND \"$file_size\" > 0",
+                false);
+        testDeleteWithFilter(
+                // delete filter applied on function over partitioned field
+                "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
+                "starts_with(address, 'Antioch')",
+                false);
+        testDeleteWithFilter(
+                // delete filter applied on non-partitioned field
+                "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])",
+                "address = 'Antioch'",
+                false);
+        testDeleteWithFilter(
+                // delete filter fully applied on composed partition
+                "CREATE TABLE %s (purchases INT, customer VARCHAR, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
+                "address = 'Antioch' AND (customer = 'Aaron' OR customer = 'Bill')",
+                true);
+        testDeleteWithFilter(
+                // delete filter applied only partly on first partitioned field
+                "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
+                "address = 'Antioch'",
+                true);
+        testDeleteWithFilter(
+                // delete filter applied only partly on second partitioned field
+                "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
+                "address = 'Antioch'",
+                true);
+    }
+
+    private void testDeleteWithFilter(String createTableSql, String deleteFilter, boolean pushDownDelete)
     {
         String table = "delete_with_filter_" + randomNameSuffix();
         assertUpdate(format(createTableSql, table, bucketName, table));
@@ -2450,77 +3487,21 @@ public class TestDeltaLakeConnectorTest
                 plan -> {
                     if (pushDownDelete) {
                         boolean tableDelete = searchFrom(plan.getRoot()).where(node -> node instanceof TableDeleteNode).matches();
-                        assertTrue(tableDelete, "A TableDeleteNode should be present");
+                        assertThat(tableDelete)
+                                .describedAs("A TableDeleteNode should be present")
+                                .isTrue();
                     }
                     else {
-                        TableFinishNode finishNode = searchFrom(plan.getRoot())
+                        TableFinishNode finishNode = (TableFinishNode) searchFrom(plan.getRoot())
                                 .where(TableFinishNode.class::isInstance)
                                 .findOnlyElement();
-                        assertTrue(finishNode.getTarget() instanceof TableWriterNode.MergeTarget, "Delete operation should be performed through MERGE mechanism");
+                        assertThat(finishNode.getTarget() instanceof TableWriterNode.MergeTarget)
+                                .describedAs("Delete operation should be performed through MERGE mechanism")
+                                .isTrue();
                     }
                 });
         assertQuery("SELECT customer, purchases, address FROM " + table, "VALUES ('Mary', 10, 'Adelphi'), ('Aaron', 3, 'Dallas')");
         assertUpdate("DROP TABLE " + table);
-    }
-
-    @DataProvider
-    public Object[][] deleteFiltersForTable()
-    {
-        return new Object[][]{
-                {
-                        "CREATE TABLE %s (customer VARCHAR, purchases INT, address VARCHAR) WITH (location = 's3://%s/%s')",
-                        "address = 'Antioch'",
-                        false
-                },
-                {
-                        // delete filter applied on function over non-partitioned field
-                        "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "starts_with(address, 'Antioch')",
-                        false
-                },
-                {
-                        // delete filter applied on partitioned field
-                        "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "address = 'Antioch'",
-                        true
-                },
-                {
-                        // delete filter applied on partitioned field and on synthesized field
-                        "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "address = 'Antioch' AND \"$file_size\" > 0",
-                        false
-                },
-                {
-                        // delete filter applied on function over partitioned field
-                        "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address'])",
-                        "starts_with(address, 'Antioch')",
-                        false
-                },
-                {
-                        // delete filter applied on non-partitioned field
-                        "CREATE TABLE %s (customer VARCHAR, address VARCHAR, purchases INT) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer'])",
-                        "address = 'Antioch'",
-                        false
-                },
-                {
-                        // delete filter fully applied on composed partition
-                        "CREATE TABLE %s (purchases INT, customer VARCHAR, address VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
-                        "address = 'Antioch' AND (customer = 'Aaron' OR customer = 'Bill')",
-                        true
-                },
-                {
-                        // delete filter applied only partly on first partitioned field
-                        "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['address', 'customer'])",
-                        "address = 'Antioch'",
-                        true
-                },
-                {
-                        // delete filter applied only partly on second partitioned field
-                        "CREATE TABLE %s (purchases INT, address VARCHAR, customer VARCHAR) WITH (location = 's3://%s/%s', partitioned_by = ARRAY['customer', 'address'])",
-                        "address = 'Antioch'",
-                        true
-                },
-        };
     }
 
     @Override
@@ -2588,6 +3569,7 @@ public class TestDeltaLakeConnectorTest
     private void assertTableChangesQuery(@Language("SQL") String sql, @Language("SQL") String expectedResult)
     {
         assertThat(query(sql))
+                .result()
                 .exceptColumns("_commit_timestamp")
                 .skippingTypesCheck()
                 .matches(expectedResult);
@@ -2699,11 +3681,11 @@ public class TestDeltaLakeConnectorTest
                 "test_partition_left_",
                 "(x varchar, part varchar)",
                 ImmutableList.of("('a', 'part_a')"));
-                    TestTable rightTable = new TestTable(
-                            new TrinoSqlExecutor(getQueryRunner(), session),
-                           "test_partition_right_",
-                            "(x varchar, part varchar) WITH (partitioned_by = ARRAY['part'])",
-                            ImmutableList.of("('a', 'part_a')"))) {
+                TestTable rightTable = new TestTable(
+                        new TrinoSqlExecutor(getQueryRunner(), session),
+                        "test_partition_right_",
+                        "(x varchar, part varchar) WITH (partitioned_by = ARRAY['part'])",
+                        ImmutableList.of("('a', 'part_a')"))) {
             assertQueryFails(
                     session,
                     "SELECT a.x, b.x from %s a JOIN %s b on (a.x = b.x) where a.x = 'a'".formatted(leftTable.getName(), rightTable.getName()),
@@ -2725,11 +3707,11 @@ public class TestDeltaLakeConnectorTest
                 "test_partition_inferred_left_",
                 "(x varchar, part varchar) WITH (partitioned_by = ARRAY['part'])",
                 ImmutableList.of("('a', 'part_a')"));
-                    TestTable rightTable = new TestTable(
-                            new TrinoSqlExecutor(getQueryRunner(), session),
-                            "test_partition_inferred_right_",
-                            "(x varchar, part varchar) WITH (partitioned_by = ARRAY['part'])",
-                            ImmutableList.of("('a', 'part_a')"))) {
+                TestTable rightTable = new TestTable(
+                        new TrinoSqlExecutor(getQueryRunner(), session),
+                        "test_partition_inferred_right_",
+                        "(x varchar, part varchar) WITH (partitioned_by = ARRAY['part'])",
+                        ImmutableList.of("('a', 'part_a')"))) {
             assertQueryFails(
                     session,
                     "SELECT a.x, b.x from %s a JOIN %s b on (a.x = b.x) where a.x = 'a'".formatted(leftTable.getName(), rightTable.getName()),
@@ -2790,7 +3772,7 @@ public class TestDeltaLakeConnectorTest
                 "(x integer, part integer) WITH (partitioned_by = ARRAY['part'])",
                 ImmutableList.of("(1, 11)", "(2, 22)"))) {
             String expectedMessageRegExp = "ANALYZE statement can not be performed on partitioned tables because filtering is required on at least one partition." +
-                                           " However, the partition filtering check can be disabled with the catalog session property 'query_partition_filter_required'.";
+                    " However, the partition filtering check can be disabled with the catalog session property 'query_partition_filter_required'.";
             assertQueryFails(session, "ANALYZE " + table.getName(), expectedMessageRegExp);
             assertQueryFails(session, "EXPLAIN ANALYZE " + table.getName(), expectedMessageRegExp);
         }
@@ -2916,23 +3898,23 @@ public class TestDeltaLakeConnectorTest
             assertUpdate(session, "UPDATE " + table.getName() + " SET x = 20 WHERE part = 22", 1);
 
             assertQueryFails(session, "MERGE INTO " + table.getName() + " t " +
-                                      "USING (SELECT * FROM (VALUES (3, 99), (4,44))) AS s(x, part) " +
-                                      "ON t.x = s.x " +
-                                      "WHEN MATCHED THEN DELETE ", expectedMessageRegExp);
+                    "USING (SELECT * FROM (VALUES (3, 99), (4,44))) AS s(x, part) " +
+                    "ON t.x = s.x " +
+                    "WHEN MATCHED THEN DELETE ", expectedMessageRegExp);
             assertUpdate(session, "MERGE INTO " + table.getName() + " t " +
-                                  "USING (SELECT * FROM (VALUES (2, 22), (4 , 44))) AS s(x, part) " +
-                                  "ON (t.part = s.part) " +
-                                  "WHEN MATCHED THEN UPDATE " +
-                                  " SET x = t.x + s.x, part = t.part ", 1);
+                    "USING (SELECT * FROM (VALUES (2, 22), (4 , 44))) AS s(x, part) " +
+                    "ON (t.part = s.part) " +
+                    "WHEN MATCHED THEN UPDATE " +
+                    " SET x = t.x + s.x, part = t.part ", 1);
 
             assertQueryFails(session, "MERGE INTO " + table.getName() + " t " +
-                                      "USING (SELECT * FROM (VALUES (4,44))) AS s(x, part) " +
-                                      "ON t.x = s.x " +
-                                      "WHEN NOT MATCHED THEN INSERT (x, part) VALUES(s.x, s.part) ", expectedMessageRegExp);
+                    "USING (SELECT * FROM (VALUES (4,44))) AS s(x, part) " +
+                    "ON t.x = s.x " +
+                    "WHEN NOT MATCHED THEN INSERT (x, part) VALUES(s.x, s.part) ", expectedMessageRegExp);
             assertUpdate(session, "MERGE INTO " + table.getName() + " t " +
-                                  "USING (SELECT * FROM (VALUES (4, 44))) AS s(x, part) " +
-                                  "ON (t.part = s.part) " +
-                                  "WHEN NOT MATCHED THEN INSERT (x, part) VALUES(s.x, s.part) ", 1);
+                    "USING (SELECT * FROM (VALUES (4, 44))) AS s(x, part) " +
+                    "ON (t.part = s.part) " +
+                    "WHEN NOT MATCHED THEN INSERT (x, part) VALUES(s.x, s.part) ", 1);
 
             assertQueryFails(session, "DELETE FROM " + table.getName() + " WHERE x = 3", expectedMessageRegExp);
             assertUpdate(session, "DELETE FROM " + table.getName() + " WHERE part = 33 and x = 3", 1);
@@ -2957,7 +3939,7 @@ public class TestDeltaLakeConnectorTest
             assertQueryFails(session, "UPDATE " + table.getName() + " SET x = 10 WHERE x = 1", expectedMessageRegExp);
             assertUpdate(session, "UPDATE " + table.getName() + " SET x = 20 WHERE part = 22", 1);
             // TODO (https://github.com/trinodb/trino/issues/18498) Check for partition filter for table_changes when the following issue will be completed https://github.com/trinodb/trino/pull/17928
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "'))",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "'))",
                     """
                             VALUES
                                 (1,   11,  'insert',           BIGINT '1'),
@@ -2969,13 +3951,13 @@ public class TestDeltaLakeConnectorTest
 
             assertQueryFails(session, "DELETE FROM " + table.getName() + " WHERE x = 3", expectedMessageRegExp);
             assertUpdate(session, "DELETE FROM " + table.getName() + " WHERE part = 33 and x = 3", 1);
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "', 4))",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "', 4))",
                     """
                             VALUES
                                 (3, 33, 'delete', BIGINT '5')
                             """);
 
-            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes('test_schema', '" + table.getName() + "')) ORDER BY _commit_version, _change_type, part",
+            assertTableChangesQuery("SELECT * FROM TABLE(system.table_changes(CURRENT_SCHEMA, '" + table.getName() + "')) ORDER BY _commit_version, _change_type, part",
                     """
                             VALUES
                                 (1,   11,  'insert',           BIGINT '1'),
@@ -3049,11 +4031,11 @@ public class TestDeltaLakeConnectorTest
         String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
 
         String initialValues = "VALUES" +
-                               " (1, BOOLEAN 'false', TINYINT '-128')" +
-                               ",(2, BOOLEAN 'true', TINYINT '127')" +
-                               ",(3, BOOLEAN 'false', TINYINT '0')" +
-                               ",(4, BOOLEAN 'false', TINYINT '1')" +
-                               ",(5, BOOLEAN 'true', TINYINT '37')";
+                " (1, BOOLEAN 'false', TINYINT '-128')" +
+                ",(2, BOOLEAN 'true', TINYINT '127')" +
+                ",(3, BOOLEAN 'false', TINYINT '0')" +
+                ",(4, BOOLEAN 'false', TINYINT '1')" +
+                ",(5, BOOLEAN 'true', TINYINT '37')";
         assertUpdate("CREATE TABLE " + tableName + "(id, boolean, tinyint) WITH (location = '" + tableLocation + "') AS " + initialValues, 5);
         assertThat(query("SELECT * FROM " + tableName)).matches(initialValues);
 
@@ -3063,16 +4045,1054 @@ public class TestDeltaLakeConnectorTest
         }
 
         String newValues = "VALUES" +
-                           " (1, BOOLEAN 'true', TINYINT '1')" +
-                           ",(2, BOOLEAN 'true', TINYINT '1')" +
-                           ",(3, BOOLEAN 'false', TINYINT '2')" +
-                           ",(4, BOOLEAN 'true', TINYINT '3')" +
-                           ",(5, BOOLEAN 'true', TINYINT '5')" +
-                           ",(6, BOOLEAN 'false', TINYINT '8')" +
-                           ",(7, BOOLEAN 'true', TINYINT '13')";
+                " (1, BOOLEAN 'true', TINYINT '1')" +
+                ",(2, BOOLEAN 'true', TINYINT '1')" +
+                ",(3, BOOLEAN 'false', TINYINT '2')" +
+                ",(4, BOOLEAN 'true', TINYINT '3')" +
+                ",(5, BOOLEAN 'true', TINYINT '5')" +
+                ",(6, BOOLEAN 'false', TINYINT '8')" +
+                ",(7, BOOLEAN 'true', TINYINT '13')";
         assertUpdate("CREATE TABLE " + tableName + "(id, boolean, tinyint) WITH (location = '" + tableLocation + "') AS " + newValues, 7);
         assertThat(query("SELECT * FROM " + tableName)).matches(newValues);
 
         assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testQueriesWithoutCheckpointFiltering()
+    {
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("delta", "checkpoint_filtering_enabled", "false")
+                .build();
+
+        String tableName = "test_without_checkpoint_filtering_" + randomNameSuffix();
+        assertUpdate("CREATE TABLE " + tableName + " (col INT) " +
+                "WITH (checkpoint_interval=3)");
+
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 1", 1);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 2, 3", 2);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 4, 5", 2);
+
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 3, 4, 5");
+        assertUpdate(session, "UPDATE " + tableName + " SET col = 44 WHERE col = 4", 1);
+        assertUpdate(session, "DELETE FROM " + tableName + " WHERE col = 3", 1);
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES 1, 2, 44, 5");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTable()
+    {
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.900000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.560000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.489600'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.893560'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.100000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.900000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTable("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testCharCoercionOnCreateTable("CHAR 'ab '", "'ab '");
+        testCharCoercionOnCreateTable("CHAR 'A'", "'A'");
+        testCharCoercionOnCreateTable("CHAR 'é'", "'é'");
+        testCharCoercionOnCreateTable("CHAR 'A '", "'A '");
+        testCharCoercionOnCreateTable("CHAR ' A'", "' A'");
+        testCharCoercionOnCreateTable("CHAR 'ABc'", "'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTable(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table",
+                "(ts TIMESTAMP)")) {
+            assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (" + actualValue + ")", 1);
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testCharCoercionOnCreateTable(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table",
+                "(vch VARCHAR)")) {
+            assertUpdate("INSERT INTO " + testTable.getName() + " VALUES (" + actualValue + ")", 1);
+            assertThat(getColumnType(testTable.getName(), "vch")).isEqualTo("varchar");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+        }
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTableAsSelect()
+    {
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.900000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.560000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.489600'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.893560'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.100000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.900000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTableAsSelect("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testCharCoercionOnCreateTableAsSelect("CHAR 'ab '", "'ab '");
+        testCharCoercionOnCreateTableAsSelect("CHAR 'A'", "'A'");
+        testCharCoercionOnCreateTableAsSelect("CHAR 'é'", "'é'");
+        testCharCoercionOnCreateTableAsSelect("CHAR 'A '", "'A '");
+        testCharCoercionOnCreateTableAsSelect("CHAR ' A'", "' A'");
+        testCharCoercionOnCreateTableAsSelect("CHAR 'ABc'", "'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsSelect(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_select",
+                "AS SELECT %s ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testCharCoercionOnCreateTableAsSelect(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table_as_select",
+                "AS SELECT %s col".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "col")).isEqualTo("varchar");
+            assertQuery("SELECT * FROM " + testTable.getName(), "VALUES " + expectedValue);
+        }
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTableAsSelectWithNoData()
+    {
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123000'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123000'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234561'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456499999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.123456999999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.1234565'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.111222333444'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 00:00:00.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1970-01-01 23:59:59.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999995'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.999999499999'");
+        testTimestampCoercionOnCreateTableAsSelectWithNoData("TIMESTAMP '1969-12-31 23:59:59.9999994'");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR 'ab '");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR 'A'");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR 'é'");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR 'A '");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR ' A'");
+        testCharCoercionOnCreateTableAsSelectWithNoData("CHAR 'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsSelectWithNoData(@Language("SQL") String actualValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_select_with_no_data",
+                "AS SELECT %s ts WITH NO DATA".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("timestamp(6)");
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testCharCoercionOnCreateTableAsSelectWithNoData(@Language("SQL") String actualValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table_as_select_with_no_data",
+                "AS SELECT %s col WITH NO DATA".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "col")).isEqualTo("varchar");
+        }
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTableAsWithRowType()
+    {
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTableAsWithRowType("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'ab '", "CHAR(3)", "'ab '");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'A'", "CHAR(3)", "'A  '");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'A'", "CHAR(1)", "'A'");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'é'", "CHAR(3)", "'é  '");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'A '", "CHAR(3)", "'A  '");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR ' A'", "CHAR(3)", "' A '");
+        testCharCoercionOnCreateTableAsWithRowType("CHAR 'ABc'", "CHAR(3)", "'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithRowType(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_row_type",
+                "AS SELECT CAST(row(%s) AS row(value timestamp(6))) ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("row(value timestamp(6))");
+            assertThat(query("SELECT ts.value FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testCharCoercionOnCreateTableAsWithRowType(@Language("SQL") String actualValue, @Language("SQL") String actualTypeLiteral, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table_as_with_row_type",
+                "AS SELECT CAST(row(%s) AS row(value %s)) col".formatted(actualValue, actualTypeLiteral))) {
+            assertThat(getColumnType(testTable.getName(), "col")).isEqualTo("row(value varchar)");
+            assertThat(query("SELECT col.value FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+        }
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTableAsWithArrayType()
+    {
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTableAsWithArrayType("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR 'ab '", "'ab '");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR 'A'", "'A'");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR 'é'", "'é'");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR 'A '", "'A '");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR ' A'", "' A'");
+        testCharCoercionOnCreateTableAsWithArrayType("CHAR 'ABc'", "'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithArrayType(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_array_type",
+                "AS SELECT array[%s] ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("array(timestamp(6))");
+            assertThat(query("SELECT ts[1] FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+    private void testCharCoercionOnCreateTableAsWithArrayType(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table_as_with_array_type",
+                "AS SELECT array[%s] col".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "col")).isEqualTo("array(varchar)");
+            assertThat(query("SELECT col[1] FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("VALUES " + expectedValue);
+        }
+    }
+
+    @Test
+    public void testTypeCoercionOnCreateTableAsWithMapType()
+    {
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00'", "TIMESTAMP '1970-01-01 00:00:00'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.9'", "TIMESTAMP '1970-01-01 00:00:00.9'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.56'", "TIMESTAMP '1970-01-01 00:00:00.56'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.4896'", "TIMESTAMP '1970-01-01 00:00:00.4896'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.89356'", "TIMESTAMP '1970-01-01 00:00:00.89356'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123000'", "TIMESTAMP '1970-01-01 00:00:00.123'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.999'", "TIMESTAMP '1970-01-01 00:00:00.999'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123456'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.1'", "TIMESTAMP '2020-09-27 12:34:56.1'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.9'", "TIMESTAMP '2020-09-27 12:34:56.9'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.123'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.123000'", "TIMESTAMP '2020-09-27 12:34:56.123'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.999'", "TIMESTAMP '2020-09-27 12:34:56.999'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '2020-09-27 12:34:56.123456'", "TIMESTAMP '2020-09-27 12:34:56.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.1234561'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123456499'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123456499999'", "TIMESTAMP '1970-01-01 00:00:00.123456'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.123456999999'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.1234565'", "TIMESTAMP '1970-01-01 00:00:00.123457'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.111222333444'", "TIMESTAMP '1970-01-01 00:00:00.111222'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 00:00:00.9999995'", "TIMESTAMP '1970-01-01 00:00:01.000000'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1970-01-01 23:59:59.9999995'", "TIMESTAMP '1970-01-02 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1969-12-31 23:59:59.9999995'", "TIMESTAMP '1970-01-01 00:00:00.000000'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1969-12-31 23:59:59.999999499999'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testTimestampCoercionOnCreateTableAsWithMapType("TIMESTAMP '1969-12-31 23:59:59.9999994'", "TIMESTAMP '1969-12-31 23:59:59.999999'");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR 'ab '", "'ab '");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR 'A'", "'A'");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR 'é'", "'é'");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR 'A '", "'A '");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR ' A'", "' A'");
+        testCharCoercionOnCreateTableAsWithMapType("CHAR 'ABc'", "'ABc'");
+    }
+
+    private void testTimestampCoercionOnCreateTableAsWithMapType(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_timestamp_coercion_on_create_table_as_with_map_type",
+                "AS SELECT map(array[%1$s], array[%1$s]) ts".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "ts")).isEqualTo("map(timestamp(6), timestamp(6))");
+            assertThat(query("SELECT * FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("SELECT map(array[%1$s], array[%1$s])".formatted(expectedValue));
+            assertTimestampNtzFeature(testTable.getName());
+        }
+    }
+
+    private void testCharCoercionOnCreateTableAsWithMapType(@Language("SQL") String actualValue, @Language("SQL") String expectedValue)
+    {
+        try (TestTable testTable = new TestTable(
+                getQueryRunner()::execute,
+                "test_char_coercion_on_create_table_as_with_map_type",
+                "AS SELECT map(array[%1$s], array[%1$s]) col".formatted(actualValue))) {
+            assertThat(getColumnType(testTable.getName(), "col")).isEqualTo("map(varchar, varchar)");
+            assertThat(query("SELECT * FROM " + testTable.getName()))
+                    .skippingTypesCheck()
+                    .matches("SELECT map(array[%1$s], array[%1$s])".formatted(expectedValue));
+        }
+    }
+
+    @Test
+    public void testAddColumnWithTypeCoercion()
+    {
+        testAddColumnWithTypeCoercion("timestamp", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(0)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(1)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(2)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(3)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(4)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(5)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(6)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(7)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(8)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(9)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(10)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(11)", "timestamp(6)");
+        testAddColumnWithTypeCoercion("timestamp(12)", "timestamp(6)");
+
+        testAddColumnWithTypeCoercion("char(1)", "varchar");
+
+        testAddColumnWithTypeCoercion("array(char(10))", "array(varchar)");
+        testAddColumnWithTypeCoercion("map(char(20), char(30))", "map(varchar, varchar)");
+        testAddColumnWithTypeCoercion("row(x char(40))", "row(x varchar)");
+    }
+
+    private void testAddColumnWithTypeCoercion(String columnType, String expectedColumnType)
+    {
+        try (TestTable testTable = new TestTable(getQueryRunner()::execute, "test_coercion_add_column", "(a varchar, b row(x integer))")) {
+            // TODO: Update this test once the connector supports adding a new field to a row type
+            assertQueryFails("ALTER TABLE " + testTable.getName() + " ADD COLUMN b.y " + columnType, "This connector does not support adding fields");
+
+            assertUpdate("ALTER TABLE " + testTable.getName() + " ADD COLUMN c " + columnType);
+            assertThat(getColumnType(testTable.getName(), "c")).isEqualTo(expectedColumnType);
+        }
+    }
+
+    private void assertTimestampNtzFeature(String tableName)
+    {
+        assertThat(query("SELECT * FROM \"" + tableName + "$properties\""))
+                .skippingTypesCheck()
+                .containsAll("VALUES ('delta.minReaderVersion', '3'), ('delta.minWriterVersion', '7'), ('delta.feature.timestampNtz', 'supported')");
+    }
+
+    @Test
+    public void testSelectTableUsingVersion()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_select_table_using_version",
+                "(id INT, country VARCHAR)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (1, 'India')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (2, 'Germany')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (3, 'United States')", 1);
+
+            assertThat(query("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0"))
+                    .returnsEmptyResult();
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES (1, 'India')");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 4", "Delta Lake snapshot ID does not exists: 4");
+
+            // Dummy delete to increase transaction logs and generate checkpoint file
+            for (int i = 0; i < 20; i++) {
+                assertUpdate("DELETE FROM " + table.getName() + " WHERE id  = 10", 0);
+            }
+
+            // DML operations to create new transaction log
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (4, 'Austria')", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (5, 'Poland')", 1);
+            assertUpdate("UPDATE " + table.getName() + " SET country = 'USA' WHERE id  = 3", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id  = 2", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES (6, 'Japan')", 1);
+
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland'), (6, 'Japan')");
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 4", "VALUES (1, 'India'), (2, 'Germany'), (3, 'United States')");
+
+            // After Update
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 26", "VALUES (1, 'India'), (2, 'Germany'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+
+            // After Delete
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 27", "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+
+            // Recover data from last version after deleting whole table
+            assertUpdate("DELETE FROM " + table.getName(), 5);
+            assertThat(query("SELECT * FROM " + table.getName()))
+                    .returnsEmptyResult();
+            assertUpdate("INSERT INTO " + table.getName() + " (id, country) SELECT * FROM " + table.getName() + " FOR VERSION AS OF 27", 4);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES (1, 'India'), (3, 'USA'), (4, 'Austria'), (5, 'Poland')");
+        }
+    }
+
+    @Test
+    public void testReadMultipleVersions()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_multiple_versions", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery(
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0 " +
+                            "UNION ALL " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1",
+                    "VALUES 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithOptimize()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_optimize", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+
+            Set<String> beforeActiveFiles = getActiveFiles(table.getName());
+            computeActual("ALTER TABLE " + table.getName() + " EXECUTE OPTIMIZE");
+            assertThat(getActiveFiles(table.getName())).isNotEqualTo(beforeActiveFiles);
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, 2");
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 3", 1);
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES 1, 2, 3");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithVacuum()
+            throws Exception
+    {
+        Session sessionWithShortRetentionUnlocked = Session.builder(getSession())
+                .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "vacuum_min_retention", "0s")
+                .build();
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column_and_vacuum", "(x VARCHAR)")) {
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT 'first'", 1);
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT 'second'", 1);
+
+            Set<String> initialFiles = getActiveFiles(table.getName());
+            assertThat(initialFiles).hasSize(2);
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN a varchar(50)");
+
+            assertUpdate("UPDATE " + table.getName() + " SET a = 'new column'", 2);
+            Stopwatch timeSinceUpdate = Stopwatch.createStarted();
+            Set<String> updatedFiles = getActiveFiles(table.getName());
+            assertThat(updatedFiles)
+                    .hasSizeGreaterThanOrEqualTo(1)
+                    .hasSizeLessThanOrEqualTo(2)
+                    .doesNotContainAnyElementsOf(initialFiles);
+            assertThat(getAllDataFilesFromTableDirectory(table.getName())).isEqualTo(union(initialFiles, updatedFiles));
+
+            assertQuery("SELECT x, a FROM " + table.getName(), "VALUES ('first', 'new column'), ('second', 'new column')");
+
+            MILLISECONDS.sleep(1_000 - timeSinceUpdate.elapsed(MILLISECONDS) + 1);
+            assertUpdate(sessionWithShortRetentionUnlocked, "CALL system.vacuum(schema_name => CURRENT_SCHEMA, table_name => '" + table.getName() + "', retention => '1s')");
+
+            // Verify VACUUM happened, but table data didn't change
+            assertThat(getAllDataFilesFromTableDirectory(table.getName())).isEqualTo(updatedFiles);
+
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0");
+
+            // Failure is the expected behavior because the data file doesn't exist
+            // TODO: Improve error message
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "Error opening Hive split.*");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "Error opening Hive split.*");
+            assertQueryFails("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "Error opening Hive split.*");
+
+            assertQuery("SELECT x, a FROM " + table.getName() + " FOR VERSION AS OF 4", "VALUES ('first', 'new column'), ('second', 'new column')");
+        }
+    }
+
+    @Test
+    public void testInsertFromVersionedTable()
+    {
+        try (TestTable targetTable = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "(col int)");
+                TestTable sourceTable = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 col")) {
+            assertUpdate("INSERT INTO " + sourceTable.getName() + " VALUES 2", 1);
+            assertUpdate("INSERT INTO " + sourceTable.getName() + " VALUES 3", 1);
+
+            assertUpdate("INSERT INTO " + targetTable.getName() + " SELECT * FROM " + sourceTable.getName() + " FOR VERSION AS OF 0", 1);
+            assertQuery("SELECT * FROM " + targetTable.getName(), "VALUES 1");
+
+            assertUpdate("INSERT INTO " + targetTable.getName() + " SELECT * FROM " + sourceTable.getName() + " FOR VERSION AS OF 1", 2);
+            assertQuery("SELECT * FROM " + targetTable.getName(), "VALUES 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testInsertFromVersionedSameTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1");
+
+            assertUpdate("INSERT INTO " + table.getName() + " SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", 2);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1, 2, 1");
+
+            assertQuery(
+                    "SELECT version, operation, read_version, is_blind_append FROM \"" + table.getName() + "$history\"",
+                            """
+                            VALUES
+                                (0, 'CREATE TABLE AS SELECT', 0, true),
+                                (1, 'WRITE', 0, true),
+                                (2, 'WRITE', 1, true),
+                                (3, 'WRITE', 2, true)
+                            """);
+        }
+    }
+
+    @Test
+    public void testInsertFromMultipleVersionedSameTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_insert", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2");
+
+            assertUpdate(
+                    "INSERT INTO " + table.getName() + " " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0 " +
+                            "UNION ALL " +
+                            "SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1",
+                    3);
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2, 1, 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithChangeDataFeed()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_versioned_cdf", "WITH (change_data_feed_enabled=true) AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertUpdate("UPDATE " + table.getName() + " SET id = -2 WHERE id = 2", 1);
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE id = 1", 1);
+
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES 1, 2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 2", "VALUES 1, -2");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 3", "VALUES -2");
+        }
+    }
+
+    @Test
+    public void testSelectTableUsingVersionSchemaEvolution()
+    {
+        // Delta Lake respects the old schema unlike Iceberg connector
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_select_table_using_version", "AS SELECT 1 id")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN new_col VARCHAR");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 1", "VALUES (1, NULL)");
+        }
+    }
+
+    @Test
+    public void testSelectTableUsingVersionDeletedCheckpoints()
+    {
+        String tableName = "test_time_travel_" + randomNameSuffix();
+        String tableLocation = "s3://%s/%s/%s".formatted(bucketName, SCHEMA, tableName);
+        String deltaLog = "%s/%s/_delta_log".formatted(SCHEMA, tableName);
+
+        assertUpdate("CREATE TABLE " + tableName + " WITH (location = '" + tableLocation + "', checkpoint_interval = 1) AS SELECT 1 id", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES 2", 1);
+        assertUpdate("INSERT INTO " + tableName + " VALUES 3", 1);
+
+        // Remove 0 and 1 versions
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(7);
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000000.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.json");
+        minioClient.removeObject(bucketName, deltaLog + "/00000000000000000001.checkpoint.parquet");
+        assertThat(minioClient.listObjects(bucketName, deltaLog)).hasSize(4);
+
+        assertThat(computeActual("SELECT version FROM \"" + tableName + "$history\"").getOnlyColumnAsSet())
+                .containsExactly(2L);
+
+        assertQuery("SELECT * FROM " + tableName, "VALUES 1, 2, 3");
+
+        assertQueryFails("SELECT * FROM " + tableName + " FOR VERSION AS OF 0", "Delta Lake snapshot ID does not exists: 0");
+        assertQueryFails("SELECT * FROM " + tableName + " FOR VERSION AS OF 1", "Delta Lake snapshot ID does not exists: 1");
+
+        assertQuery("SELECT * FROM " + tableName + " FOR VERSION AS OF 2", "VALUES 1, 2, 3");
+    }
+
+    @Test
+    public void testSelectAfterReadVersionedTable()
+    {
+        // Run normal SELECT after reading from versioned table
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_select_after_version", "AS SELECT 1 id")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 2", 1);
+            assertQuery("SELECT * FROM " + table.getName() + " FOR VERSION AS OF 0", "VALUES 1");
+            assertQuery("SELECT * FROM " + table.getName(), "VALUES 1, 2");
+        }
+    }
+
+    @Test
+    public void testReadVersionedTableWithoutCheckpointFiltering()
+    {
+        String tableName = "test_without_checkpoint_filtering_" + randomNameSuffix();
+
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty("delta", "checkpoint_filtering_enabled", "false")
+                .build();
+
+        assertUpdate("CREATE TABLE " + tableName + "(col INT) WITH (checkpoint_interval = 3)");
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 1", 1);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 2, 3", 2);
+        assertUpdate(session, "INSERT INTO " + tableName + " VALUES 4, 5", 2);
+
+        assertQueryReturnsEmptyResult(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 0");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 1", "VALUES 1");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 2", "VALUES 1, 2, 3");
+        assertQuery(session, "SELECT * FROM " + tableName + " FOR VERSION AS OF 3", "VALUES 1, 2, 3, 4, 5");
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testReadVersionedSystemTables()
+    {
+        // TODO https://github.com/trinodb/trino/issues/12920 System tables not accessible with AS OF syntax
+        assertQueryFails("SELECT * FROM \"region$history\" FOR VERSION AS OF 0", "This connector does not support versioned tables");
+    }
+
+    @Override
+    protected void verifyVersionedQueryFailurePermissible(Exception e)
+    {
+        assertThat(e)
+                .hasMessageMatching("This connector does not support reading tables with TIMESTAMP AS OF|" +
+                        "Delta Lake snapshot ID does not exists: .*|" +
+                        "Unsupported type for table version: .*");
+    }
+
+    @Test
+    public void testMissingFieldName()
+    {
+        assertQueryFails("CREATE TABLE test_missing_field_name(a row(int, int))", "\\QRow type field does not have a name: row(integer, integer)");
+    }
+
+    @Test
+    public void testDuplicatedFieldNames()
+    {
+        String tableName = "test_duplicated_field_names" + randomNameSuffix();
+
+        assertQueryFails("CREATE TABLE " + tableName + "(col row(x int, \"X\" int))", "Field name 'x' specified more than once");
+        assertQueryFails("CREATE TABLE " + tableName + " AS SELECT cast(NULL AS row(x int, \"X\" int)) col", "Field name 'x' specified more than once");
+
+        assertQueryFails("CREATE TABLE " + tableName + "(col array(row(x int, \"X\" int)))", "Field name 'x' specified more than once");
+        assertQueryFails("CREATE TABLE " + tableName + " AS SELECT cast(NULL AS array(row(x int, \"X\" int))) col", "Field name 'x' specified more than once");
+
+        assertQueryFails("CREATE TABLE " + tableName + "(col map(int, row(x int, \"X\" int)))", "Field name 'x' specified more than once");
+        assertQueryFails("CREATE TABLE " + tableName + " AS SELECT cast(NULL AS map(int, row(x int, \"X\" int))) col", "Field name 'x' specified more than once");
+
+        assertQueryFails("CREATE TABLE " + tableName + "(col row(a row(x int, \"X\" int)))", "Field name 'x' specified more than once");
+        assertQueryFails("CREATE TABLE " + tableName + " AS SELECT cast(NULL AS row(a row(x int, \"X\" int))) col", "Field name 'x' specified more than once");
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_duplicated_field_names_", "(id int)")) {
+            assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col row(x int, \"X\" int)", ".* Field name 'x' specified more than once");
+
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN col row(\"X\" int)");
+            assertQueryFails("ALTER TABLE " + table.getName() + " ADD COLUMN col.x int", "line 1:1: Field 'x' already exists");
+
+            assertQueryFails("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE row(x int, \"X\" int)", "This connector does not support setting column types");
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int) COMMENT 'test comment'")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "test comment"),
+                            entry("trino_last_transaction_version", "0"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}"));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateOrReplaceTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int) COMMENT 'test comment'")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + "(new_col varchar) COMMENT 'new comment'");
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "new comment"),
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"new_col\",\"type\":\"string\",\"nullable\":true,\"metadata\":{}}]}"));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateTableAsSelect()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "COMMENT 'test comment' AS SELECT 1 col")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "test comment"),
+                            entry("trino_last_transaction_version", "0"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}"));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateOrReplaceTableAsSelect()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "COMMENT 'test comment' AS SELECT 1 col")) {
+            assertUpdate("CREATE OR REPLACE TABLE " + table.getName() + " COMMENT 'new comment' AS SELECT 'test' new_col", 1);
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "new comment"),
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"new_col\",\"type\":\"string\",\"nullable\":true,\"metadata\":{}}]}"));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCommentTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int)")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(
+                            entry("trino_last_transaction_version", "0"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}"));
+
+            assertUpdate("COMMENT ON TABLE " + table.getName() + " IS 'test comment'");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "test comment"),
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}")));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCommentColumn()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int COMMENT 'test comment')")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(
+                            entry("trino_last_transaction_version", "0"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{\"comment\":\"test comment\"}}]}"));
+
+            assertUpdate("COMMENT ON COLUMN " + table.getName() + ".col IS 'new test comment'");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{\"comment\":\"new test comment\"}}]}")));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterAlterColumn()
+    {
+        // Use 'name' column mapping mode to allow renaming columns
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int NOT NULL) WITH (column_mapping_mode = 'name')")) {
+            Map<String, String> initialParameters = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters();
+            assertThat(initialParameters)
+                    .doesNotContainKey("comment")
+                    .contains(entry("trino_last_transaction_version", "0"));
+            List<DeltaLakeColumnMetadata> initialColumns = getColumnMetadata(initialParameters.get("trino_metadata_schema_string"), TESTING_TYPE_MANAGER, ColumnMappingMode.NAME, ImmutableList.of());
+            assertThat(initialColumns).extracting(DeltaLakeColumnMetadata::columnMetadata)
+                    .containsExactly(ColumnMetadata.builder().setName("col").setType(INTEGER).setNullable(false).build());
+
+            // Drop not null constraints
+            assertUpdate("ALTER TABLE " + table.getName() + " ALTER COLUMN col DROP NOT NULL");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(entry("trino_last_transaction_version", "1")));
+            Map<String, String> dropNotNullParameters = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters();
+            List<DeltaLakeColumnMetadata> dropNotNullColumns = getColumnMetadata(dropNotNullParameters.get("trino_metadata_schema_string"), TESTING_TYPE_MANAGER, ColumnMappingMode.NAME, ImmutableList.of());
+            assertThat(dropNotNullColumns).extracting(DeltaLakeColumnMetadata::columnMetadata)
+                    .containsExactly(ColumnMetadata.builder().setName("col").setType(INTEGER).build());
+
+            // Add a new column
+            assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN new_col int COMMENT 'test comment'");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(entry("trino_last_transaction_version", "2")));
+            Map<String, String> addColumnParameters = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters();
+            List<DeltaLakeColumnMetadata> columnsAfterAddColumn = getColumnMetadata(addColumnParameters.get("trino_metadata_schema_string"), TESTING_TYPE_MANAGER, ColumnMappingMode.NAME, ImmutableList.of());
+            assertThat(columnsAfterAddColumn).extracting(DeltaLakeColumnMetadata::columnMetadata)
+                    .containsExactly(
+                            ColumnMetadata.builder().setName("col").setType(INTEGER).build(),
+                            ColumnMetadata.builder().setName("new_col").setType(INTEGER).setComment(Optional.of("test comment")).build());
+
+            // Rename a column
+            assertUpdate("ALTER TABLE " + table.getName() + " RENAME COLUMN new_col TO renamed_col");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(entry("trino_last_transaction_version", "3")));
+            Map<String, String> renameColumnParameters = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters();
+            List<DeltaLakeColumnMetadata> columnsAfterRenameColumn = getColumnMetadata(renameColumnParameters.get("trino_metadata_schema_string"), TESTING_TYPE_MANAGER, ColumnMappingMode.NAME, ImmutableList.of());
+            assertThat(columnsAfterRenameColumn).extracting(DeltaLakeColumnMetadata::columnMetadata)
+                    .containsExactly(
+                            ColumnMetadata.builder().setName("col").setType(INTEGER).build(),
+                            ColumnMetadata.builder().setName("renamed_col").setType(INTEGER).setComment(Optional.of("test comment")).build());
+
+            // Drop a column
+            assertUpdate("ALTER TABLE " + table.getName() + " DROP COLUMN renamed_col");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKey("comment")
+                    .contains(entry("trino_last_transaction_version", "4")));
+            Map<String, String> dropColumnParameters = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters();
+            List<DeltaLakeColumnMetadata> columnsAfterDropColumn = getColumnMetadata(dropColumnParameters.get("trino_metadata_schema_string"), TESTING_TYPE_MANAGER, ColumnMappingMode.NAME, ImmutableList.of());
+            assertThat(columnsAfterDropColumn).extracting(DeltaLakeColumnMetadata::columnMetadata)
+                    .containsExactly(ColumnMetadata.builder().setName("col").setType(INTEGER).build());
+
+            // Update the following test once the connector supports changing column types
+            assertQueryFails("ALTER TABLE " + table.getName() + " ALTER COLUMN col SET DATA TYPE bigint", "This connector does not support setting column types");
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterSetTableProperties()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int)")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " SET PROPERTIES change_data_feed_enabled = true");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}")));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterOptimize()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int)")) {
+            assertUpdate("ALTER TABLE " + table.getName() + " EXECUTE optimize");
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}")));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterRegisterTable()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int) COMMENT 'test comment'")) {
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 1", 1);
+            String tableLocation = metastore.getTable(SCHEMA, table.getName()).orElseThrow().getStorage().getLocation();
+            metastore.dropTable(SCHEMA, table.getName(), false);
+
+            assertUpdate("CALL system.register_table('%s', '%s', '%s')".formatted(SCHEMA, table.getName(), tableLocation));
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "test comment"),
+                            entry("trino_last_transaction_version", "1"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}"));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateTableRemotely()
+    {
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int) COMMENT 'test comment'")) {
+            Table metastoreTable = metastore.getTable(SCHEMA, table.getName()).orElseThrow();
+            metastore.dropTable(SCHEMA, table.getName(), false);
+
+            // Create a table on metastore directly to avoid cache during the creation
+            Set<String> filterKeys = ImmutableSet.of("comment", "trino_last_transaction_version", "trino_metadata_schema_string");
+            Table newMetastoreTable = Table.builder(metastoreTable)
+                    .setParameters(Maps.filterKeys(metastoreTable.getParameters(), key -> !filterKeys.contains(key)))
+                    .build();
+            metastore.createTable(newMetastoreTable, buildInitialPrivilegeSet(metastoreTable.getOwner().orElseThrow()));
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKeys("comment", "trino_last_transaction_version", "trino_metadata_schema_string");
+
+            // The parameters should contain the cache after the 1st access
+            assertQueryReturnsEmptyResult("SELECT * FROM " + table.getName());
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(
+                            entry("comment", "test comment"),
+                            entry("trino_last_transaction_version", "0"),
+                            entry("trino_metadata_schema_string", "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}")));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterDataManipulation()
+    {
+        String schemaString = "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}";
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "(col int)")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "0"), entry("trino_metadata_schema_string", schemaString));
+
+            assertUpdate("INSERT INTO " + table.getName() + " VALUES 1", 1);
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "1"), entry("trino_metadata_schema_string", schemaString)));
+
+            assertUpdate("UPDATE " + table.getName() + " SET col = 2", 1);
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "2"), entry("trino_metadata_schema_string", schemaString)));
+
+            assertUpdate("MERGE INTO " + table.getName() + " t " +
+                    "USING (SELECT * FROM (VALUES 2)) AS s(col) " +
+                    "ON (t.col = s.col) " +
+                    "WHEN MATCHED THEN UPDATE SET col = 3", 1);
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "3"), entry("trino_metadata_schema_string", schemaString)));
+
+            assertUpdate("DELETE FROM " + table.getName() + " WHERE col = 3", 1); // row level delete
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "4"), entry("trino_metadata_schema_string", schemaString)));
+
+            assertUpdate("DELETE FROM " + table.getName(), 0); // metadata delete
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "5"), entry("trino_metadata_schema_string", schemaString)));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterTruncateTable()
+    {
+        String schemaString = "{\"type\":\"struct\",\"fields\":[{\"name\":\"col\",\"type\":\"integer\",\"nullable\":true,\"metadata\":{}}]}";
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_cache_metastore", "AS SELECT 1 col")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "0"), entry("trino_metadata_schema_string", schemaString));
+
+            assertUpdate("TRUNCATE TABLE " + table.getName());
+            assertEventually(() -> assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .contains(entry("trino_last_transaction_version", "1"), entry("trino_metadata_schema_string", schemaString)));
+        }
+    }
+
+    @Test
+    public void testMetastoreAfterCreateView()
+    {
+        try (TestView table = new TestView(getQueryRunner()::execute, "test_cache_metastore", "SELECT 1 col")) {
+            assertThat(metastore.getTable(SCHEMA, table.getName()).orElseThrow().getParameters())
+                    .doesNotContainKeys("trino_last_transaction_version", "trino_metadata_schema_string")
+                    .contains(entry("comment", "Presto View"));
+        }
     }
 }

@@ -17,13 +17,13 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.errorprone.annotations.Immutable;
 import io.trino.Session;
-import io.trino.connector.ConnectorName;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableProperties;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.plan.PlanNode;
@@ -88,8 +88,8 @@ public class TableInfo
         CatalogSchemaTableName tableName = metadata.getTableName(session, node.getTable());
         TableProperties tableProperties = metadata.getTableProperties(session, node.getTable());
         Optional<String> connectorName = metadata.listCatalogs(session).stream()
-                .filter(catalogInfo -> catalogInfo.getCatalogName().equals(tableName.getCatalogName()))
-                .map(CatalogInfo::getConnectorName)
+                .filter(catalogInfo -> catalogInfo.catalogName().equals(tableName.getCatalogName()))
+                .map(CatalogInfo::connectorName)
                 .map(ConnectorName::toString)
                 .findFirst();
         QualifiedObjectName objectName = new QualifiedObjectName(tableName.getCatalogName(), tableName.getSchemaTableName().getSchemaName(), tableName.getSchemaTableName().getTableName());

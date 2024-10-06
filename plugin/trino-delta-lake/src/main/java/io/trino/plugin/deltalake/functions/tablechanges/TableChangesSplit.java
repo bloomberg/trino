@@ -14,14 +14,11 @@
 package io.trino.plugin.deltalake.functions.tablechanges;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.SizeOf;
-import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 import io.trino.spi.connector.ConnectorSplit;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -40,27 +37,12 @@ public record TableChangesSplit(
 {
     private static final int INSTANCE_SIZE = instanceSize(TableChangesSplit.class);
 
-    @JsonIgnore
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @JsonIgnore
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @JsonIgnore
-    @Override
-    public Object getInfo()
-    {
-        return ImmutableMap.builder()
+        return ImmutableMap.<String, String>builder()
                 .put("path", path)
-                .put("length", fileSize)
+                .put("length", String.valueOf(fileSize))
                 .buildOrThrow();
     }
 

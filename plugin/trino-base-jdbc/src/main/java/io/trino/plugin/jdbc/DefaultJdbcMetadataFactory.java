@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.jdbc;
 
+import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
@@ -26,31 +27,45 @@ public class DefaultJdbcMetadataFactory
         implements JdbcMetadataFactory
 {
     private final JdbcClient jdbcClient;
+    private final TimestampTimeZoneDomain timestampTimeZoneDomain;
     private final Set<JdbcQueryEventListener> jdbcQueryEventListeners;
+    private final IdentityCacheMapping identityCacheMapping;
 
     @Inject
-    public DefaultJdbcMetadataFactory(JdbcClient jdbcClient, Set<JdbcQueryEventListener> jdbcQueryEventListeners)
+    public DefaultJdbcMetadataFactory(
+            JdbcClient jdbcClient,
+            TimestampTimeZoneDomain timestampTimeZoneDomain,
+            Set<JdbcQueryEventListener> jdbcQueryEventListeners,
+            IdentityCacheMapping identityCacheMapping)
     {
         this.jdbcClient = requireNonNull(jdbcClient, "jdbcClient is null");
+        this.timestampTimeZoneDomain = requireNonNull(timestampTimeZoneDomain, "timestampTimeZoneDomain is null");
         this.jdbcQueryEventListeners = ImmutableSet.copyOf(requireNonNull(jdbcQueryEventListeners, "queryEventListeners is null"));
+        this.identityCacheMapping = requireNonNull(identityCacheMapping, "identityCacheMapping is null");
     }
 
     @Override
     public JdbcMetadata create(JdbcTransactionHandle transaction)
     {
-        // Session stays the same per transaction, therefore session properties don't need to
-        // be a part of cache keys in CachingJdbcClient.
         return create(new CachingJdbcClient(
-                        jdbcClient,
-                        Set.of(),
-                        new SingletonIdentityCacheMapping(),
-                        new Duration(1, DAYS),
-                        true,
-                        Integer.MAX_VALUE));
+                Ticker.systemTicker(),
+                jdbcClient,
+                Set.of(),
+                identityCacheMapping,
+                new Duration(1, DAYS),
+                new Duration(1, DAYS),
+                new Duration(1, DAYS),
+                new Duration(1, DAYS),
+                true,
+                Integer.MAX_VALUE));
     }
 
     protected JdbcMetadata create(JdbcClient transactionCachingJdbcClient)
     {
-        return new DefaultJdbcMetadata(transactionCachingJdbcClient, true, jdbcQueryEventListeners);
+        return new DefaultJdbcMetadata(
+                transactionCachingJdbcClient,
+                timestampTimeZoneDomain,
+                true,
+                jdbcQueryEventListeners);
     }
 }

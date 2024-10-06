@@ -13,7 +13,11 @@
  */
 package io.trino.exchange;
 
+import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.log.Logger;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.exchange.ExchangeManager;
@@ -42,9 +46,23 @@ public class ExchangeManagerRegistry
     private static final File CONFIG_FILE = new File("etc/exchange-manager.properties");
     private static final String EXCHANGE_MANAGER_NAME_PROPERTY = "exchange-manager.name";
 
+    private final OpenTelemetry openTelemetry;
+    private final Tracer tracer;
     private final Map<String, ExchangeManagerFactory> exchangeManagerFactories = new ConcurrentHashMap<>();
 
     private volatile ExchangeManager exchangeManager;
+    private final SecretsResolver secretsResolver;
+
+    @Inject
+    public ExchangeManagerRegistry(
+            OpenTelemetry openTelemetry,
+            Tracer tracer,
+            SecretsResolver secretsResolver)
+    {
+        this.openTelemetry = requireNonNull(openTelemetry, "openTelemetry is null");
+        this.tracer = requireNonNull(tracer, "tracer is null");
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
+    }
 
     public void addExchangeManagerFactory(ExchangeManagerFactory factory)
     {
@@ -77,8 +95,8 @@ public class ExchangeManagerRegistry
         checkArgument(factory != null, "Exchange manager factory '%s' is not registered. Available factories: %s", name, exchangeManagerFactories.keySet());
 
         ExchangeManager exchangeManager;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
-            exchangeManager = factory.create(properties);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+            exchangeManager = factory.create(secretsResolver.getResolvedConfiguration(properties), new ExchangeManagerContextInstance(openTelemetry, tracer));
         }
 
         log.info("-- Loaded exchange manager %s --", name);

@@ -16,10 +16,12 @@ package io.trino.plugin.hive.procedure;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
 import com.google.inject.Provider;
+import io.trino.metastore.Partition;
+import io.trino.metastore.Table;
+import io.trino.plugin.base.util.UncheckedCloseable;
+import io.trino.plugin.hive.TransactionalMetadata;
 import io.trino.plugin.hive.TransactionalMetadataFactory;
-import io.trino.plugin.hive.metastore.Partition;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorAccessControl;
@@ -80,7 +82,7 @@ public class UnregisterPartitionProcedure
 
     public void unregisterPartition(ConnectorSession session, ConnectorAccessControl accessControl, String schemaName, String tableName, List<String> partitionColumns, List<String> partitionValues)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
             doUnregisterPartition(session, accessControl, schemaName, tableName, partitionColumns, partitionValues);
         }
     }
@@ -94,28 +96,32 @@ public class UnregisterPartitionProcedure
 
         SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
 
-        SemiTransactionalHiveMetastore metastore = hiveMetadataFactory.create(session.getIdentity(), true).getMetastore();
+        TransactionalMetadata hiveMetadata = hiveMetadataFactory.create(session.getIdentity(), true);
+        hiveMetadata.beginQuery(session);
+        try (UncheckedCloseable ignore = () -> hiveMetadata.cleanupQuery(session)) {
+            SemiTransactionalHiveMetastore metastore = hiveMetadata.getMetastore();
 
-        Table table = metastore.getTable(schemaName, tableName)
-                .orElseThrow(() -> new TableNotFoundException(schemaTableName));
+            Table table = metastore.getTable(schemaName, tableName)
+                    .orElseThrow(() -> new TableNotFoundException(schemaTableName));
 
-        accessControl.checkCanDeleteFromTable(null, schemaTableName);
+            accessControl.checkCanDeleteFromTable(null, schemaTableName);
 
-        checkIsPartitionedTable(table);
-        checkPartitionColumns(table, partitionColumns);
+            checkIsPartitionedTable(table);
+            checkPartitionColumns(table, partitionColumns);
 
-        String partitionName = makePartName(partitionColumns, partitionValues);
+            String partitionName = makePartName(partitionColumns, partitionValues);
 
-        Partition partition = metastore.unsafeGetRawHiveMetastoreClosure().getPartition(schemaName, tableName, partitionValues)
-                .orElseThrow(() -> new TrinoException(NOT_FOUND, format("Partition '%s' does not exist", partitionName)));
+            Partition partition = metastore.unsafeGetRawHiveMetastore().getPartition(table, partitionValues)
+                    .orElseThrow(() -> new TrinoException(NOT_FOUND, format("Partition '%s' does not exist", partitionName)));
 
-        metastore.dropPartition(
-                session,
-                table.getDatabaseName(),
-                table.getTableName(),
-                partition.getValues(),
-                false);
+            metastore.dropPartition(
+                    session,
+                    table.getDatabaseName(),
+                    table.getTableName(),
+                    partition.getValues(),
+                    false);
 
-        metastore.commit();
+            metastore.commit();
+        }
     }
 }

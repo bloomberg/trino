@@ -18,23 +18,27 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.plugin.hive.TestingHivePlugin;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
 import io.trino.plugin.iceberg.BaseSharedMetastoreTest;
 import io.trino.plugin.iceberg.IcebergPlugin;
 import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.nio.file.Path;
 
-import static io.trino.plugin.hive.metastore.glue.GlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.testing.QueryAssertions.copyTpchTables;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 /**
  * Tests metadata operations on a schema which has a mix of Hive and Iceberg tables.
@@ -42,6 +46,8 @@ import static java.lang.String.format;
  * Requires AWS credentials, which can be provided any way supported by the DefaultProviderChain
  * See https://docs.aws.amazon.com/sdk-for-java/v1/developer-guide/credentials.html#credentials-default
  */
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSharedGlueMetastore
         extends BaseSharedMetastoreTest
 {
@@ -49,7 +55,7 @@ public class TestSharedGlueMetastore
     private static final String HIVE_CATALOG = "hive";
 
     private Path dataDirectory;
-    private HiveMetastore glueMetastore;
+    private GlueHiveMetastore glueMetastore;
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -57,14 +63,14 @@ public class TestSharedGlueMetastore
     {
         Session icebergSession = testSessionBuilder()
                 .setCatalog(ICEBERG_CATALOG)
-                .setSchema(schema)
+                .setSchema(tpchSchema)
                 .build();
         Session hiveSession = testSessionBuilder()
                 .setCatalog(HIVE_CATALOG)
-                .setSchema(schema)
+                .setSchema(tpchSchema)
                 .build();
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession).build();
 
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.createCatalog("tpch", "tpch");
@@ -78,41 +84,46 @@ public class TestSharedGlueMetastore
                 "iceberg",
                 ImmutableMap.of(
                         "iceberg.catalog.type", "glue",
-                        "hive.metastore.glue.default-warehouse-dir", dataDirectory.toString()));
+                        "hive.metastore.glue.default-warehouse-dir", dataDirectory.toString(),
+                        "fs.hadoop.enabled", "true"));
         queryRunner.createCatalog(
                 "iceberg_with_redirections",
                 "iceberg",
                 ImmutableMap.of(
                         "iceberg.catalog.type", "glue",
                         "hive.metastore.glue.default-warehouse-dir", dataDirectory.toString(),
-                        "iceberg.hive-catalog-name", "hive"));
+                        "iceberg.hive-catalog-name", "hive",
+                        "fs.hadoop.enabled", "true"));
 
-        this.glueMetastore = createTestingGlueHiveMetastore(dataDirectory);
-        queryRunner.installPlugin(new TestingHivePlugin(glueMetastore));
-        queryRunner.createCatalog(HIVE_CATALOG, "hive");
+        this.glueMetastore = createTestingGlueHiveMetastore(dataDirectory, this::closeAfterClass);
+        queryRunner.installPlugin(new TestingHivePlugin(queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data"), glueMetastore));
+        queryRunner.createCatalog(HIVE_CATALOG, "hive", ImmutableMap.of("fs.hadoop.enabled", "true"));
         queryRunner.createCatalog(
                 "hive_with_redirections",
                 "hive",
-                ImmutableMap.of("hive.iceberg-catalog-name", "iceberg"));
+                ImmutableMap.of("hive.iceberg-catalog-name", "iceberg", "fs.hadoop.enabled", "true"));
 
-        queryRunner.execute("CREATE SCHEMA " + schema + " WITH (location = '" + dataDirectory.toUri() + "')");
+        queryRunner.execute("CREATE SCHEMA " + tpchSchema + " WITH (location = '" + dataDirectory.toUri() + "')");
         copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, icebergSession, ImmutableList.of(TpchTable.NATION));
         copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, hiveSession, ImmutableList.of(TpchTable.REGION));
+        queryRunner.execute("CREATE SCHEMA " + testSchema + " WITH (location = '" + dataDirectory.toUri() + "')");
 
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
     {
         try {
             if (glueMetastore != null) {
                 // Data is on the local disk and will be deleted by the deleteOnExit hook
-                glueMetastore.dropDatabase(schema, false);
+                glueMetastore.dropDatabase(tpchSchema, false);
+                glueMetastore.dropDatabase(testSchema, false);
+                glueMetastore.shutdown();
             }
         }
         catch (Exception e) {
-            LOG.error(e, "Failed to clean up Glue database: %s", schema);
+            LOG.error(e, "Failed to clean up Glue database: %s or %s", tpchSchema, testSchema);
         }
     }
 
@@ -124,7 +135,7 @@ public class TestSharedGlueMetastore
                 "   location = '%s'\n" +
                 ")";
 
-        return format(expectedHiveCreateSchema, catalogName, schema, dataDirectory.toUri().toString().replaceFirst("/$", ""));
+        return format(expectedHiveCreateSchema, catalogName, tpchSchema, dataDirectory.toUri());
     }
 
     @Override
@@ -134,6 +145,6 @@ public class TestSharedGlueMetastore
                 "WITH (\n" +
                 "   location = '%s'\n" +
                 ")";
-        return format(expectedIcebergCreateSchema, catalogName, schema, dataDirectory.toUri().toString().replaceFirst("/$", ""));
+        return format(expectedIcebergCreateSchema, catalogName, tpchSchema, dataDirectory.toUri());
     }
 }

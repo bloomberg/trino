@@ -60,9 +60,9 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
 import static io.trino.util.DateTimeZoneIndex.getDateTimeZone;
-import static io.trino.util.StructuralTestUtil.mapBlockOf;
 import static io.trino.util.StructuralTestUtil.mapType;
-import static org.testng.Assert.assertTrue;
+import static io.trino.util.StructuralTestUtil.sqlMapOf;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestHistogram
 {
@@ -189,9 +189,9 @@ public class TestHistogram
         MapType innerMapType = mapType(VARCHAR, VARCHAR);
 
         BlockBuilder builder = innerMapType.createBlockBuilder(null, 3);
-        innerMapType.writeObject(builder, mapBlockOf(VARCHAR, VARCHAR, ImmutableMap.of("a", "b")));
-        innerMapType.writeObject(builder, mapBlockOf(VARCHAR, VARCHAR, ImmutableMap.of("c", "d")));
-        innerMapType.writeObject(builder, mapBlockOf(VARCHAR, VARCHAR, ImmutableMap.of("e", "f")));
+        innerMapType.writeObject(builder, sqlMapOf(VARCHAR, VARCHAR, ImmutableMap.of("a", "b")));
+        innerMapType.writeObject(builder, sqlMapOf(VARCHAR, VARCHAR, ImmutableMap.of("c", "d")));
+        innerMapType.writeObject(builder, sqlMapOf(VARCHAR, VARCHAR, ImmutableMap.of("e", "f")));
 
         assertAggregation(
                 FUNCTION_RESOLUTION,
@@ -240,7 +240,7 @@ public class TestHistogram
         BlockBuilder blockBuilder = function.getFinalType().createBlockBuilder(null, 1000);
 
         groupedAggregator.evaluate(0, blockBuilder);
-        assertTrue(blockBuilder.build().isNull(0));
+        assertThat(blockBuilder.build().isNull(0)).isTrue();
     }
 
     @Test

@@ -13,9 +13,7 @@
  */
 package io.trino.plugin.iceberg;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.errorprone.annotations.Immutable;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.TypeManager;
 import jakarta.annotation.Nullable;
@@ -45,99 +43,43 @@ import static io.trino.spi.function.InvocationConvention.InvocationReturnConvent
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static java.util.Objects.requireNonNull;
 
-@Immutable
-final class IcebergStatistics
+record IcebergStatistics(
+        long recordCount,
+        long fileCount,
+        long size,
+        Map<Integer, Object> minValues,
+        Map<Integer, Object> maxValues,
+        Map<Integer, Long> nullCounts,
+        Map<Integer, Long> nanCounts,
+        Map<Integer, Long> columnSizes)
 {
-    private final long recordCount;
-    private final long fileCount;
-    private final long size;
-    private final Map<Integer, Object> minValues;
-    private final Map<Integer, Object> maxValues;
-    private final Map<Integer, Long> nullCounts;
-    private final Map<Integer, Long> nanCounts;
-    private final Map<Integer, Long> columnSizes;
-
-    private IcebergStatistics(
-            long recordCount,
-            long fileCount,
-            long size,
-            Map<Integer, Object> minValues,
-            Map<Integer, Object> maxValues,
-            Map<Integer, Long> nullCounts,
-            Map<Integer, Long> nanCounts,
-            Map<Integer, Long> columnSizes)
+    IcebergStatistics
     {
-        this.recordCount = recordCount;
-        this.fileCount = fileCount;
-        this.size = size;
-        this.minValues = ImmutableMap.copyOf(requireNonNull(minValues, "minValues is null"));
-        this.maxValues = ImmutableMap.copyOf(requireNonNull(maxValues, "maxValues is null"));
-        this.nullCounts = ImmutableMap.copyOf(requireNonNull(nullCounts, "nullCounts is null"));
-        this.nanCounts = ImmutableMap.copyOf(requireNonNull(nanCounts, "nanCounts is null"));
-        this.columnSizes = ImmutableMap.copyOf(requireNonNull(columnSizes, "columnSizes is null"));
+        minValues = ImmutableMap.copyOf(requireNonNull(minValues, "minValues is null"));
+        maxValues = ImmutableMap.copyOf(requireNonNull(maxValues, "maxValues is null"));
+        nullCounts = ImmutableMap.copyOf(requireNonNull(nullCounts, "nullCounts is null"));
+        nanCounts = ImmutableMap.copyOf(requireNonNull(nanCounts, "nanCounts is null"));
+        columnSizes = ImmutableMap.copyOf(requireNonNull(columnSizes, "columnSizes is null"));
     }
 
-    public long getRecordCount()
+    static class Builder
     {
-        return recordCount;
-    }
-
-    public long getFileCount()
-    {
-        return fileCount;
-    }
-
-    public long getSize()
-    {
-        return size;
-    }
-
-    public Map<Integer, Object> getMinValues()
-    {
-        return minValues;
-    }
-
-    public Map<Integer, Object> getMaxValues()
-    {
-        return maxValues;
-    }
-
-    public Map<Integer, Long> getNullCounts()
-    {
-        return nullCounts;
-    }
-
-    public Map<Integer, Long> getNanCounts()
-    {
-        return nanCounts;
-    }
-
-    public Map<Integer, Long> getColumnSizes()
-    {
-        return columnSizes;
-    }
-
-    public static class Builder
-    {
-        private final List<Types.NestedField> columns;
         private final TypeManager typeManager;
-        private final Map<Integer, Optional<Long>> nullCounts = new HashMap<>();
-        private final Map<Integer, Optional<Long>> nanCounts = new HashMap<>();
-        private final Map<Integer, ColumnStatistics> columnStatistics = new HashMap<>();
-        private final Map<Integer, Long> columnSizes = new HashMap<>();
         private final Map<Integer, io.trino.spi.type.Type> fieldIdToTrinoType;
 
         private long recordCount;
         private long fileCount;
         private long size;
+        private final Map<Integer, ColumnStatistics> columnStatistics = new HashMap<>();
+        private final Map<Integer, Optional<Long>> nullCounts = new HashMap<>();
+        private final Map<Integer, Optional<Long>> nanCounts = new HashMap<>();
+        private final Map<Integer, Long> columnSizes = new HashMap<>();
 
         public Builder(
                 List<Types.NestedField> columns,
                 TypeManager typeManager)
         {
-            this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
             this.typeManager = requireNonNull(typeManager, "typeManager is null");
-
             this.fieldIdToTrinoType = columns.stream()
                     .collect(toImmutableMap(Types.NestedField::fieldId, column -> toTrinoType(column.type(), typeManager)));
         }
@@ -150,11 +92,10 @@ final class IcebergStatistics
 
             Map<Integer, Long> newColumnSizes = dataFile.columnSizes();
             if (newColumnSizes != null) {
-                for (Types.NestedField column : columns) {
-                    int id = column.fieldId();
-                    Long addedSize = newColumnSizes.get(id);
+                for (Map.Entry<Integer, Long> entry : newColumnSizes.entrySet()) {
+                    Long addedSize = entry.getValue();
                     if (addedSize != null) {
-                        columnSizes.merge(id, addedSize, Long::sum);
+                        columnSizes.merge(entry.getKey(), addedSize, Long::sum);
                     }
                 }
             }
@@ -262,7 +203,7 @@ final class IcebergStatistics
             if (type.isOrderable() && (nullCount.isEmpty() || nullCount.get() != recordCount)) {
                 // Capture the initial bounds during construction so there are always valid min/max values to compare to. This does make the first call to
                 // `ColumnStatistics#updateMinMax` a no-op.
-                columnStatistics.computeIfAbsent(id, ignored -> {
+                columnStatistics.computeIfAbsent(id, _ -> {
                     MethodHandle comparisonHandle = typeManager.getTypeOperators()
                             .getComparisonUnorderedLastOperator(type, simpleConvention(FAIL_ON_NULL, NEVER_NULL, NEVER_NULL));
                     return new ColumnStatistics(comparisonHandle, lowerBound, upperBound);

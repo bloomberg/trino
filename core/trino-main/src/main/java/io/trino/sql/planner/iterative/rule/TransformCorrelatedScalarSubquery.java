@@ -18,6 +18,9 @@ import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
 import io.trino.spi.type.BigintType;
+import io.trino.sql.ir.Cast;
+import io.trino.sql.ir.Switch;
+import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.optimizations.Cardinality;
@@ -29,24 +32,22 @@ import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.MarkDistinctNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Cast;
-import io.trino.sql.tree.SimpleCaseExpression;
-import io.trino.sql.tree.WhenClause;
 
 import java.util.Optional;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.StandardErrorCode.SUBQUERY_MULTIPLE_ROWS;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
-import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.LogicalPlanner.failFunction;
 import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.extractCardinality;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.LEFT;
+import static io.trino.sql.planner.plan.JoinType.INNER;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.correlation;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.filter;
 import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -82,7 +83,7 @@ public class TransformCorrelatedScalarSubquery
 {
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(nonEmpty(correlation()))
-            .with(filter().equalTo(TRUE_LITERAL));
+            .with(filter().equalTo(TRUE));
 
     private final Metadata metadata;
 
@@ -100,6 +101,8 @@ public class TransformCorrelatedScalarSubquery
     @Override
     public Result apply(CorrelatedJoinNode correlatedJoinNode, Captures captures, Context context)
     {
+        // lateral references are only allowed for INNER or LEFT correlated join
+        checkArgument(correlatedJoinNode.getType() == INNER || correlatedJoinNode.getType() == LEFT, "unexpected correlated join type: %s", correlatedJoinNode.getType());
         PlanNode subquery = context.getLookup().resolve(correlatedJoinNode.getSubquery());
 
         if (!searchFrom(subquery, context.getLookup())
@@ -123,7 +126,10 @@ public class TransformCorrelatedScalarSubquery
                     correlatedJoinNode.getInput(),
                     rewrittenSubquery,
                     correlatedJoinNode.getCorrelation(),
-                    producesSingleRow ? correlatedJoinNode.getType() : LEFT,
+                    // EnforceSingleRowNode guarantees that exactly single matching row is produced
+                    // for every input row (independently of correlated join type). Decorrelated plan
+                    // must preserve this semantics.
+                    producesSingleRow ? INNER : LEFT,
                     correlatedJoinNode.getFilter(),
                     correlatedJoinNode.getOriginSubquery()));
         }
@@ -153,13 +159,13 @@ public class TransformCorrelatedScalarSubquery
         FilterNode filterNode = new FilterNode(
                 context.getIdAllocator().getNextId(),
                 markDistinctNode,
-                new SimpleCaseExpression(
+                new Switch(
                         isDistinct.toSymbolReference(),
                         ImmutableList.of(
-                                new WhenClause(TRUE_LITERAL, TRUE_LITERAL)),
-                        Optional.of(new Cast(
+                                new WhenClause(TRUE, TRUE)),
+                        new Cast(
                                 failFunction(metadata, SUBQUERY_MULTIPLE_ROWS, "Scalar sub-query has returned multiple rows"),
-                                toSqlType(BOOLEAN)))));
+                                BOOLEAN)));
 
         return Result.ofPlanNode(new ProjectNode(
                 context.getIdAllocator().getNextId(),

@@ -17,7 +17,6 @@ import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.SampleNode;
 import org.junit.jupiter.api.Test;
 
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static java.lang.Double.POSITIVE_INFINITY;
 
@@ -29,14 +28,14 @@ public class TestSampleStatsRule
     {
         tester()
                 .assertStatsFor(pb -> {
-                    Symbol a = pb.symbol("a", BIGINT);
+                    Symbol a = pb.symbol("a", DOUBLE);
                     Symbol b = pb.symbol("b", DOUBLE);
                     return pb.sample(.33, SampleNode.Type.BERNOULLI, pb.values(a, b));
                 })
                 .withSourceStats(PlanNodeStatsEstimate.builder()
                         .setOutputRowCount(100)
                         .addSymbolStatistics(
-                                new Symbol("a"),
+                                new Symbol(DOUBLE, "a"),
                                 SymbolStatsEstimate.builder()
                                         .setDistinctValuesCount(20)
                                         .setNullsFraction(0.3)
@@ -44,7 +43,7 @@ public class TestSampleStatsRule
                                         .setHighValue(30)
                                         .build())
                         .addSymbolStatistics(
-                                new Symbol("b"),
+                                new Symbol(DOUBLE, "b"),
                                 SymbolStatsEstimate.builder()
                                         .setDistinctValuesCount(40)
                                         .setNullsFraction(0.6)

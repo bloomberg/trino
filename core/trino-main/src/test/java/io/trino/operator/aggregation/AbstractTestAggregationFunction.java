@@ -25,11 +25,11 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.function.AggregationImplementation;
+import io.trino.spi.function.WindowAccumulator;
 import io.trino.spi.function.WindowIndex;
 import io.trino.spi.type.Type;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Constructor;
 import java.util.List;
 
 import static io.trino.operator.aggregation.AccumulatorCompiler.generateWindowAccumulatorClass;
@@ -153,10 +153,11 @@ public abstract class AbstractTestAggregationFunction
         for (int start = 0; start < totalPositions; ++start) {
             int width = windowWidths[start];
             // Note that add/removeInput's interval is inclusive on both ends
-            if (aggregationImplementation.getRemoveInputFunction().isPresent()) {
+            if (aggregationImplementation.getWindowAccumulator().isPresent()) {
                 for (int oldi = oldStart; oldi < oldStart + oldWidth; ++oldi) {
                     if (oldi < start || oldi >= start + width) {
-                        aggregation.removeInput(windowIndex, oldi, oldi);
+                        boolean res = aggregation.removeInput(windowIndex, oldi, oldi);
+                        assertThat(res).isTrue();
                     }
                 }
                 for (int newi = start; newi < start + width; ++newi) {
@@ -172,9 +173,9 @@ public abstract class AbstractTestAggregationFunction
             oldStart = start;
             oldWidth = width;
 
-            Type outputType = resolvedFunction.getSignature().getReturnType();
+            Type outputType = resolvedFunction.signature().getReturnType();
             BlockBuilder blockBuilder = outputType.createBlockBuilder(null, 1000);
-            aggregation.evaluateFinal(blockBuilder);
+            aggregation.output(blockBuilder);
             Block block = blockBuilder.build();
 
             assertThat(makeValidityAssertion(expectedValues[start]).apply(
@@ -184,18 +185,13 @@ public abstract class AbstractTestAggregationFunction
         }
     }
 
-    private static WindowAccumulator createWindowAccumulator(ResolvedFunction resolvedFunction, AggregationImplementation aggregationImplementation)
+    protected static WindowAccumulator createWindowAccumulator(ResolvedFunction resolvedFunction, AggregationImplementation aggregationImplementation)
     {
-        try {
-            Constructor<? extends WindowAccumulator> constructor = generateWindowAccumulatorClass(
-                    resolvedFunction.getSignature(),
-                    aggregationImplementation,
-                    resolvedFunction.getFunctionNullability());
-            return constructor.newInstance(ImmutableList.of());
-        }
-        catch (ReflectiveOperationException e) {
-            throw new RuntimeException(e);
-        }
+        return generateWindowAccumulatorClass(
+                resolvedFunction.signature(),
+                aggregationImplementation,
+                resolvedFunction.functionNullability())
+                .apply(ImmutableList.of());
     }
 
     protected static Block[] createAlternatingNullsBlock(List<Type> types, Block... sequenceBlocks)

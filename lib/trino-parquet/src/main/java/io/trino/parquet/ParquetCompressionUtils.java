@@ -14,11 +14,11 @@
 package io.trino.parquet;
 
 import com.google.common.io.ByteStreams;
-import io.airlift.compress.Decompressor;
-import io.airlift.compress.lz4.Lz4Decompressor;
-import io.airlift.compress.lzo.LzoDecompressor;
-import io.airlift.compress.snappy.SnappyDecompressor;
-import io.airlift.compress.zstd.ZstdDecompressor;
+import io.airlift.compress.v3.Decompressor;
+import io.airlift.compress.v3.lz4.Lz4Decompressor;
+import io.airlift.compress.v3.lzo.LzoDecompressor;
+import io.airlift.compress.v3.snappy.SnappyDecompressor;
+import io.airlift.compress.v3.zstd.ZstdDecompressor;
 import io.airlift.slice.Slice;
 import org.apache.parquet.format.CompressionCodec;
 
@@ -40,7 +40,7 @@ public final class ParquetCompressionUtils
 
     private ParquetCompressionUtils() {}
 
-    public static Slice decompress(CompressionCodec codec, Slice input, int uncompressedSize)
+    public static Slice decompress(ParquetDataSourceId dataSourceId, CompressionCodec codec, Slice input, int uncompressedSize)
             throws IOException
     {
         requireNonNull(input, "input is null");
@@ -49,25 +49,15 @@ public final class ParquetCompressionUtils
             return EMPTY_SLICE;
         }
 
-        switch (codec) {
-            case GZIP:
-                return decompressGzip(input, uncompressedSize);
-            case SNAPPY:
-                return decompressSnappy(input, uncompressedSize);
-            case UNCOMPRESSED:
-                return input;
-            case LZO:
-                return decompressLZO(input, uncompressedSize);
-            case LZ4:
-                return decompressLz4(input, uncompressedSize);
-            case ZSTD:
-                return decompressZstd(input, uncompressedSize);
-            case BROTLI:
-            case LZ4_RAW:
-                // unsupported
-                break;
-        }
-        throw new ParquetCorruptionException("Codec not supported in Parquet: " + codec);
+        return switch (codec) {
+            case UNCOMPRESSED -> input;
+            case GZIP -> decompressGzip(input, uncompressedSize);
+            case SNAPPY -> decompressSnappy(input, uncompressedSize);
+            case LZO -> decompressLZO(input, uncompressedSize);
+            case LZ4 -> decompressLz4(input, uncompressedSize);
+            case ZSTD -> decompressZstd(input, uncompressedSize);
+            case BROTLI, LZ4_RAW -> throw new ParquetCorruptionException(dataSourceId, "Codec not supported in Parquet: %s", codec);
+        };
     }
 
     private static Slice decompressSnappy(Slice input, int uncompressedSize)
@@ -75,7 +65,7 @@ public final class ParquetCompressionUtils
         // Snappy decompressor is more efficient if there's at least a long's worth of extra space
         // in the output buffer
         byte[] buffer = new byte[uncompressedSize + SIZE_OF_LONG];
-        int actualUncompressedSize = decompress(new SnappyDecompressor(), input, 0, input.length(), buffer, 0);
+        int actualUncompressedSize = decompress(SnappyDecompressor.create(), input, 0, input.length(), buffer, 0);
         if (actualUncompressedSize != uncompressedSize) {
             throw new IllegalArgumentException(format("Invalid uncompressedSize for SNAPPY input. Expected %s, actual: %s", uncompressedSize, actualUncompressedSize));
         }
@@ -85,7 +75,7 @@ public final class ParquetCompressionUtils
     private static Slice decompressZstd(Slice input, int uncompressedSize)
     {
         byte[] buffer = new byte[uncompressedSize];
-        decompress(new ZstdDecompressor(), input, 0, input.length(), buffer, 0);
+        decompress(ZstdDecompressor.create(), input, 0, input.length(), buffer, 0);
         return wrappedBuffer(buffer);
     }
 
@@ -110,7 +100,7 @@ public final class ParquetCompressionUtils
 
     private static Slice decompressLz4(Slice input, int uncompressedSize)
     {
-        return decompressFramed(new Lz4Decompressor(), input, uncompressedSize);
+        return decompressFramed(Lz4Decompressor.create(), input, uncompressedSize);
     }
 
     private static Slice decompressLZO(Slice input, int uncompressedSize)

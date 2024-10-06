@@ -13,24 +13,24 @@
  */
 package io.trino.plugin.jdbc;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
-import org.testng.annotations.BeforeMethod;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.trino.plugin.jdbc.H2QueryRunner.createH2QueryRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-// Single-threaded because of shared mutable state, e.g. onGetTableProperties
-@Test(singleThreaded = true)
+@Execution(SAME_THREAD)
 public class TestJdbcTableProperties
         extends AbstractTestQueryFramework
 {
@@ -41,7 +41,7 @@ public class TestJdbcTableProperties
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        TestingH2JdbcModule module = new TestingH2JdbcModule((config, connectionFactory, identifierMapping) -> new TestingH2JdbcClient(config, connectionFactory, identifierMapping)
+        TestingH2JdbcModule module = new TestingH2JdbcModule((config, connectionFactory, queryBuilder, identifierMapping) -> new TestingH2JdbcClient(config, connectionFactory, queryBuilder, identifierMapping)
         {
             @Override
             public Map<String, Object> getTableProperties(ConnectorSession session, JdbcTableHandle tableHandle)
@@ -50,19 +50,13 @@ public class TestJdbcTableProperties
                 return ImmutableMap.of();
             }
         });
-        return createH2QueryRunner(ImmutableList.copyOf(TpchTable.getTables()), properties, module);
-    }
-
-    @BeforeMethod
-    public void reset()
-    {
-        onGetTableProperties = () -> {};
+        return createH2QueryRunner(List.of(TpchTable.NATION), properties, module);
     }
 
     @Test
     public void testGetTablePropertiesIsNotCalledForSelect()
     {
-        onGetTableProperties = () -> { fail("Unexpected call of: getTableProperties"); };
+        onGetTableProperties = () -> fail("Unexpected call of: getTableProperties");
         assertUpdate("CREATE TABLE copy_of_nation AS SELECT * FROM nation", 25);
         assertQuerySucceeds("SELECT * FROM copy_of_nation");
         assertQuerySucceeds("SELECT nationkey FROM copy_of_nation");
@@ -72,7 +66,7 @@ public class TestJdbcTableProperties
     public void testGetTablePropertiesIsCalled()
     {
         AtomicInteger counter = new AtomicInteger();
-        onGetTableProperties = () -> { counter.incrementAndGet(); };
+        onGetTableProperties = counter::incrementAndGet;
         assertQuerySucceeds("SHOW CREATE TABLE nation");
         assertThat(counter.get()).isOne();
     }

@@ -57,6 +57,9 @@ public final class PinotQueryBuilder
     {
         requireNonNull(tableHandle, "tableHandle is null");
         StringBuilder pqlBuilder = new StringBuilder();
+        if (tableHandle.enableNullHandling()) {
+            pqlBuilder.append("SET enableNullHandling = true;\n");
+        }
         List<String> quotedColumnNames;
         if (columnHandles.isEmpty()) {
             // This occurs when the query is SELECT COUNT(*) FROM pinotTable ...
@@ -74,7 +77,7 @@ public final class PinotQueryBuilder
                 .append(getTableName(tableHandle, tableNameSuffix))
                 .append(" ");
         generateFilterPql(pqlBuilder, tableHandle, timePredicate);
-        OptionalLong appliedLimit = tableHandle.getLimit();
+        OptionalLong appliedLimit = tableHandle.limit();
         long limit = limitForSegmentQueries + 1;
         if (appliedLimit.isPresent()) {
             limit = Math.min(limit, appliedLimit.getAsLong());
@@ -86,21 +89,15 @@ public final class PinotQueryBuilder
 
     private static String getTableName(PinotTableHandle tableHandle, Optional<String> tableNameSuffix)
     {
-        if (tableNameSuffix.isPresent()) {
-            return new StringBuilder(tableHandle.getTableName())
-                    .append(tableNameSuffix.get())
-                    .toString();
-        }
-        return tableHandle.getTableName();
+        return tableNameSuffix
+                .map(suffix -> tableHandle.tableName() + suffix)
+                .orElseGet(tableHandle::tableName);
     }
 
     private static void generateFilterPql(StringBuilder pqlBuilder, PinotTableHandle tableHandle, Optional<String> timePredicate)
     {
-        Optional<String> filterClause = getFilterClause(tableHandle.getConstraint(), timePredicate, false);
-        if (filterClause.isPresent()) {
-            pqlBuilder.append(" WHERE ")
-                    .append(filterClause.get());
-        }
+        getFilterClause(tableHandle.constraint(), timePredicate, false)
+                .ifPresent(filterClause -> pqlBuilder.append(" WHERE ").append(filterClause));
     }
 
     public static Optional<String> getFilterClause(TupleDomain<ColumnHandle> tupleDomain, Optional<String> timePredicate, boolean forHavingClause)
@@ -223,6 +220,9 @@ public final class PinotQueryBuilder
 
     private static String singleQuote(Object value)
     {
+        if (value instanceof String string) {
+            return format("'%s'", string.replace("'", "''"));
+        }
         return format("'%s'", value);
     }
 

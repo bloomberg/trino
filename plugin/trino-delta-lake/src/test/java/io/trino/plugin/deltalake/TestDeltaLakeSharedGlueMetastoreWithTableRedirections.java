@@ -14,10 +14,9 @@
 package io.trino.plugin.deltalake;
 
 import com.google.common.collect.ImmutableMap;
-import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.plugin.hive.TestingHivePlugin;
-import io.trino.plugin.hive.metastore.HiveMetastore;
+import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.AfterAll;
@@ -25,7 +24,7 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.nio.file.Path;
 
-import static io.trino.plugin.hive.metastore.glue.GlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
@@ -40,10 +39,8 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
         extends BaseDeltaLakeSharedMetastoreWithTableRedirectionsTest
 {
-    private static final Logger LOG = Logger.get(TestDeltaLakeSharedGlueMetastoreWithTableRedirections.class);
-
     private Path dataDirectory;
-    private HiveMetastore glueMetastore;
+    private GlueHiveMetastore glueMetastore;
 
     @Override
     protected QueryRunner createQueryRunner()
@@ -54,10 +51,9 @@ public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
                 .setSchema(schema)
                 .build();
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(deltaLakeSession).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(deltaLakeSession).build();
 
         this.dataDirectory = queryRunner.getCoordinator().getBaseDataDir().resolve("delta_lake_data");
-        this.dataDirectory.toFile().deleteOnExit();
 
         queryRunner.installPlugin(new DeltaLakePlugin());
         queryRunner.createCatalog(
@@ -67,14 +63,15 @@ public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
                         .put("hive.metastore", "glue")
                         .put("hive.metastore.glue.default-warehouse-dir", dataDirectory.toUri().toString())
                         .put("delta.hive-catalog-name", "hive_with_redirections")
+                        .put("fs.hadoop.enabled", "true")
                         .buildOrThrow());
 
-        this.glueMetastore = createTestingGlueHiveMetastore(dataDirectory);
-        queryRunner.installPlugin(new TestingHivePlugin(glueMetastore));
+        this.glueMetastore = createTestingGlueHiveMetastore(dataDirectory, this::closeAfterClass);
+        queryRunner.installPlugin(new TestingHivePlugin(queryRunner.getCoordinator().getBaseDataDir().resolve("hive_data"), glueMetastore));
         queryRunner.createCatalog(
                 "hive_with_redirections",
                 "hive",
-                ImmutableMap.of("hive.delta-lake-catalog-name", "delta_with_redirections"));
+                ImmutableMap.of("hive.delta-lake-catalog-name", "delta_with_redirections", "fs.hadoop.enabled", "true"));
 
         queryRunner.execute("CREATE SCHEMA " + schema + " WITH (location = '" + dataDirectory.toUri() + "')");
         queryRunner.execute("CREATE TABLE hive_with_redirections." + schema + ".hive_table (a_integer) WITH (format='PARQUET') AS VALUES 1, 2, 3");
@@ -86,15 +83,9 @@ public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
     @AfterAll
     public void cleanup()
     {
-        try {
-            if (glueMetastore != null) {
-                // Data is on the local disk and will be deleted by the deleteOnExit hook
-                glueMetastore.dropDatabase(schema, false);
-            }
-        }
-        catch (Exception e) {
-            LOG.error(e, "Failed to clean up Glue database: %s", schema);
-        }
+        // Data is on the local disk and will be deleted by the deleteOnExit hook
+        glueMetastore.dropDatabase(schema, false);
+        glueMetastore.shutdown();
     }
 
     @Override
@@ -105,7 +96,7 @@ public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
                 "   location = '%s'\n" +
                 ")";
 
-        return format(expectedHiveCreateSchema, catalogName, schema, dataDirectory.toUri().toString().replaceFirst("/$", ""));
+        return format(expectedHiveCreateSchema, catalogName, schema, dataDirectory.toUri());
     }
 
     @Override
@@ -115,6 +106,6 @@ public class TestDeltaLakeSharedGlueMetastoreWithTableRedirections
                 "WITH (\n" +
                 "   location = '%s'\n" +
                 ")";
-        return format(expectedDeltaLakeCreateSchema, catalogName, schema, dataDirectory.toUri().toString().replaceFirst("/$", ""));
+        return format(expectedDeltaLakeCreateSchema, catalogName, schema, dataDirectory.toUri());
     }
 }

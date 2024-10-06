@@ -58,7 +58,7 @@ public class TestMockConnector
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder().build()).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder().build()).build();
 
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.createCatalog("tpch", "tpch");
@@ -102,12 +102,11 @@ public class TestMockConnector
                                                 Optional.of(new CatalogSchemaTableName("mock", "default", "test_storage")),
                                                 Optional.of("mock"),
                                                 Optional.of("default"),
-                                                ImmutableList.of(new Column("nationkey", BIGINT.getTypeId())),
+                                                ImmutableList.of(new Column("nationkey", BIGINT.getTypeId(), Optional.empty())),
                                                 Optional.of(Duration.ZERO),
                                                 Optional.empty(),
                                                 Optional.of("alice"),
-                                                ImmutableList.of(),
-                                                ImmutableMap.of())))
+                                                ImmutableList.of())))
                                 .withData(schemaTableName -> {
                                     if (schemaTableName.equals(new SchemaTableName("default", "nation"))) {
                                         return TPCH_NATION_DATA;
@@ -249,7 +248,7 @@ public class TestMockConnector
     {
         assertUpdate("CREATE SCHEMA mock.test_schema WITH (boolean_schema_property = true)");
         assertThatThrownBy(() -> assertUpdate("CREATE SCHEMA mock.test_schema WITH (unknown_property = true)"))
-                .hasMessage("Catalog 'mock' schema property 'unknown_property' does not exist");
+                .hasMessage("line 1:38: Catalog 'mock' schema property 'unknown_property' does not exist");
     }
 
     @Test
@@ -267,6 +266,6 @@ public class TestMockConnector
     {
         assertUpdate("CREATE TABLE mock.default.new_table (c int) WITH (integer_table_property = 1)");
         assertThatThrownBy(() -> assertUpdate("CREATE TABLE mock.default.new_table (c int) WITH (unknown_property = 1)"))
-                .hasMessage("Catalog 'mock' table property 'unknown_property' does not exist");
+                .hasMessage("line 1:51: Catalog 'mock' table property 'unknown_property' does not exist");
     }
 }

@@ -14,8 +14,7 @@
 package io.trino.jdbc;
 
 import com.google.common.collect.ImmutableSet;
-import org.testng.annotations.Parameters;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -33,10 +32,10 @@ public class JdbcDriverIT
             "META-INF/MANIFEST.MF",
             "META-INF/services/java.sql.Driver");
 
-    @Parameters("jdbc-jar")
     @Test
-    public void testDependenciesRelocated(String file)
+    public void testDependenciesRelocated()
     {
+        String file = System.getProperty("jdbc-jar");
         try (JarFile jarFile = new JarFile(file)) {
             List<String> nonRelocatedFiles = jarFile.stream()
                     .filter(value -> !value.isDirectory())
@@ -46,6 +45,27 @@ public class JdbcDriverIT
 
             assertThat(nonRelocatedFiles)
                     .describedAs("Non-relocated files in the shaded jar")
+                    .isEmpty();
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    public void testOpenTelemetryIsNotShaded()
+    {
+        String file = System.getProperty("jdbc-jar");
+        try (JarFile jarFile = new JarFile(file)) {
+            List<String> openTelemetryFiles = jarFile.stream()
+                    .filter(value -> !value.isDirectory())
+                    .map(ZipEntry::getName)
+                    .filter(name -> name.contains("io/opentelemetry"))
+                    .filter(name -> !name.contains("io/opentelemetry/instrumentation/okhttp/v3_0"))
+                    .collect(toImmutableList());
+
+            assertThat(openTelemetryFiles)
+                    .describedAs("OpenTelemetry files in the shaded jar")
                     .isEmpty();
         }
         catch (IOException e) {

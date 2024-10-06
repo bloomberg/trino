@@ -40,7 +40,6 @@ import org.apache.avro.specific.SpecificDatumReader;
 import org.apache.avro.specific.SpecificRecordBase;
 
 import java.io.IOException;
-import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -74,16 +73,12 @@ public class HudiTableFileSystemView
     private final ReentrantReadWriteLock.ReadLock readLock = globalLock.readLock();
     // Used to concurrently load and populate partition views
     private final ConcurrentHashMap<String, Boolean> addedPartitions = new ConcurrentHashMap<>(4096);
+    private final HudiTableMetaClient metaClient;
+    private final HudiTimeline visibleCommitsAndCompactionTimeline;
 
     private boolean closed;
-
     private Map<String, List<HudiFileGroup>> partitionToFileGroupsMap;
-    private HudiTableMetaClient metaClient;
-
     private Map<HudiFileGroupId, Entry<String, CompactionOperation>> fgIdToPendingCompaction;
-
-    private HudiTimeline visibleCommitsAndCompactionTimeline;
-
     private Map<HudiFileGroupId, HudiInstant> fgIdToReplaceInstants;
 
     public HudiTableFileSystemView(HudiTableMetaClient metaClient, HudiTimeline visibleActiveTimeline)
@@ -262,7 +257,7 @@ public class HudiTableFileSystemView
             if (!isPartitionAvailableInStore(partitionPathStr)) {
                 // Not loaded yet
                 try {
-                    LOG.info("Building file system view for partition (" + partitionPathStr + ")");
+                    LOG.debug("Building file system view for partition (%s)", partitionPathStr);
 
                     Location partitionLocation = getPartitionLocation(metaClient.getBasePath(), partitionPathStr);
                     FileIterator partitionFiles = listPartition(partitionLocation);
@@ -277,10 +272,10 @@ public class HudiTableFileSystemView
                 }
             }
             else {
-                LOG.debug("View already built for Partition :" + partitionPathStr + ", FOUND is ");
+                LOG.debug("View already built for Partition :%s, FOUND is ", partitionPathStr);
             }
             long endTs = System.currentTimeMillis();
-            LOG.debug("Time to load partition (" + partitionPathStr + ") =" + (endTs - beginTs));
+            LOG.debug("Time to load partition (%s) =%s", partitionPathStr, endTs - beginTs);
             return true;
         });
     }
@@ -297,9 +292,7 @@ public class HudiTableFileSystemView
         if (fileIterator.hasNext()) {
             return fileIterator;
         }
-        try (OutputStream ignored = metaClient.getFileSystem().newOutputFile(partitionLocation).create()) {
-            return FileIterator.empty();
-        }
+        return FileIterator.empty();
     }
 
     public List<HudiFileGroup> addFilesToView(FileIterator partitionFiles)
@@ -414,7 +407,7 @@ public class HudiTableFileSystemView
 
     private void storePartitionView(String partitionPath, List<HudiFileGroup> fileGroups)
     {
-        LOG.debug("Adding file-groups for partition :" + partitionPath + ", #FileGroups=" + fileGroups.size());
+        LOG.debug("Adding file-groups for partition :%s, #FileGroups=%s", partitionPath, fileGroups.size());
         List<HudiFileGroup> newList = ImmutableList.copyOf(fileGroups);
         partitionToFileGroupsMap.put(partitionPath, newList);
     }
@@ -452,7 +445,7 @@ public class HudiTableFileSystemView
 
         Optional<Entry<String, CompactionOperation>> compactionWithInstantTime =
                 getPendingCompactionOperationWithInstant(new HudiFileGroupId(partitionPath, baseFile.getFileId()));
-        return (compactionWithInstantTime.isPresent()) && (null != compactionWithInstantTime.get().getKey())
+        return compactionWithInstantTime.isPresent() && (null != compactionWithInstantTime.get().getKey())
                 && baseFile.getCommitTime().equals(compactionWithInstantTime.get().getKey());
     }
 

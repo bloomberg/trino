@@ -30,7 +30,9 @@ import io.trino.operator.aggregation.TestingAggregationFunction;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.spi.block.RunLengthEncodedBlock;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -61,8 +63,7 @@ public class TestSpatialPartitioningInternalAggregation
 
     public void test(int partitionCount)
     {
-        LocalQueryRunner runner = LocalQueryRunner.builder(testSessionBuilder().build())
-                .build();
+        QueryRunner runner = new StandaloneQueryRunner(testSessionBuilder().build());
         runner.installPlugin(new GeoPlugin());
 
         TestingAggregationFunction function = new TestingFunctionResolution(runner)
@@ -71,7 +72,9 @@ public class TestSpatialPartitioningInternalAggregation
         List<OGCGeometry> geometries = makeGeometries();
         Block geometryBlock = makeGeometryBlock(geometries);
 
-        Block partitionCountBlock = BlockAssertions.createRepeatedValuesBlock(partitionCount, geometries.size());
+        BlockBuilder blockBuilder = INTEGER.createBlockBuilder(null, 1);
+        INTEGER.writeInt(blockBuilder, partitionCount);
+        Block partitionCountBlock = RunLengthEncodedBlock.create(blockBuilder.build(), geometries.size());
 
         Rectangle expectedExtent = new Rectangle(-10, -10, Math.nextUp(10.0), Math.nextUp(10.0));
         String expectedValue = getSpatialPartitioning(expectedExtent, geometries, partitionCount);

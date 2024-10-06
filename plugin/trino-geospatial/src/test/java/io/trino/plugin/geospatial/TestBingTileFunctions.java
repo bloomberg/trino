@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.io.File;
 import java.nio.file.Files;
@@ -36,15 +37,17 @@ import static io.trino.operator.scalar.ApplyFunction.APPLY_FUNCTION;
 import static io.trino.plugin.geospatial.BingTile.fromCoordinates;
 import static io.trino.plugin.geospatial.BingTileType.BING_TILE;
 import static io.trino.spi.function.OperatorType.EQUAL;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static java.util.Collections.emptyList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestBingTileFunctions
 {
     private QueryAssertions assertions;
@@ -451,7 +454,7 @@ public class TestBingTileFunctions
 
         assertThat(assertions.function("ST_AsText", "ST_Centroid(bing_tile_polygon(bing_tile('123030123010121')))"))
                 .hasType(VARCHAR)
-                .isEqualTo("POINT (60.0018310442288 30.121372968273892)");
+                .isEqualTo("POINT (60.0018310546875 30.121372973521975)");
 
         // Check bottom right corner of a stack of tiles at different zoom levels
         assertThat(assertions.function("ST_AsText", "apply(bing_tile_polygon(bing_tile(1, 1, 1)), g -> ST_Point(ST_XMax(g), ST_YMin(g)))"))
@@ -719,30 +722,30 @@ public class TestBingTileFunctions
     }
 
     @Test
-    public void testDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "null", "null"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "null"))
+        assertThat(assertions.operator(IDENTICAL, "null", "null"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "null", "bing_tile(3, 5, 3)"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 3)"))
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "null"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile(3, 5, 3)"))
+        assertThat(assertions.operator(IDENTICAL, "null", "bing_tile(3, 5, 3)"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile('213')"))
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 3)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile(3, 5, 3)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile('213')"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 4)"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile(3, 5, 3)", "bing_tile(3, 5, 4)"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "bing_tile('213')", "bing_tile('2131')"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "bing_tile('213')", "bing_tile('2131')"))
+                .isEqualTo(false);
     }
 }

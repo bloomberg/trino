@@ -18,15 +18,14 @@ import com.google.common.collect.Sets;
 import io.trino.matching.Capture;
 import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
-import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.SymbolsExtractor;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.FilterNode;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.HashMap;
 import java.util.List;
@@ -36,12 +35,12 @@ import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.matching.Capture.newCapture;
-import static io.trino.sql.ExpressionUtils.combineConjuncts;
-import static io.trino.sql.ExpressionUtils.extractConjuncts;
+import static io.trino.sql.ir.Booleans.TRUE;
+import static io.trino.sql.ir.IrUtils.combineConjuncts;
+import static io.trino.sql.ir.IrUtils.extractConjuncts;
 import static io.trino.sql.planner.plan.Patterns.filter;
 import static io.trino.sql.planner.plan.Patterns.project;
 import static io.trino.sql.planner.plan.Patterns.source;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.counting;
 import static java.util.stream.Collectors.partitioningBy;
@@ -50,16 +49,16 @@ import static java.util.stream.Collectors.partitioningBy;
  * Replace filter predicate conjuncts with underlying project expressions.
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - Filter (a AND b > c)
  *     - Project
  *       a <- d IS NULL
  *       b <- b
  *       c <- c
  *         - source (b, c, d)
- * </pre>
+ * }</pre>
  * into:
- * <pre>
+ * <pre>{@code
  * - Project
  *   a <- TRUE
  *   b <- b
@@ -70,16 +69,16 @@ import static java.util.stream.Collectors.partitioningBy;
  *           c <- c
  *           d <- d
  *         - source (b, c, d)
- * </pre>
- * In the preceding example, filter predicate conjunct `a` is replaced with
- * project expression `d IS NULL`.
+ * }</pre>
+ * In the preceding example, filter predicate conjunct {@code a} is replaced with
+ * project expression {@code d IS NULL}.
  * Additionally:
- * - an identity assignment `d <- d` is added to the underlying projection in order
- * to expose the symbol `d` used by the rewritten filter predicate,
- * - the inlined assignment `a <- d IS NULL` is removed from the underlying projection.
+ * - an identity assignment {@code d <- d} is added to the underlying projection in order
+ * to expose the symbol {@code d} used by the rewritten filter predicate,
+ * - the inlined assignment {@code a <- d IS NULL} is removed from the underlying projection.
  * - another projection is added above the rewritten FilterNode, assigning
- * TRUE_LITERAL to the replaced symbol `a`. It is needed to restore the original
- * output of the FilterNode. If the symbol `a` is not referenced in the upstream plan,
+ * TRUE_LITERAL to the replaced symbol {@code a}. It is needed to restore the original
+ * output of the FilterNode. If the symbol {@code a} is not referenced in the upstream plan,
  * the projection should be subsequently removed by other rules.
  * <p>
  * Note: project expressions are inlined only in case when the resulting symbols
@@ -95,13 +94,6 @@ public class InlineProjectIntoFilter
     private static final Pattern<FilterNode> PATTERN = filter()
             .with(source().matching(project().capturedAs(PROJECTION)));
 
-    private final Metadata metadata;
-
-    public InlineProjectIntoFilter(Metadata metadata)
-    {
-        this.metadata = metadata;
-    }
-
     @Override
     public Pattern<FilterNode> getPattern()
     {
@@ -116,7 +108,7 @@ public class InlineProjectIntoFilter
         List<Expression> filterConjuncts = extractConjuncts(node.getPredicate());
 
         Map<Boolean, List<Expression>> conjuncts = filterConjuncts.stream()
-                .collect(partitioningBy(SymbolReference.class::isInstance));
+                .collect(partitioningBy(Reference.class::isInstance));
         List<Expression> simpleConjuncts = conjuncts.get(true);
         List<Expression> complexConjuncts = conjuncts.get(false);
 
@@ -146,7 +138,7 @@ public class InlineProjectIntoFilter
         for (Expression conjunct : filterConjuncts) {
             if (simpleConjunctsToInline.contains(conjunct)) {
                 Expression expression = projectNode.getAssignments().get(Symbol.from(conjunct));
-                if (expression == null || expression instanceof SymbolReference) {
+                if (expression == null || expression instanceof Reference) {
                     // expression == null -> The symbol is not produced by the underlying projection (i.e. it is a correlation symbol).
                     // expression instanceof SymbolReference -> Do not inline trivial projections.
                     newConjuncts.add(conjunct);
@@ -154,7 +146,7 @@ public class InlineProjectIntoFilter
                 else {
                     newConjuncts.add(expression);
                     newAssignments.putIdentities(SymbolsExtractor.extractUnique(expression));
-                    postFilterAssignmentsBuilder.put(Symbol.from(conjunct), TRUE_LITERAL);
+                    postFilterAssignmentsBuilder.put(Symbol.from(conjunct), TRUE);
                 }
             }
             else {
@@ -184,7 +176,7 @@ public class InlineProjectIntoFilter
                                 projectNode.getId(),
                                 projectNode.getSource(),
                                 newAssignments.build()),
-                        combineConjuncts(metadata, newConjuncts.build())),
+                        combineConjuncts(newConjuncts.build())),
                 Assignments.builder()
                         .putAll(outputAssignments)
                         .build()));

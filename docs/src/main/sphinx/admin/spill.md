@@ -12,6 +12,12 @@ implemented on the application level to address specific needs of Trino.
 
 Properties related to spilling are described in {doc}`properties-spilling`.
 
+:::{warning} 
+The spill to disk feature and implementation are a legacy functionality of
+Trino. Consider using [](/admin/fault-tolerant-execution) with the `task` retry
+policy and a configured [](fte-exchange-manager).
+:::
+
 ## Memory management and spill
 
 By default, Trino kills queries, if the memory requested by the query execution
@@ -56,10 +62,10 @@ there is no need to use RAID for spill.
 
 ## Spill compression
 
-When spill compression is enabled (`spill-compression-enabled` property in
-{doc}`properties-spilling`), spilled pages are compressed, before being
-written to disk. Enabling this feature can reduce disk IO at the cost
-of extra CPU load to compress and decompress spilled pages.
+When spill compression is enabled with the [`spill-compression-codec`
+property](/admin/properties-spilling), spilled pages are compressed, before
+being written to disk. Enabling this feature can reduce disk IO at the cost of
+extra CPU load to compress and decompress spilled pages.
 
 ## Spill encryption
 

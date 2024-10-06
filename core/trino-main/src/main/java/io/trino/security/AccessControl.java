@@ -14,9 +14,14 @@
 package io.trino.security;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.metadata.QualifiedObjectName;
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.function.SchemaFunctionName;
 import io.trino.spi.security.AccessDeniedException;
@@ -24,7 +29,6 @@ import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.security.ViewExpression;
-import io.trino.spi.type.Type;
 
 import java.security.Principal;
 import java.util.Collection;
@@ -75,7 +79,7 @@ public interface AccessControl
      *
      * @throws AccessDeniedException if not allowed
      */
-    void checkCanExecuteQuery(Identity identity);
+    void checkCanExecuteQuery(Identity identity, QueryId queryId);
 
     /**
      * Checks if identity can view a query owned by the specified user.  The method
@@ -251,14 +255,6 @@ public interface AccessControl
      * @throws AccessDeniedException if not allowed
      */
     void checkCanShowColumns(SecurityContext context, CatalogSchemaTableName table);
-
-    /**
-     * Filter the list of columns to those visible to the identity.
-     *
-     * @deprecated Use {@link #filterColumns(SecurityContext, String, Map)}
-     */
-    @Deprecated
-    Set<String> filterColumns(SecurityContext context, CatalogSchemaTableName tableName, Set<String> columns);
 
     /**
      * Filter lists of columns of multiple tables to those visible to the identity.
@@ -444,11 +440,32 @@ public interface AccessControl
     void checkCanRevokeTablePrivilege(SecurityContext context, Privilege privilege, QualifiedObjectName tableName, TrinoPrincipal revokee, boolean grantOption);
 
     /**
+     * Check if identity is allowed to grant the specified privilege to the grantee on the specified entity.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanGrantEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee, boolean grantOption);
+
+    /**
+     * Check if identity is allowed to deny the specified privilege to the grantee on the specified entity.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanDenyEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee);
+
+    /**
+     * Check if identity is allowed to revoke the specified privilege on the specified entity from the revokee.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanRevokeEntityPrivilege(SecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal revokee, boolean grantOption);
+
+    /**
      * Check if identity is allowed to set the specified system property.
      *
      * @throws AccessDeniedException if not allowed
      */
-    void checkCanSetSystemSessionProperty(Identity identity, String propertyName);
+    void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName);
 
     /**
      * Check if identity is allowed to set the specified catalog property.
@@ -573,13 +590,34 @@ public interface AccessControl
      */
     Set<SchemaFunctionName> filterFunctions(SecurityContext context, String catalogName, Set<SchemaFunctionName> functionNames);
 
+    /**
+     * Check if identity is allowed to create the specified function.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanCreateFunction(SecurityContext context, QualifiedObjectName functionName);
+
+    /**
+     * Check if identity is allowed to drop the specified function.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanDropFunction(SecurityContext context, QualifiedObjectName functionName);
+
+    /**
+     * Check if identity is allowed to execute SHOW CREATE FUNCTION.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanShowCreateFunction(SecurityContext context, QualifiedObjectName functionName);
+
     default List<ViewExpression> getRowFilters(SecurityContext context, QualifiedObjectName tableName)
     {
         return ImmutableList.of();
     }
 
-    default Optional<ViewExpression> getColumnMask(SecurityContext context, QualifiedObjectName tableName, String columnName, Type type)
+    default Map<ColumnSchema, ViewExpression> getColumnMasks(SecurityContext context, QualifiedObjectName tableName, List<ColumnSchema> columns)
     {
-        return Optional.empty();
+        return ImmutableMap.of();
     }
 }

@@ -13,8 +13,8 @@
  */
 package io.trino.operator.window;
 
-import io.trino.operator.aggregation.WindowAccumulator;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.function.WindowAccumulator;
 import io.trino.spi.function.WindowFunction;
 import io.trino.spi.function.WindowIndex;
 
@@ -64,7 +64,7 @@ class AggregateWindowFunction
             buildNewFrame(frameStart, frameEnd);
         }
 
-        accumulator.evaluateFinal(output);
+        accumulator.output(output);
     }
 
     private void buildNewFrame(int frameStart, int frameEnd)
@@ -82,11 +82,13 @@ class AggregateWindowFunction
 
             if ((overlapEnd - overlapStart + 1) > (prefixRemoveLength + suffixRemoveLength)) {
                 // It's worth keeping the overlap, and removing the now-unused prefix
-                if (currentStart < frameStart) {
-                    remove(currentStart, frameStart - 1);
+                if (currentStart < frameStart && !remove(currentStart, frameStart - 1)) {
+                    resetNewFrame(frameStart, frameEnd);
+                    return;
                 }
-                if (frameEnd < currentEnd) {
-                    remove(frameEnd + 1, currentEnd);
+                if (frameEnd < currentEnd && !remove(frameEnd + 1, currentEnd)) {
+                    resetNewFrame(frameStart, frameEnd);
+                    return;
                 }
                 if (frameStart < currentStart) {
                     accumulate(frameStart, currentStart - 1);
@@ -101,6 +103,11 @@ class AggregateWindowFunction
         }
 
         // We couldn't or didn't want to modify the accumulation: instead, discard the current accumulation and start fresh.
+        resetNewFrame(frameStart, frameEnd);
+    }
+
+    private void resetNewFrame(int frameStart, int frameEnd)
+    {
         resetAccumulator();
         accumulate(frameStart, frameEnd);
         currentStart = frameStart;
@@ -112,9 +119,9 @@ class AggregateWindowFunction
         accumulator.addInput(windowIndex, start, end);
     }
 
-    private void remove(int start, int end)
+    private boolean remove(int start, int end)
     {
-        accumulator.removeInput(windowIndex, start, end);
+        return accumulator.removeInput(windowIndex, start, end);
     }
 
     private void resetAccumulator()

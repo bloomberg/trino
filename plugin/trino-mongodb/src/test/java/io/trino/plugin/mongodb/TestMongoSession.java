@@ -21,7 +21,7 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.Type;
 import org.bson.Document;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -38,7 +38,6 @@ import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.util.Arrays.asList;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 public class TestMongoSession
 {
@@ -58,10 +57,11 @@ public class TestMongoSession
 
         Document output = MongoSession.buildProjection(columns);
         Document expected = new Document()
-                .append(COL1.getBaseName(), 1)
-                .append(COL2.getBaseName(), 1)
-                .append(ID_COL.getBaseName(), 0);
-        assertEquals(output, expected);
+                .append(COL1.baseName(), 1)
+                .append(COL2.baseName(), 1)
+                .append(ID_COL.baseName(), 0);
+        assertThat(output)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -71,10 +71,11 @@ public class TestMongoSession
 
         Document output = MongoSession.buildProjection(columns);
         Document expected = new Document()
-                .append(COL1.getBaseName(), 1)
-                .append(COL2.getBaseName(), 1)
-                .append(ID_COL.getBaseName(), 1);
-        assertEquals(output, expected);
+                .append(COL1.baseName(), 1)
+                .append(COL2.baseName(), 1)
+                .append(ID_COL.baseName(), 1);
+        assertThat(output)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -86,9 +87,11 @@ public class TestMongoSession
 
         Document query = MongoSession.buildQuery(tupleDomain);
         Document expected = new Document()
-                .append(COL1.getBaseName(), new Document().append("$gt", 100L).append("$lte", 200L))
-                .append(COL2.getBaseName(), new Document("$eq", "a value"));
-        assertEquals(query, expected);
+                .append("$and", ImmutableList.of(
+                        new Document(COL1.baseName(), new Document().append("$gt", 100L).append("$lte", 200L)),
+                        new Document(COL2.baseName(), new Document("$eq", "a value"))));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -100,9 +103,11 @@ public class TestMongoSession
 
         Document query = MongoSession.buildQuery(tupleDomain);
         Document expected = new Document()
-                .append(COL3.getBaseName(), new Document().append("$gt", "hello").append("$lte", "world"))
-                .append(COL2.getBaseName(), new Document("$gte", "a value"));
-        assertEquals(query, expected);
+                .append("$and", ImmutableList.of(
+                        new Document(COL3.baseName(), new Document().append("$gt", "hello").append("$lte", "world")),
+                        new Document(COL2.baseName(), new Document("$gte", "a value"))));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -112,8 +117,9 @@ public class TestMongoSession
                 COL2, Domain.create(ValueSet.ofRanges(equal(createUnboundedVarcharType(), utf8Slice("hello")), equal(createUnboundedVarcharType(), utf8Slice("world"))), false)));
 
         Document query = MongoSession.buildQuery(tupleDomain);
-        Document expected = new Document(COL2.getBaseName(), new Document("$in", ImmutableList.of("hello", "world")));
-        assertEquals(query, expected);
+        Document expected = new Document(COL2.baseName(), new Document("$in", ImmutableList.of("hello", "world")));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -124,9 +130,10 @@ public class TestMongoSession
 
         Document query = MongoSession.buildQuery(tupleDomain);
         Document expected = new Document("$or", asList(
-                new Document(COL1.getBaseName(), new Document("$lt", 100L)),
-                new Document(COL1.getBaseName(), new Document("$gt", 200L))));
-        assertEquals(query, expected);
+                new Document(COL1.baseName(), new Document("$lt", 100L)),
+                new Document(COL1.baseName(), new Document("$gt", 200L))));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -137,9 +144,10 @@ public class TestMongoSession
 
         Document query = MongoSession.buildQuery(tupleDomain);
         Document expected = new Document("$or", asList(
-                new Document(COL1.getBaseName(), new Document("$gt", 200L)),
-                new Document(COL1.getBaseName(), new Document("$eq", null))));
-        assertEquals(query, expected);
+                new Document(COL1.baseName(), new Document("$gt", 200L)),
+                new Document(COL1.baseName(), new Document("$eq", null))));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -148,8 +156,9 @@ public class TestMongoSession
         TupleDomain<ColumnHandle> tupleDomain = TupleDomain.withColumnDomains(ImmutableMap.of(COL4, Domain.singleValue(BOOLEAN, true)));
 
         Document query = MongoSession.buildQuery(tupleDomain);
-        Document expected = new Document().append(COL4.getBaseName(), new Document("$eq", true));
-        assertEquals(query, expected);
+        Document expected = new Document().append(COL4.baseName(), new Document("$eq", true));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test
@@ -161,11 +170,13 @@ public class TestMongoSession
 
         Document query = MongoSession.buildQuery(tupleDomain);
         Document expected = new Document()
-                .append("$or", asList(
-                        new Document(COL5.getQualifiedName(), new Document("$gt", 200L)),
-                        new Document(COL5.getQualifiedName(), new Document("$eq", null))))
-                .append(COL6.getQualifiedName(), new Document("$eq", "a value"));
-        assertEquals(query, expected);
+                .append("$and", ImmutableList.of(
+                        new Document("$or", asList(
+                                new Document(COL5.getQualifiedName(), new Document("$gt", 200L)),
+                                new Document(COL5.getQualifiedName(), new Document("$eq", null)))),
+                        new Document(COL6.getQualifiedName(), new Document("$eq", "a value"))));
+        assertThat(query)
+                .isEqualTo(expected);
     }
 
     @Test

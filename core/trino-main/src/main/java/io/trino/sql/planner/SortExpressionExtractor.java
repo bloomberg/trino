@@ -14,25 +14,22 @@
 package io.trino.sql.planner;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.metadata.Metadata;
 import io.trino.operator.join.SortedPositionLinks;
-import io.trino.sql.ExpressionUtils;
-import io.trino.sql.tree.AstVisitor;
-import io.trino.sql.tree.BetweenPredicate;
-import io.trino.sql.tree.ComparisonExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.Node;
-import io.trino.sql.tree.SymbolReference;
+import io.trino.sql.ir.Between;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.IrUtils;
+import io.trino.sql.ir.IrVisitor;
+import io.trino.sql.ir.Reference;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static io.trino.sql.tree.ComparisonExpression.Operator.GREATER_THAN_OR_EQUAL;
-import static io.trino.sql.tree.ComparisonExpression.Operator.LESS_THAN_OR_EQUAL;
-import static java.util.Collections.singletonList;
+import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
+import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
+import static io.trino.sql.planner.SymbolsExtractor.extractAll;
 import static java.util.Comparator.comparing;
 import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.toMap;
@@ -60,16 +57,15 @@ public final class SortExpressionExtractor
      */
     private SortExpressionExtractor() {}
 
-    public static Optional<SortExpressionContext> extractSortExpression(Metadata metadata, Set<Symbol> buildSymbols, Expression filter)
+    public static Optional<SortExpressionContext> extractSortExpression(Set<Symbol> buildSymbols, Expression filter)
     {
-        List<Expression> filterConjuncts = ExpressionUtils.extractConjuncts(filter);
+        List<Expression> filterConjuncts = IrUtils.extractConjuncts(filter);
         SortExpressionVisitor visitor = new SortExpressionVisitor(buildSymbols);
 
         List<SortExpressionContext> sortExpressionCandidates = ImmutableList.copyOf(filterConjuncts.stream()
-                .filter(expression -> DeterminismEvaluator.isDeterministic(expression, metadata))
+                .filter(DeterminismEvaluator::isDeterministic)
                 .map(visitor::process)
-                .filter(Optional::isPresent)
-                .map(Optional::get)
+                .flatMap(List::stream)
                 .collect(toMap(SortExpressionContext::getSortExpression, identity(), SortExpressionExtractor::merge))
                 .values());
 
@@ -90,7 +86,7 @@ public final class SortExpressionExtractor
     }
 
     private static class SortExpressionVisitor
-            extends AstVisitor<Optional<SortExpressionContext>, Void>
+            extends IrVisitor<List<SortExpressionContext>, Void>
     {
         private final Set<Symbol> buildSymbols;
 
@@ -100,48 +96,48 @@ public final class SortExpressionExtractor
         }
 
         @Override
-        protected Optional<SortExpressionContext> visitExpression(Expression expression, Void context)
+        protected List<SortExpressionContext> visitExpression(Expression expression, Void context)
         {
-            return Optional.empty();
+            return List.of();
         }
 
         @Override
-        protected Optional<SortExpressionContext> visitComparisonExpression(ComparisonExpression comparison, Void context)
+        protected List<SortExpressionContext> visitComparison(Comparison comparison, Void context)
         {
-            return switch (comparison.getOperator()) {
+            return switch (comparison.operator()) {
                 case GREATER_THAN, GREATER_THAN_OR_EQUAL, LESS_THAN, LESS_THAN_OR_EQUAL -> {
-                    Optional<SymbolReference> sortChannel = asBuildSymbolReference(buildSymbols, comparison.getRight());
-                    boolean hasBuildReferencesOnOtherSide = hasBuildSymbolReference(buildSymbols, comparison.getLeft());
+                    Optional<Reference> sortChannel = asBuildSymbolReference(buildSymbols, comparison.right());
+                    boolean hasBuildReferencesOnOtherSide = hasBuildSymbolReference(buildSymbols, comparison.left());
                     if (sortChannel.isEmpty()) {
-                        sortChannel = asBuildSymbolReference(buildSymbols, comparison.getLeft());
-                        hasBuildReferencesOnOtherSide = hasBuildSymbolReference(buildSymbols, comparison.getRight());
+                        sortChannel = asBuildSymbolReference(buildSymbols, comparison.left());
+                        hasBuildReferencesOnOtherSide = hasBuildSymbolReference(buildSymbols, comparison.right());
                     }
                     if (sortChannel.isPresent() && !hasBuildReferencesOnOtherSide) {
-                        yield sortChannel.map(symbolReference -> new SortExpressionContext(symbolReference, singletonList(comparison)));
+                        yield ImmutableList.of(new SortExpressionContext(sortChannel.get(), ImmutableList.of(comparison)));
                     }
-                    yield Optional.empty();
+                    yield List.of();
                 }
-                default -> Optional.empty();
+                default -> List.of();
             };
         }
 
         @Override
-        protected Optional<SortExpressionContext> visitBetweenPredicate(BetweenPredicate node, Void context)
+        protected List<SortExpressionContext> visitBetween(Between node, Void context)
         {
-            Optional<SortExpressionContext> result = visitComparisonExpression(new ComparisonExpression(GREATER_THAN_OR_EQUAL, node.getValue(), node.getMin()), context);
-            if (result.isPresent()) {
-                return result;
-            }
-            return visitComparisonExpression(new ComparisonExpression(LESS_THAN_OR_EQUAL, node.getValue(), node.getMax()), context);
+            // Handle both side of BETWEEN as `GREATER_THAN_OR_EQUAL` expression and `LESS_THAN_OR_EQUAL` expression.
+            return ImmutableList.<SortExpressionContext>builder()
+                    .addAll(visitComparison(new Comparison(GREATER_THAN_OR_EQUAL, node.value(), node.min()), context))
+                    .addAll(visitComparison(new Comparison(LESS_THAN_OR_EQUAL, node.value(), node.max()), context))
+                    .build();
         }
     }
 
-    private static Optional<SymbolReference> asBuildSymbolReference(Set<Symbol> buildLayout, Expression expression)
+    private static Optional<Reference> asBuildSymbolReference(Set<Symbol> buildLayout, Expression expression)
     {
         // Currently we only support symbol as sort expression on build side
-        if (expression instanceof SymbolReference symbolReference) {
-            if (buildLayout.contains(new Symbol(symbolReference.getName()))) {
-                return Optional.of(symbolReference);
+        if (expression instanceof Reference reference) {
+            if (buildLayout.contains(new Symbol(reference.type(), reference.name()))) {
+                return Optional.of(reference);
             }
         }
         return Optional.empty();
@@ -149,36 +145,6 @@ public final class SortExpressionExtractor
 
     private static boolean hasBuildSymbolReference(Set<Symbol> buildSymbols, Expression expression)
     {
-        return new BuildSymbolReferenceFinder(buildSymbols).process(expression);
-    }
-
-    private static class BuildSymbolReferenceFinder
-            extends AstVisitor<Boolean, Void>
-    {
-        private final Set<String> buildSymbols;
-
-        public BuildSymbolReferenceFinder(Set<Symbol> buildSymbols)
-        {
-            this.buildSymbols = buildSymbols.stream()
-                    .map(Symbol::getName)
-                    .collect(toImmutableSet());
-        }
-
-        @Override
-        protected Boolean visitNode(Node node, Void context)
-        {
-            for (Node child : node.getChildren()) {
-                if (process(child, context)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        @Override
-        protected Boolean visitSymbolReference(SymbolReference symbolReference, Void context)
-        {
-            return buildSymbols.contains(symbolReference.getName());
-        }
+        return extractAll(expression).stream().anyMatch(buildSymbols::contains);
     }
 }

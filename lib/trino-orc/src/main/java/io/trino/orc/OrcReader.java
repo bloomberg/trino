@@ -16,6 +16,7 @@ package io.trino.orc;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
@@ -157,7 +158,7 @@ public class OrcReader
                     throw new OrcCorruptionException(orcDataSource.getId(), "Not an ORC file");
                 }
             }
-            catch (IOException ignored) {
+            catch (IOException _) {
                 // throw original exception
             }
 
@@ -366,7 +367,7 @@ public class OrcReader
                             orcDataSourceId))
                     .collect(toImmutableList());
         }
-        return new OrcColumn(path, columnId, fieldName, orcType.getOrcTypeKind(), orcDataSourceId, nestedColumns, orcType.getAttributes());
+        return new OrcColumn(path, columnId, fieldName, orcType, orcDataSourceId, nestedColumns, orcType.getAttributes());
     }
 
     /**
@@ -393,6 +394,8 @@ public class OrcReader
         }
     }
 
+    @SuppressWarnings("FormatStringAnnotation")
+    @FormatMethod
     private void validateWrite(Predicate<OrcWriteValidation> test, String messageFormat, Object... args)
             throws OrcCorruptionException
     {

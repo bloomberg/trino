@@ -33,8 +33,9 @@ import static org.testcontainers.containers.MySQLContainer.MYSQL_PORT;
 public class TestingMySqlServer
         implements AutoCloseable
 {
-    public static final String DEFAULT_IMAGE = "mysql:8.0.30";
-    public static final String LEGACY_IMAGE = "mysql:5.7.35";
+    public static final String DEFAULT_IMAGE_8 = "mysql:8.0.36";
+    public static final String DEFAULT_IMAGE = DEFAULT_IMAGE_8;
+    public static final String LEGACY_IMAGE = "mysql:5.7.44"; // oldest available on RDS
 
     private final MySQLContainer<?> container;
     private final Closeable cleanup;
@@ -70,7 +71,14 @@ public class TestingMySqlServer
         this.container = container;
         configureContainer(container);
         cleanup = startOrReuse(container);
-        execute(format("GRANT ALL PRIVILEGES ON *.* TO '%s'", container.getUsername()), "root", container.getPassword());
+
+        try (Connection connection = DriverManager.getConnection(getJdbcUrl(), "root", container.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.execute(format("GRANT ALL PRIVILEGES ON *.* TO '%s'", container.getUsername()));
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void configureContainer(MySQLContainer<?> container)
@@ -79,26 +87,21 @@ public class TestingMySqlServer
         container.addParameter("TC_MY_CNF", null);
     }
 
-    public Connection createConnection()
-            throws SQLException
-    {
-        return container.createConnection("");
-    }
-
     public void execute(String sql)
     {
-        execute(sql, getUsername(), getPassword());
-    }
-
-    public void execute(String sql, String user, String password)
-    {
-        try (Connection connection = DriverManager.getConnection(getJdbcUrl(), user, password);
+        try (Connection connection = createConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute(sql);
         }
         catch (SQLException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public Connection createConnection()
+            throws SQLException
+    {
+        return container.createConnection("");
     }
 
     public String getUsername()

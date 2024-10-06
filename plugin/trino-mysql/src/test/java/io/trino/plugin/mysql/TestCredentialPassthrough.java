@@ -16,20 +16,21 @@ package io.trino.plugin.mysql;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.spi.security.Identity;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Map;
 
-import static io.airlift.testing.Closeables.closeAllSuppress;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestCredentialPassthrough
 {
     private TestingMySqlServer mySqlServer;
@@ -46,20 +47,13 @@ public class TestCredentialPassthrough
             throws Exception
     {
         mySqlServer = new TestingMySqlServer();
-        try {
-            queryRunner = DistributedQueryRunner.builder(testSessionBuilder().build()).build();
-            queryRunner.installPlugin(new MySqlPlugin());
-            Map<String, String> properties = ImmutableMap.<String, String>builder()
-                    .put("connection-url", mySqlServer.getJdbcUrl())
-                    .put("user-credential-name", "mysql.user")
-                    .put("password-credential-name", "mysql.password")
-                    .buildOrThrow();
-            queryRunner.createCatalog("mysql", "mysql", properties);
-        }
-        catch (Exception e) {
-            closeAllSuppress(e, queryRunner, mySqlServer);
-            throw e;
-        }
+        queryRunner = MySqlQueryRunner.builder(mySqlServer)
+                .addConnectorProperties(ImmutableMap.<String, String>builder()
+                        .put("connection-url", mySqlServer.getJdbcUrl())
+                        .put("user-credential-name", "mysql.user")
+                        .put("password-credential-name", "mysql.password")
+                        .buildOrThrow())
+                .build();
     }
 
     @AfterAll

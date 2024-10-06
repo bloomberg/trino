@@ -19,17 +19,17 @@ import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoInputStream;
 import io.trino.hive.formats.avro.NativeLogicalTypesAvroTypeManager;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.type.CharTypeInfo;
-import io.trino.plugin.hive.type.DecimalTypeInfo;
-import io.trino.plugin.hive.type.ListTypeInfo;
-import io.trino.plugin.hive.type.MapTypeInfo;
-import io.trino.plugin.hive.type.PrimitiveCategory;
-import io.trino.plugin.hive.type.PrimitiveTypeInfo;
-import io.trino.plugin.hive.type.StructTypeInfo;
-import io.trino.plugin.hive.type.TypeInfo;
-import io.trino.plugin.hive.type.UnionTypeInfo;
-import io.trino.plugin.hive.type.VarcharTypeInfo;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.type.CharTypeInfo;
+import io.trino.metastore.type.DecimalTypeInfo;
+import io.trino.metastore.type.ListTypeInfo;
+import io.trino.metastore.type.MapTypeInfo;
+import io.trino.metastore.type.PrimitiveCategory;
+import io.trino.metastore.type.PrimitiveTypeInfo;
+import io.trino.metastore.type.StructTypeInfo;
+import io.trino.metastore.type.TypeInfo;
+import io.trino.metastore.type.UnionTypeInfo;
+import io.trino.metastore.type.VarcharTypeInfo;
 import org.apache.avro.LogicalType;
 import org.apache.avro.LogicalTypes;
 import org.apache.avro.Schema;
@@ -42,21 +42,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.CHAR_TYPE_LOGICAL_NAME;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_DOC;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_LITERAL;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_NAME;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_NAMESPACE;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_NONE;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.SCHEMA_URL;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.TABLE_NAME;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.VARCHAR_AND_CHAR_LOGICAL_TYPE_LENGTH_PROP;
-import static io.trino.plugin.hive.avro.AvroHiveConstants.VARCHAR_TYPE_LOGICAL_NAME;
+import static io.trino.hive.formats.avro.AvroHiveConstants.CHAR_TYPE_LOGICAL_NAME;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_DOC;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_LITERAL;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_NAME;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_NAMESPACE;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_NONE;
+import static io.trino.hive.formats.avro.AvroHiveConstants.SCHEMA_URL;
+import static io.trino.hive.formats.avro.AvroHiveConstants.TABLE_NAME;
+import static io.trino.hive.formats.avro.AvroHiveConstants.VARCHAR_AND_CHAR_LOGICAL_TYPE_LENGTH_PROP;
+import static io.trino.hive.formats.avro.AvroHiveConstants.VARCHAR_TYPE_LOGICAL_NAME;
+import static io.trino.metastore.Table.TABLE_COMMENT;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_COMMENTS;
@@ -71,17 +70,17 @@ public final class AvroHiveFileUtils
     private AvroHiveFileUtils() {}
 
     // Lifted and shifted from org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.determineSchemaOrThrowException
-    public static Schema determineSchemaOrThrowException(TrinoFileSystem fileSystem, Properties properties)
+    public static Schema determineSchemaOrThrowException(TrinoFileSystem fileSystem, Map<String, String> properties)
             throws IOException
     {
         // Try pull schema from literal table property
-        String schemaString = properties.getProperty(SCHEMA_LITERAL, "");
+        String schemaString = properties.getOrDefault(SCHEMA_LITERAL, "");
         if (!schemaString.isBlank() && !schemaString.equals(SCHEMA_NONE)) {
             return getSchemaParser().parse(schemaString);
         }
 
         // Try pull schema directly from URL
-        String schemaURL = properties.getProperty(SCHEMA_URL, "");
+        String schemaURL = properties.getOrDefault(SCHEMA_URL, "");
         if (!schemaURL.isBlank()) {
             TrinoInputFile schemaFile = fileSystem.newInputFile(Location.of(schemaURL));
             if (!schemaFile.exists()) {
@@ -94,37 +93,35 @@ public final class AvroHiveFileUtils
                 throw new IOException("Unable to read avro schema file from given path: " + schemaURL, e);
             }
         }
-        Schema schema = getSchemaFromProperties(properties);
-        properties.setProperty(SCHEMA_LITERAL, schema.toString());
-        return schema;
+        return getSchemaFromProperties(properties);
     }
 
-    private static Schema getSchemaFromProperties(Properties properties)
+    private static Schema getSchemaFromProperties(Map<String, String> schema)
             throws IOException
     {
-        List<String> columnNames = getColumnNames(properties);
-        List<HiveType> columnTypes = getColumnTypes(properties);
+        List<String> columnNames = getColumnNames(schema);
+        List<HiveType> columnTypes = getColumnTypes(schema);
         if (columnNames.isEmpty() || columnTypes.isEmpty()) {
-            throw new IOException("Unable to parse column names or column types from job properties to create Avro Schema");
+            throw new IOException("Unable to parse column names or column types from schema to create Avro Schema");
         }
         if (columnNames.size() != columnTypes.size()) {
             throw new IllegalArgumentException("Avro Schema initialization failed. Number of column name and column type differs. columnNames = %s, columnTypes = %s".formatted(columnNames, columnTypes));
         }
-        List<String> columnComments = Optional.ofNullable(properties.getProperty(LIST_COLUMN_COMMENTS))
+        List<String> columnComments = Optional.ofNullable(schema.get(LIST_COLUMN_COMMENTS))
                 .filter(not(String::isBlank))
                 .map(Splitter.on('\0')::splitToList)
                 .orElse(emptyList());
 
-        final String tableName = properties.getProperty(TABLE_NAME);
-        final String tableComment = properties.getProperty(TABLE_COMMENT);
+        String tableName = schema.get(TABLE_NAME);
+        String tableComment = schema.get(TABLE_COMMENT);
 
         return constructSchemaFromParts(
                 columnNames,
                 columnTypes,
                 columnComments,
-                Optional.ofNullable(properties.getProperty(SCHEMA_NAMESPACE)),
-                Optional.ofNullable(properties.getProperty(SCHEMA_NAME, tableName)),
-                Optional.ofNullable(properties.getProperty(SCHEMA_DOC, tableComment)));
+                Optional.ofNullable(schema.get(SCHEMA_NAMESPACE)),
+                Optional.ofNullable(schema.getOrDefault(SCHEMA_NAME, tableName)),
+                Optional.ofNullable(schema.getOrDefault(SCHEMA_DOC, tableComment)));
     }
 
     private static Schema constructSchemaFromParts(List<String> columnNames, List<HiveType> columnTypes,
@@ -155,7 +152,7 @@ public final class AvroHiveFileUtils
             case PRIMITIVE -> createAvroPrimitive(hiveType);
             case LIST -> {
                 ListTypeInfo listTypeInfo = (ListTypeInfo) hiveType.getTypeInfo();
-                yield Schema.createArray(avroSchemaForHiveType(HiveType.toHiveType(listTypeInfo.getListElementTypeInfo())));
+                yield Schema.createArray(avroSchemaForHiveType(HiveType.fromTypeInfo(listTypeInfo.getListElementTypeInfo())));
             }
             case MAP -> {
                 MapTypeInfo mapTypeInfo = ((MapTypeInfo) hiveType.getTypeInfo());
@@ -165,13 +162,13 @@ public final class AvroHiveFileUtils
                     throw new UnsupportedOperationException("Key of Map must be a String");
                 }
                 TypeInfo valueTypeInfo = mapTypeInfo.getMapValueTypeInfo();
-                yield Schema.createMap(avroSchemaForHiveType(HiveType.toHiveType(valueTypeInfo)));
+                yield Schema.createMap(avroSchemaForHiveType(HiveType.fromTypeInfo(valueTypeInfo)));
             }
             case STRUCT -> createAvroRecord(hiveType);
             case UNION -> {
                 List<Schema> childSchemas = new ArrayList<>();
                 for (TypeInfo childTypeInfo : ((UnionTypeInfo) hiveType.getTypeInfo()).getAllUnionObjectTypeInfos()) {
-                    final Schema childSchema = avroSchemaForHiveType(HiveType.toHiveType(childTypeInfo));
+                    final Schema childSchema = avroSchemaForHiveType(HiveType.fromTypeInfo(childTypeInfo));
                     if (childSchema.getType() == Schema.Type.UNION) {
                         childSchemas.addAll(childSchema.getTypes());
                     }
@@ -246,7 +243,7 @@ public final class AvroHiveFileUtils
 
         for (int i = 0; i < allStructFieldNames.size(); ++i) {
             final TypeInfo childTypeInfo = allStructFieldTypeInfo.get(i);
-            final Schema fieldSchema = avroSchemaForHiveType(HiveType.toHiveType(childTypeInfo));
+            final Schema fieldSchema = avroSchemaForHiveType(HiveType.fromTypeInfo(childTypeInfo));
             fieldAssembler = fieldAssembler
                     .name(allStructFieldNames.get(i))
                     .doc(childTypeInfo.toString())

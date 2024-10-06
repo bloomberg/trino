@@ -35,9 +35,11 @@ public class IcebergRestCatalogConfig
     }
 
     private URI restUri;
+    private Optional<String> prefix = Optional.empty();
     private Optional<String> warehouse = Optional.empty();
     private Security security = Security.NONE;
     private SessionType sessionType = SessionType.NONE;
+    private boolean vendedCredentialsEnabled;
 
     @NotNull
     public URI getBaseUri()
@@ -52,6 +54,32 @@ public class IcebergRestCatalogConfig
         if (uri != null) {
             this.restUri = URI.create(uri);
         }
+        return this;
+    }
+
+    public Optional<String> getPrefix()
+    {
+        return prefix;
+    }
+
+    @Config("iceberg.rest-catalog.prefix")
+    @ConfigDescription("The prefix for the resource path to use with the REST catalog server")
+    public IcebergRestCatalogConfig setPrefix(String prefix)
+    {
+        this.prefix = Optional.ofNullable(prefix);
+        return this;
+    }
+
+    public Optional<String> getWarehouse()
+    {
+        return warehouse;
+    }
+
+    @Config("iceberg.rest-catalog.warehouse")
+    @ConfigDescription("The warehouse location/identifier to use with the REST catalog server")
+    public IcebergRestCatalogConfig setWarehouse(String warehouse)
+    {
+        this.warehouse = Optional.ofNullable(warehouse);
         return this;
     }
 
@@ -83,16 +111,16 @@ public class IcebergRestCatalogConfig
         return this;
     }
 
-    public Optional<String> getWarehouse()
+    public boolean isVendedCredentialsEnabled()
     {
-        return warehouse;
+        return vendedCredentialsEnabled;
     }
 
-    @Config("iceberg.rest-catalog.warehouse")
-    @ConfigDescription("The warehouse location/identifier to use with the REST catalog server")
-    public IcebergRestCatalogConfig setWarehouse(String warehouse)
+    @Config("iceberg.rest-catalog.vended-credentials-enabled")
+    @ConfigDescription("Use credentials provided by the REST backend for file system access")
+    public IcebergRestCatalogConfig setVendedCredentialsEnabled(boolean vendedCredentialsEnabled)
     {
-        this.warehouse = Optional.ofNullable(warehouse);
+        this.vendedCredentialsEnabled = vendedCredentialsEnabled;
         return this;
     }
 }

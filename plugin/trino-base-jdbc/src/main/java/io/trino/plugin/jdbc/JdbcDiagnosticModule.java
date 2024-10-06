@@ -14,17 +14,17 @@
 package io.trino.plugin.jdbc;
 
 import com.google.inject.Binder;
-import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provider;
 import com.google.inject.Provides;
+import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import io.airlift.log.Logger;
-import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.jmx.MBeanServerModule;
 import io.trino.plugin.base.util.LoggingInvocationHandler;
 import io.trino.plugin.jdbc.jmx.StatisticsAwareConnectionFactory;
 import io.trino.plugin.jdbc.jmx.StatisticsAwareJdbcClient;
+import io.trino.spi.catalog.CatalogName;
 import org.weakref.jmx.guice.MBeanModule;
 
 import static com.google.common.reflect.Reflection.newProxy;
@@ -39,11 +39,12 @@ public class JdbcDiagnosticModule
     {
         binder.install(new MBeanServerModule());
         binder.install(new MBeanModule());
+        binder.bind(StatisticsAwareConnectionFactory.class).in(Scopes.SINGLETON);
 
         Provider<CatalogName> catalogName = binder.getProvider(CatalogName.class);
-        newExporter(binder).export(Key.get(JdbcClient.class, StatsCollecting.class))
+        newExporter(binder).export(StatisticsAwareJdbcClient.class)
                 .as(generator -> generator.generatedNameOf(JdbcClient.class, catalogName.get().toString()));
-        newExporter(binder).export(Key.get(ConnectionFactory.class, StatsCollecting.class))
+        newExporter(binder).export(StatisticsAwareConnectionFactory.class)
                 .as(generator -> generator.generatedNameOf(ConnectionFactory.class, catalogName.get().toString()));
         newExporter(binder).export(JdbcClient.class)
                 .as(generator -> generator.generatedNameOf(CachingJdbcClient.class, catalogName.get().toString()));
@@ -51,8 +52,7 @@ public class JdbcDiagnosticModule
 
     @Provides
     @Singleton
-    @StatsCollecting
-    public JdbcClient createJdbcClientWithStats(@ForBaseJdbc JdbcClient client, CatalogName catalogName)
+    public StatisticsAwareJdbcClient createStatisticsAwareJdbcClient(@ForBaseJdbc JdbcClient client, CatalogName catalogName)
     {
         Logger logger = Logger.get(format("io.trino.plugin.jdbc.%s.jdbcclient", catalogName));
 
@@ -64,13 +64,5 @@ public class JdbcDiagnosticModule
             }
             return client;
         }));
-    }
-
-    @Provides
-    @Singleton
-    @StatsCollecting
-    public static ConnectionFactory createConnectionFactoryWithStats(@ForBaseJdbc ConnectionFactory connectionFactory)
-    {
-        return new StatisticsAwareConnectionFactory(connectionFactory);
     }
 }

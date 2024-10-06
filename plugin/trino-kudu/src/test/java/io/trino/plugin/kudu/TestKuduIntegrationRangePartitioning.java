@@ -18,10 +18,8 @@ import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 
-import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunner;
 import static java.lang.String.join;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestKuduIntegrationRangePartitioning
         extends AbstractTestQueryFramework
@@ -85,7 +83,7 @@ public class TestKuduIntegrationRangePartitioning
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createKuduQueryRunner(closeAfterClass(new TestingKuduServer()), "range_partitioning");
+        return KuduQueryRunnerFactory.builder(closeAfterClass(new TestingKuduServer())).build();
     }
 
     @Test
@@ -133,12 +131,14 @@ public class TestKuduIntegrationRangePartitioning
         assertUpdate(dropPartition3);
 
         MaterializedResult result = computeActual("SHOW CREATE TABLE " + tableName);
-        assertEquals(result.getRowCount(), 1);
+        assertThat(result.getRowCount()).isEqualTo(1);
         String createSQL = result.getMaterializedRows().get(0).getField(0).toString();
         String rangesArray = "'[" + ranges.cmp1 + "," + ranges.cmp2 + "," + ranges.cmp4 + "]'";
         rangesArray = rangesArray.replaceAll("\\s+", "");
         String expectedRanges = "range_partitions = " + rangesArray;
-        assertTrue(createSQL.contains(expectedRanges), createSQL + "\ncontains\n" + expectedRanges);
+        assertThat(createSQL.contains(expectedRanges))
+                .describedAs(createSQL + "\ncontains\n" + expectedRanges)
+                .isTrue();
     }
 
     static class TestRanges

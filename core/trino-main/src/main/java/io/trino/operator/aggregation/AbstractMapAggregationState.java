@@ -14,12 +14,11 @@
 package io.trino.operator.aggregation;
 
 import com.google.common.base.Throwables;
-import com.google.common.primitives.Ints;
 import io.trino.operator.VariableWidthData;
 import io.trino.spi.TrinoException;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.MapBlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type;
 import jakarta.annotation.Nullable;
 
@@ -35,6 +34,7 @@ import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.operator.VariableWidthData.EMPTY_CHUNK;
 import static io.trino.operator.VariableWidthData.POINTER_SIZE;
 import static io.trino.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
+import static java.lang.Math.clamp;
 import static java.lang.Math.multiplyExact;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static java.util.Objects.checkIndex;
@@ -71,7 +71,7 @@ public abstract class AbstractMapAggregationState
     private final MethodHandle keyReadFlat;
     private final MethodHandle keyWriteFlat;
     private final MethodHandle keyHashFlat;
-    private final MethodHandle keyDistinctFlatBlock;
+    private final MethodHandle keyIdenticalFlatBlock;
     private final MethodHandle keyHashBlock;
 
     private final Type valueType;
@@ -104,7 +104,7 @@ public abstract class AbstractMapAggregationState
             MethodHandle keyReadFlat,
             MethodHandle keyWriteFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle keyHashBlock,
             Type valueType,
             MethodHandle valueReadFlat,
@@ -116,7 +116,7 @@ public abstract class AbstractMapAggregationState
         this.keyReadFlat = requireNonNull(keyReadFlat, "keyReadFlat is null");
         this.keyWriteFlat = requireNonNull(keyWriteFlat, "keyWriteFlat is null");
         this.keyHashFlat = requireNonNull(hashFlat, "hashFlat is null");
-        this.keyDistinctFlatBlock = requireNonNull(distinctFlatBlock, "distinctFlatBlock is null");
+        this.keyIdenticalFlatBlock = requireNonNull(identicalFlatBlock, "identicalFlatBlock is null");
         this.keyHashBlock = requireNonNull(keyHashBlock, "keyHashBlock is null");
 
         this.valueType = requireNonNull(valueType, "valueType is null");
@@ -133,7 +133,7 @@ public abstract class AbstractMapAggregationState
         boolean variableWidth = keyType.isFlatVariableWidth() || valueType.isFlatVariableWidth();
         variableWidthData = variableWidth ? new VariableWidthData() : null;
         if (grouped) {
-            recordGroupIdOffset = (variableWidth ? POINTER_SIZE : 0);
+            recordGroupIdOffset = variableWidth ? POINTER_SIZE : 0;
             recordNextIndexOffset = recordGroupIdOffset + Integer.BYTES;
             recordKeyOffset = recordNextIndexOffset + Integer.BYTES;
         }
@@ -141,7 +141,7 @@ public abstract class AbstractMapAggregationState
             // use MIN_VALUE so that when it is added to the record offset we get a negative value, and thus an ArrayIndexOutOfBoundsException
             recordGroupIdOffset = Integer.MIN_VALUE;
             recordNextIndexOffset = Integer.MIN_VALUE;
-            recordKeyOffset = (variableWidth ? POINTER_SIZE : 0);
+            recordKeyOffset = variableWidth ? POINTER_SIZE : 0;
         }
         recordValueNullOffset = recordKeyOffset + keyType.getFlatFixedSize();
         recordValueOffset = recordValueNullOffset + 1;
@@ -155,7 +155,7 @@ public abstract class AbstractMapAggregationState
         this.keyReadFlat = state.keyReadFlat;
         this.keyWriteFlat = state.keyWriteFlat;
         this.keyHashFlat = state.keyHashFlat;
-        this.keyDistinctFlatBlock = state.keyDistinctFlatBlock;
+        this.keyIdenticalFlatBlock = state.keyIdenticalFlatBlock;
         this.keyHashBlock = state.keyHashBlock;
 
         this.valueType = state.valueType;
@@ -186,7 +186,7 @@ public abstract class AbstractMapAggregationState
     private static byte[][] createRecordGroups(int capacity, int recordSize)
     {
         if (capacity < RECORDS_PER_GROUP) {
-            return new byte[][]{new byte[multiplyExact(capacity, recordSize)]};
+            return new byte[][] {new byte[multiplyExact(capacity, recordSize)]};
         }
 
         byte[][] groups = new byte[(capacity + 1) >> RECORDS_PER_GROUP_SHIFT][];
@@ -203,7 +203,7 @@ public abstract class AbstractMapAggregationState
                 sizeOf(control) +
                 (sizeOf(recordGroups[0]) * recordGroups.length) +
                 (variableWidthData == null ? 0 : variableWidthData.getRetainedSizeBytes()) +
-                (groupRecordIndex == null ? 0 : sizeOf(groupRecordIndex));
+                sizeOf(groupRecordIndex);
     }
 
     public void setMaxGroupId(int maxGroupId)
@@ -215,7 +215,7 @@ public abstract class AbstractMapAggregationState
 
         int currentSize = groupRecordIndex.length;
         if (requiredSize > currentSize) {
-            groupRecordIndex = Arrays.copyOf(groupRecordIndex, Ints.constrainToRange(requiredSize * 2, 1024, MAX_ARRAY_SIZE));
+            groupRecordIndex = Arrays.copyOf(groupRecordIndex, clamp(requiredSize * 2L, 1024, MAX_ARRAY_SIZE));
             Arrays.fill(groupRecordIndex, currentSize, groupRecordIndex.length, -1);
         }
     }
@@ -285,7 +285,7 @@ public abstract class AbstractMapAggregationState
         }
     }
 
-    protected void add(int groupId, Block keyBlock, int keyPosition, Block valueBlock, int valuePosition)
+    protected void add(int groupId, ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition)
     {
         checkArgument(!keyBlock.isNull(keyPosition), "key must not be null");
         checkArgument(groupId == 0 || groupRecordIndex != null, "groupId must be zero when grouping is not enabled");
@@ -322,12 +322,12 @@ public abstract class AbstractMapAggregationState
         }
     }
 
-    private int matchInVector(int groupId, Block block, int position, int vectorStartBucket, long repeated, long controlVector)
+    private int matchInVector(int groupId, ValueBlock block, int position, int vectorStartBucket, long repeated, long controlVector)
     {
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int bucket = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (keyNotDistinctFrom(bucket, block, position, groupId)) {
+            if (keyIdentical(bucket, block, position, groupId)) {
                 return bucket;
             }
 
@@ -346,7 +346,7 @@ public abstract class AbstractMapAggregationState
         return bucket(vectorStartBucket + slot);
     }
 
-    private void insert(int index, int groupId, Block keyBlock, int keyPosition, Block valueBlock, int valuePosition, byte hashPrefix)
+    private void insert(int index, int groupId, ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition, byte hashPrefix)
     {
         setControl(index, hashPrefix);
 
@@ -499,7 +499,7 @@ public abstract class AbstractMapAggregationState
         }
     }
 
-    private long keyHashCode(int groupId, Block right, int rightPosition)
+    private long keyHashCode(int groupId, ValueBlock right, int rightPosition)
     {
         try {
             long valueHash = (long) keyHashBlock.invokeExact(right, rightPosition);
@@ -511,7 +511,7 @@ public abstract class AbstractMapAggregationState
         }
     }
 
-    private boolean keyNotDistinctFrom(int leftPosition, Block right, int rightPosition, int rightGroupId)
+    private boolean keyIdentical(int leftPosition, ValueBlock right, int rightPosition, int rightGroupId)
     {
         byte[] leftRecords = getRecords(leftPosition);
         int leftRecordOffset = getRecordOffset(leftPosition);
@@ -529,7 +529,7 @@ public abstract class AbstractMapAggregationState
         }
 
         try {
-            return !(boolean) keyDistinctFlatBlock.invokeExact(
+            return (boolean) keyIdenticalFlatBlock.invokeExact(
                     leftRecords,
                     leftRecordOffset + recordKeyOffset,
                     leftVariableWidthChunk,
@@ -544,7 +544,7 @@ public abstract class AbstractMapAggregationState
 
     private static long repeat(byte value)
     {
-        return ((value & 0xFF) * 0x01_01_01_01_01_01_01_01L);
+        return (value & 0xFF) * 0x01_01_01_01_01_01_01_01L;
     }
 
     private static long match(long vector, long repeatedValue)

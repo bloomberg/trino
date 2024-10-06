@@ -14,10 +14,10 @@
 package io.trino.plugin.hive.containers;
 
 import com.google.common.collect.ImmutableMap;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.testing.ResourcePresence;
 import io.trino.testing.containers.Minio;
 import io.trino.testing.minio.MinioClient;
-import io.trino.util.AutoCloseableCloser;
 import org.testcontainers.containers.Network;
 
 import java.util.List;
@@ -45,6 +45,7 @@ public class HiveMinioDataLake
     private final HiveHadoop hiveHadoop;
 
     private final AutoCloseableCloser closer = AutoCloseableCloser.create();
+    private final Network network;
 
     private State state = State.INITIAL;
     private MinioClient minioClient;
@@ -62,7 +63,7 @@ public class HiveMinioDataLake
     public HiveMinioDataLake(String bucketName, Map<String, String> hiveHadoopFilesToMount, String hiveHadoopImage)
     {
         this.bucketName = requireNonNull(bucketName, "bucketName is null");
-        Network network = closer.register(newNetwork());
+        network = closer.register(newNetwork());
         this.minio = closer.register(
                 Minio.builder()
                         .withNetwork(network)
@@ -102,6 +103,11 @@ public class HiveMinioDataLake
     public boolean isNotStopped()
     {
         return state != State.STOPPED;
+    }
+
+    public Network getNetwork()
+    {
+        return network;
     }
 
     public MinioClient getMinioClient()

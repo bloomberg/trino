@@ -34,7 +34,7 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static java.util.Objects.requireNonNull;
 
-public class LineFileWriter
+public final class LineFileWriter
         implements FileWriter
 {
     private static final int INSTANCE_SIZE = instanceSize(LineFileWriter.class);
@@ -115,7 +115,7 @@ public class LineFileWriter
             try {
                 rollbackAction.close();
             }
-            catch (Exception ignored) {
+            catch (Exception _) {
                 // ignore
             }
             throw new TrinoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive", e);

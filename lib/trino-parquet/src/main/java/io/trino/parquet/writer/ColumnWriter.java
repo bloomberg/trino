@@ -13,10 +13,12 @@
  */
 package io.trino.parquet.writer;
 
+import org.apache.parquet.column.values.bloomfilter.BloomFilter;
 import org.apache.parquet.format.ColumnMetaData;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalInt;
 
 import static java.util.Objects.requireNonNull;
@@ -40,11 +42,13 @@ public interface ColumnWriter
         private final ColumnMetaData metaData;
         private final List<ParquetDataOutput> data;
         private final OptionalInt dictionaryPageSize;
+        private final Optional<BloomFilter> bloomFilter;
 
-        public BufferData(List<ParquetDataOutput> data, OptionalInt dictionaryPageSize, ColumnMetaData metaData)
+        public BufferData(List<ParquetDataOutput> data, OptionalInt dictionaryPageSize, Optional<BloomFilter> bloomFilter, ColumnMetaData metaData)
         {
             this.data = requireNonNull(data, "data is null");
             this.dictionaryPageSize = requireNonNull(dictionaryPageSize, "dictionaryPageSize is null");
+            this.bloomFilter = requireNonNull(bloomFilter, "bloomFilter is null");
             this.metaData = requireNonNull(metaData, "metaData is null");
         }
 
@@ -61,6 +65,11 @@ public interface ColumnWriter
         public OptionalInt getDictionaryPageSize()
         {
             return dictionaryPageSize;
+        }
+
+        public Optional<BloomFilter> getBloomFilter()
+        {
+            return bloomFilter;
         }
     }
 }

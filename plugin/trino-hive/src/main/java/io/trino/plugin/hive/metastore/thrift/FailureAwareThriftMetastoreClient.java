@@ -15,9 +15,11 @@ package io.trino.plugin.hive.metastore.thrift;
 
 import com.google.common.annotations.VisibleForTesting;
 import io.trino.hive.thrift.metastore.ColumnStatisticsObj;
+import io.trino.hive.thrift.metastore.DataOperationType;
 import io.trino.hive.thrift.metastore.Database;
 import io.trino.hive.thrift.metastore.EnvironmentContext;
 import io.trino.hive.thrift.metastore.FieldSchema;
+import io.trino.hive.thrift.metastore.Function;
 import io.trino.hive.thrift.metastore.HiveObjectPrivilege;
 import io.trino.hive.thrift.metastore.HiveObjectRef;
 import io.trino.hive.thrift.metastore.LockRequest;
@@ -28,14 +30,13 @@ import io.trino.hive.thrift.metastore.PrivilegeBag;
 import io.trino.hive.thrift.metastore.Role;
 import io.trino.hive.thrift.metastore.RolePrincipalGrant;
 import io.trino.hive.thrift.metastore.Table;
+import io.trino.hive.thrift.metastore.TableMeta;
 import io.trino.hive.thrift.metastore.TxnToWriteId;
-import io.trino.plugin.hive.acid.AcidOperation;
-import io.trino.spi.connector.SchemaTableName;
 import org.apache.thrift.TException;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -85,38 +86,10 @@ public class FailureAwareThriftMetastoreClient
     }
 
     @Override
-    public List<String> getAllTables(String databaseName)
+    public List<TableMeta> getTableMeta(String databaseName)
             throws TException
     {
-        return runWithHandle(() -> delegate.getAllTables(databaseName));
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllTables()
-            throws TException
-    {
-        return runWithHandle(() -> delegate.getAllTables());
-    }
-
-    @Override
-    public List<String> getAllViews(String databaseName)
-            throws TException
-    {
-        return runWithHandle(() -> delegate.getAllViews(databaseName));
-    }
-
-    @Override
-    public Optional<List<SchemaTableName>> getAllViews()
-            throws TException
-    {
-        return runWithHandle(() -> delegate.getAllViews());
-    }
-
-    @Override
-    public List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
-            throws TException
-    {
-        return runWithHandle(() -> delegate.getTablesWithParameter(databaseName, parameterKey, parameterValue));
+        return runWithHandle(() -> delegate.getTableMeta(databaseName));
     }
 
     @Override
@@ -330,13 +303,6 @@ public class FailureAwareThriftMetastoreClient
     }
 
     @Override
-    public List<RolePrincipalGrant> listGrantedPrincipals(String role)
-            throws TException
-    {
-        return runWithHandle(() -> delegate.listGrantedPrincipals(role));
-    }
-
-    @Override
     public List<RolePrincipalGrant> listRoleGrants(String name, PrincipalType principalType)
             throws TException
     {
@@ -435,7 +401,7 @@ public class FailureAwareThriftMetastoreClient
     }
 
     @Override
-    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, AcidOperation operation)
+    public void addDynamicPartitions(String dbName, String tableName, List<String> partitionNames, long transactionId, long writeId, DataOperationType operation)
             throws TException
     {
         runWithHandle(() -> delegate.addDynamicPartitions(dbName, tableName, partitionNames, transactionId, writeId, operation));
@@ -446,6 +412,41 @@ public class FailureAwareThriftMetastoreClient
             throws TException
     {
         runWithHandle(() -> delegate.alterTransactionalTable(table, transactionId, writeId, context));
+    }
+
+    @Override
+    public Function getFunction(String databaseName, String functionName)
+            throws TException
+    {
+        return runWithHandle(() -> delegate.getFunction(databaseName, functionName));
+    }
+
+    @Override
+    public Collection<String> getFunctions(String databaseName, String functionNamePattern)
+            throws TException
+    {
+        return runWithHandle(() -> delegate.getFunctions(databaseName, functionNamePattern));
+    }
+
+    @Override
+    public void createFunction(Function function)
+            throws TException
+    {
+        runWithHandle(() -> delegate.createFunction(function));
+    }
+
+    @Override
+    public void alterFunction(Function function)
+            throws TException
+    {
+        runWithHandle(() -> delegate.alterFunction(function));
+    }
+
+    @Override
+    public void dropFunction(String databaseName, String functionName)
+            throws TException
+    {
+        runWithHandle(() -> delegate.dropFunction(databaseName, functionName));
     }
 
     private <T> T runWithHandle(ThrowingSupplier<T> supplier)

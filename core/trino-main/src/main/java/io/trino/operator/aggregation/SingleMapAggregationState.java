@@ -13,9 +13,9 @@
  */
 package io.trino.operator.aggregation;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.MapBlockBuilder;
-import io.trino.spi.block.SingleMapBlock;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AccumulatorState;
 import io.trino.spi.type.Type;
 
@@ -27,14 +27,14 @@ import static com.google.common.base.Preconditions.checkState;
 public class SingleMapAggregationState
         extends AbstractMapAggregationState
 {
-    private SingleMapBlock tempSerializedState;
+    private SqlMap tempSerializedState;
 
     public SingleMapAggregationState(
             Type keyType,
             MethodHandle keyReadFlat,
             MethodHandle keyWriteFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle keyHashBlock,
             Type valueType,
             MethodHandle valueReadFlat,
@@ -45,7 +45,7 @@ public class SingleMapAggregationState
                 keyReadFlat,
                 keyWriteFlat,
                 hashFlat,
-                distinctFlatBlock,
+                identicalFlatBlock,
                 keyHashBlock,
                 valueType,
                 valueReadFlat,
@@ -61,7 +61,7 @@ public class SingleMapAggregationState
     }
 
     @Override
-    public void add(Block keyBlock, int keyPosition, Block valueBlock, int valuePosition)
+    public void add(ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition)
     {
         add(0, keyBlock, keyPosition, valueBlock, valuePosition);
     }
@@ -78,16 +78,16 @@ public class SingleMapAggregationState
         return new SingleMapAggregationState(this);
     }
 
-    void setTempSerializedState(SingleMapBlock tempSerializedState)
+    void setTempSerializedState(SqlMap tempSerializedState)
     {
         this.tempSerializedState = tempSerializedState;
     }
 
-    SingleMapBlock removeTempSerializedState()
+    SqlMap removeTempSerializedState()
     {
-        SingleMapBlock block = tempSerializedState;
-        checkState(block != null, "tempDeserializeBlock is null");
+        SqlMap sqlMap = tempSerializedState;
+        checkState(sqlMap != null, "tempDeserializeBlock is null");
         tempSerializedState = null;
-        return block;
+        return sqlMap;
     }
 }

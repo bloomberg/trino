@@ -19,9 +19,9 @@ import com.google.common.util.concurrent.UncheckedExecutionException;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.Storage;
-import io.trino.plugin.hive.metastore.Table;
+import io.trino.metastore.Partition;
+import io.trino.metastore.Storage;
+import io.trino.metastore.Table;
 import jakarta.annotation.Nullable;
 
 import java.io.IOException;
@@ -98,6 +98,13 @@ public class TransactionScopeCachingDirectoryLister
     }
 
     @Override
+    public void invalidate(Location location)
+    {
+        cache.invalidate(new TransactionDirectoryListingCacheKey(transactionId, location));
+        delegate.invalidate(location);
+    }
+
+    @Override
     public void invalidate(Table table)
     {
         if (isLocationPresent(table.getStorage())) {
@@ -119,6 +126,13 @@ public class TransactionScopeCachingDirectoryLister
             cache.invalidate(new TransactionDirectoryListingCacheKey(transactionId, Location.of(partition.getStorage().getLocation())));
         }
         delegate.invalidate(partition);
+    }
+
+    @Override
+    public void invalidateAll()
+    {
+        cache.invalidateAll();
+        delegate.invalidateAll();
     }
 
     private RemoteIterator<TrinoFileStatus> cachingRemoteIterator(FetchingValueHolder cachedValueHolder, TransactionDirectoryListingCacheKey cacheKey)
@@ -157,10 +171,10 @@ public class TransactionScopeCachingDirectoryLister
         };
     }
 
-    @VisibleForTesting
-    boolean isCached(Location location)
+    @Override
+    public boolean isCached(Location location)
     {
-        return isCached(new TransactionDirectoryListingCacheKey(transactionId, location));
+        return isCached(new TransactionDirectoryListingCacheKey(transactionId, location)) || delegate.isCached(location);
     }
 
     @VisibleForTesting

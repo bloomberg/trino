@@ -18,6 +18,8 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BufferedMapValueBuilder;
 import io.trino.spi.block.DuplicateMapKeyException;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.function.Convention;
 import io.trino.spi.function.Description;
@@ -30,13 +32,13 @@ import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.type.BlockTypeOperators.BlockPositionHashCode;
-import io.trino.type.BlockTypeOperators.BlockPositionIsDistinctFrom;
+import io.trino.type.BlockTypeOperators.BlockPositionIsIdentical;
 
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 
 @ScalarFunction("map_from_entries")
 @Description("Construct a map from an array of entries")
@@ -55,11 +57,11 @@ public final class MapFromEntriesFunction
     @TypeParameter("V")
     @SqlType("map(K,V)")
     @SqlNullable
-    public Block mapFromEntries(
+    public SqlMap mapFromEntries(
             @OperatorDependency(
-                    operator = IS_DISTINCT_FROM,
+                    operator = IDENTICAL,
                     argumentTypes = {"K", "K"},
-                    convention = @Convention(arguments = {BLOCK_POSITION, BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockPositionIsDistinctFrom keysDistinctOperator,
+                    convention = @Convention(arguments = {BLOCK_POSITION, BLOCK_POSITION}, result = FAIL_ON_NULL)) BlockPositionIsIdentical keysIdenticalOperator,
             @OperatorDependency(
                     operator = HASH_CODE,
                     argumentTypes = "K",
@@ -80,14 +82,16 @@ public final class MapFromEntriesFunction
                     if (mapEntries.isNull(i)) {
                         throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "map entry cannot be null");
                     }
-                    Block mapEntryBlock = mapEntryType.getObject(mapEntries, i);
+                    SqlRow entry = mapEntryType.getObject(mapEntries, i);
+                    int rawIndex = entry.getRawIndex();
 
-                    if (mapEntryBlock.isNull(0)) {
+                    Block keyBlock = entry.getRawFieldBlock(0);
+                    if (keyBlock.isNull(rawIndex)) {
                         throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "map key cannot be null");
                     }
+                    keyType.appendTo(keyBlock, rawIndex, keyBuilder);
 
-                    keyType.appendTo(mapEntryBlock, 0, keyBuilder);
-                    valueType.appendTo(mapEntryBlock, 1, valueBuilder);
+                    valueType.appendTo(entry.getRawFieldBlock(1), rawIndex, valueBuilder);
                 }
             });
         }

@@ -73,6 +73,7 @@ import static com.google.inject.multibindings.MapBinder.newMapBinder;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.plugin.kafka.encoder.EncoderModule.encoderFactory;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.Objects.requireNonNull;
@@ -105,6 +106,9 @@ public class ConfluentModule
         binder.bind(TableDescriptionSupplier.class).toProvider(ConfluentSchemaRegistryTableDescriptionSupplier.Factory.class).in(Scopes.SINGLETON);
         newMapBinder(binder, String.class, SchemaParser.class).addBinding("AVRO").to(AvroSchemaParser.class).in(Scopes.SINGLETON);
         newMapBinder(binder, String.class, SchemaParser.class).addBinding("PROTOBUF").to(LazyLoadedProtobufSchemaParser.class).in(Scopes.SINGLETON);
+
+        closingBinder(binder)
+                .registerCloseable(SchemaRegistryClient.class);
     }
 
     @Provides
@@ -189,6 +193,18 @@ public class ConfluentModule
         }
 
         @Override
+        public Optional<ParsedSchema> parseSchema(Schema schema, boolean isNew)
+        {
+            return SchemaProvider.super.parseSchema(schema, isNew);
+        }
+
+        @Override
+        public Optional<ParsedSchema> parseSchema(Schema schema, boolean isNew, boolean normalize)
+        {
+            return SchemaProvider.super.parseSchema(schema, isNew, normalize);
+        }
+
+        @Override
         public void configure(Map<String, ?> configuration)
         {
             Map<String, ?> oldConfiguration = this.configuration.getAndSet(ImmutableMap.copyOf(configuration));
@@ -202,9 +218,21 @@ public class ConfluentModule
         }
 
         @Override
-        public ParsedSchema parseSchemaOrElseThrow(Schema schema, boolean isNew)
+        public Optional<ParsedSchema> parseSchema(String schemaString, List<SchemaReference> references, boolean isNew, boolean normalize)
         {
-            return delegate.get().parseSchemaOrElseThrow(schema, isNew);
+            return SchemaProvider.super.parseSchema(schemaString, references, isNew, normalize);
+        }
+
+        @Override
+        public Optional<ParsedSchema> parseSchema(String schemaString, List<SchemaReference> references)
+        {
+            return SchemaProvider.super.parseSchema(schemaString, references);
+        }
+
+        @Override
+        public ParsedSchema parseSchemaOrElseThrow(Schema schema, boolean isNew, boolean normalize)
+        {
+            return delegate.get().parseSchemaOrElseThrow(schema, isNew, normalize);
         }
 
         private SchemaProvider create()

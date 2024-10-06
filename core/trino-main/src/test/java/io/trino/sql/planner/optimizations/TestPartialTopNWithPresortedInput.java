@@ -27,10 +27,13 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortingProperty;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.RowType;
+import io.trino.sql.ir.Comparison;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.FieldReference;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.assertions.BasePlanTest;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
-import io.trino.sql.tree.LongLiteral;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.testing.PlanTester;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -41,6 +44,8 @@ import static io.trino.spi.connector.SortOrder.ASC_NULLS_FIRST;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_LAST;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.ir.Comparison.Operator.EQUAL;
+import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
@@ -78,13 +83,13 @@ public class TestPartialTopNWithPresortedInput
     private static final SchemaTableName nestedField = new SchemaTableName(TEST_SCHEMA, "with_nested_field");
 
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         Session session = testSessionBuilder()
                 .setCatalog(MOCK_CATALOG)
                 .setSchema(TEST_SCHEMA)
                 .build();
-        LocalQueryRunner queryRunner = LocalQueryRunner.builder(session).build();
+        PlanTester planTester = PlanTester.create(session);
         MockConnectorFactory mockFactory = MockConnectorFactory.builder()
                 .withGetTableProperties((connectorSession, handle) -> {
                     MockConnectorTableHandle tableHandle = (MockConnectorTableHandle) handle;
@@ -113,8 +118,8 @@ public class TestPartialTopNWithPresortedInput
                     throw new IllegalArgumentException();
                 })
                 .build();
-        queryRunner.createCatalog(MOCK_CATALOG, mockFactory, ImmutableMap.of());
-        return queryRunner;
+        planTester.createCatalog(MOCK_CATALOG, mockFactory, ImmutableMap.of());
+        return planTester;
     }
 
     @Test
@@ -143,11 +148,15 @@ public class TestPartialTopNWithPresortedInput
 
         orderBy = ImmutableList.of(sort("t_col_a", ASCENDING, LAST));
         assertDistributedPlan("SELECT col_a FROM table_a ORDER BY 1 ASC NULLS LAST LIMIT 10", output(
-                        topN(10, orderBy, FINAL,
-                                exchange(LOCAL, GATHER, ImmutableList.of(),
-                                        exchange(REMOTE, GATHER, ImmutableList.of(),
-                                                topN(10, orderBy, PARTIAL,
-                                                        tableScan("table_a", ImmutableMap.of("t_col_a", "col_a"))))))));
+                topN(10, orderBy, FINAL,
+                        exchange(LOCAL, GATHER, ImmutableList.of(),
+                                exchange(REMOTE, GATHER, ImmutableList.of(),
+                                        topN(10, orderBy, PARTIAL,
+                                                exchange(LOCAL, GATHER,
+                                                        topN(10, orderBy, PARTIAL,
+                                                                exchange(LOCAL, REPARTITION, FIXED_ARBITRARY_DISTRIBUTION,
+                                                                        topN(10, orderBy, PARTIAL,
+                                                                                tableScan("table_a", ImmutableMap.of("t_col_a", "col_a"))))))))))));
     }
 
     @Test
@@ -178,15 +187,14 @@ public class TestPartialTopNWithPresortedInput
     public void testWithConstantProperty()
     {
         assertDistributedPlan("SELECT * FROM (VALUES (1), (1)) AS t (id) WHERE id = 1 ORDER BY 1 LIMIT 1", output(
-                        topN(1, ImmutableList.of(sort("id", ASCENDING, LAST)), FINAL,
-                                exchange(LOCAL, GATHER, ImmutableList.of(),
-                                        limit(1, ImmutableList.of(), true, ImmutableList.of("id"),
-                                                anyTree(
-                                                        values(
-                                                                ImmutableList.of("id"),
-                                                                ImmutableList.of(
-                                                                        ImmutableList.of(new LongLiteral("1")),
-                                                                        ImmutableList.of(new LongLiteral("1"))))))))));
+                topN(1, ImmutableList.of(sort("id", ASCENDING, LAST)), FINAL,
+                        exchange(LOCAL, GATHER, ImmutableList.of(),
+                                anyTree(
+                                        values(
+                                                ImmutableList.of("id"),
+                                                ImmutableList.of(
+                                                        ImmutableList.of(new Constant(INTEGER, 1L)),
+                                                        ImmutableList.of(new Constant(INTEGER, 1L)))))))));
     }
 
     @Test
@@ -204,8 +212,9 @@ public class TestPartialTopNWithPresortedInput
                         topN(1, ImmutableList.of(sort("k", ASCENDING, LAST)), FINAL,
                                 anyTree(
                                         limit(1, ImmutableList.of(), true, ImmutableList.of("k"),
-                                                project(ImmutableMap.of("k", expression("nested[1]")),
-                                                        filter("nested[1] = 1",
+                                                project(ImmutableMap.of("k", expression(new FieldReference(new Reference(RowType.from(ImmutableList.of(RowType.field("k", INTEGER))), "nested"), 0))),
+                                                        filter(
+                                                                new Comparison(EQUAL, new FieldReference(new Reference(RowType.from(ImmutableList.of(RowType.field("k", INTEGER))), "nested"), 0), new Constant(INTEGER, 1L)),
                                                                 tableScan("with_nested_field", ImmutableMap.of("nested", "nested")))))))));
     }
 }

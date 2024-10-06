@@ -17,9 +17,9 @@ import io.trino.Session;
 import io.trino.SystemSessionProperties;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.sql.TestTable;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.util.Locale;
 
@@ -27,14 +27,16 @@ import static com.google.common.base.Throwables.getStackTraceAsString;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class BaseJdbcTableStatisticsTest
         extends AbstractTestQueryFramework
 {
     // Currently this class serves as a common "interface" to define cases that should be covered.
     //  TODO extend it to provide reusable blocks to reduce boiler-plate.
 
-    @BeforeClass
+    @BeforeAll
     public void setUpTables()
     {
         setUpTableFromTpch("region");
@@ -115,21 +117,18 @@ public abstract class BaseJdbcTableStatisticsTest
     @Test
     public abstract void testMaterializedView();
 
-    @Test(dataProvider = "testCaseColumnNamesDataProvider")
-    public abstract void testCaseColumnNames(String tableName);
-
-    @DataProvider
-    public Object[][] testCaseColumnNamesDataProvider()
+    @Test
+    public void testCaseColumnNames()
     {
-        return new Object[][] {
-                {"TEST_STATS_MIXED_UNQUOTED_UPPER"},
-                {"test_stats_mixed_unquoted_lower"},
-                {"test_stats_mixed_uNQuoTeD_miXED"},
-                {"\"TEST_STATS_MIXED_QUOTED_UPPER\""},
-                {"\"test_stats_mixed_quoted_lower\""},
-                {"\"test_stats_mixed_QuoTeD_miXED\""},
-        };
+        testCaseColumnNames("TEST_STATS_MIXED_UNQUOTED_UPPER");
+        testCaseColumnNames("test_stats_mixed_unquoted_lower");
+        testCaseColumnNames("test_stats_mixed_uNQuoTeD_miXED");
+        testCaseColumnNames("\"TEST_STATS_MIXED_QUOTED_UPPER\"");
+        testCaseColumnNames("\"test_stats_mixed_quoted_lower\"");
+        testCaseColumnNames("\"test_stats_mixed_QuoTeD_miXED\"");
     }
+
+    protected abstract void testCaseColumnNames(String tableName);
 
     @Test
     public abstract void testNumericCornerCases();
@@ -144,6 +143,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -160,6 +160,7 @@ public abstract class BaseJdbcTableStatisticsTest
     {
         // Predicate on a varchar column. May or may not be pushed down, may or may not be subsumed.
         assertThat(query("SHOW STATS FOR (SELECT * FROM nation WHERE name = 'PERU')"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -178,6 +179,7 @@ public abstract class BaseJdbcTableStatisticsTest
             gatherStats(table.getName());
 
             assertThat(query("SHOW STATS FOR (SELECT * FROM " + table.getName() + " WHERE fl = 'B')"))
+                    .result()
                     .exceptColumns("data_size", "low_value", "high_value")
                     .skippingTypesCheck()
                     .matches("VALUES " +
@@ -204,6 +206,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(session, query)).isFullyPushedDown();
 
         assertThat(query(session, "SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -226,6 +229,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).skipResultsCorrectnessCheckForPushdown().isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -246,6 +250,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).skipResultsCorrectnessCheckForPushdown().isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -265,6 +270,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -284,6 +290,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).skipResultsCorrectnessCheckForPushdown().isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -302,6 +309,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -322,6 +330,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()
@@ -340,6 +349,7 @@ public abstract class BaseJdbcTableStatisticsTest
         assertThat(query(query)).isFullyPushedDown();
 
         assertThat(query("SHOW STATS FOR (" + query + ")"))
+                .result()
                 // Not testing average length and min/max, as this would make the test less reusable and is not that important to test.
                 .exceptColumns("data_size", "low_value", "high_value")
                 .skippingTypesCheck()

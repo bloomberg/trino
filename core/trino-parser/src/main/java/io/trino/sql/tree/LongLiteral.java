@@ -25,6 +25,7 @@ public class LongLiteral
     private final String value;
     private final long parsedValue;
 
+    @Deprecated
     public LongLiteral(String value)
     {
         this(Optional.empty(), value);
@@ -44,7 +45,7 @@ public class LongLiteral
             this.parsedValue = parse(value);
         }
         catch (NumberFormatException e) {
-            throw new ParsingException("Invalid numeric literal: " + value);
+            throw new ParsingException("Invalid numeric literal: " + value, location.orElse(new NodeLocation(1, 1)));
         }
     }
 

@@ -92,16 +92,21 @@ public final class ColumnMapping
         return new ColumnMapping(trinoType, readFunction, writeFunction, predicatePushdownController);
     }
 
+    public static ColumnMapping mapping(
+            Type trinoType,
+            ReadFunction readFunction,
+            WriteFunction writeFunction,
+            PredicatePushdownController predicatePushdownController)
+    {
+        return new ColumnMapping(trinoType, readFunction, writeFunction, predicatePushdownController);
+    }
+
     private final Type type;
     private final ReadFunction readFunction;
     private final WriteFunction writeFunction;
     private final PredicatePushdownController predicatePushdownController;
 
-    /**
-     * @deprecated Prefer factory methods instead over calling constructor directly.
-     */
-    @Deprecated
-    public ColumnMapping(Type type, ReadFunction readFunction, WriteFunction writeFunction, PredicatePushdownController predicatePushdownController)
+    private ColumnMapping(Type type, ReadFunction readFunction, WriteFunction writeFunction, PredicatePushdownController predicatePushdownController)
     {
         this.type = requireNonNull(type, "type is null");
         this.readFunction = requireNonNull(readFunction, "readFunction is null");

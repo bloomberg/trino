@@ -13,18 +13,20 @@
  */
 package io.trino.server.security.oauth2;
 
-import com.google.common.io.Resources;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtParser;
+import io.trino.server.ExternalUriInfo;
 import io.trino.server.ui.OAuth2WebUiInstalled;
+import io.trino.server.ui.OAuthIdTokenCookie;
 import io.trino.server.ui.OAuthWebUiCookie;
 import jakarta.ws.rs.core.Response;
 
+import javax.crypto.SecretKey;
+
 import java.io.IOException;
 import java.net.URI;
-import java.security.Key;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
@@ -39,8 +41,10 @@ import static com.google.common.hash.Hashing.sha256;
 import static io.jsonwebtoken.security.Keys.hmacShaKeyFor;
 import static io.trino.server.security.jwt.JwtUtil.newJwtBuilder;
 import static io.trino.server.security.jwt.JwtUtil.newJwtParserBuilder;
+import static io.trino.server.security.oauth2.OAuth2CallbackResource.CALLBACK_ENDPOINT;
 import static io.trino.server.security.oauth2.TokenPairSerializer.TokenPair.fromOAuth2Response;
 import static io.trino.server.ui.FormWebUiAuthenticationFilter.UI_LOCATION;
+import static io.trino.web.ui.WebUiResources.readWebUiResource;
 import static jakarta.ws.rs.core.Response.Status.BAD_REQUEST;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -68,7 +72,7 @@ public class OAuth2Service
     private final String failureHtml;
 
     private final TemporalAmount challengeTimeout;
-    private final Key stateHmac;
+    private final SecretKey stateHmac;
     private final JwtParser jwtParser;
 
     private final OAuth2TokenHandler tokenHandler;
@@ -86,8 +90,8 @@ public class OAuth2Service
             throws IOException
     {
         this.client = requireNonNull(client, "client is null");
-        this.successHtml = Resources.toString(Resources.getResource(getClass(), "/oauth2/success.html"), UTF_8);
-        this.failureHtml = Resources.toString(Resources.getResource(getClass(), "/oauth2/failure.html"), UTF_8);
+        this.successHtml = readWebUiResource("/oauth2/success.html");
+        this.failureHtml = readWebUiResource("/oauth2/failure.html");
         verify(failureHtml.contains(FAILURE_REPLACEMENT_TEXT), "login.html does not contain the replacement text");
 
         this.challengeTimeout = Duration.ofMillis(oauth2Config.getChallengeTimeout().toMillis());
@@ -95,7 +99,7 @@ public class OAuth2Service
                 .map(key -> sha256().hashString(key, UTF_8).asBytes())
                 .orElseGet(() -> secureRandomBytes(32)));
         this.jwtParser = newJwtParserBuilder()
-                .setSigningKey(stateHmac)
+                .verifyWith(stateHmac)
                 .requireAudience(STATE_AUDIENCE_UI)
                 .build();
 
@@ -111,12 +115,13 @@ public class OAuth2Service
         Instant challengeExpiration = now().plus(challengeTimeout);
         String state = newJwtBuilder()
                 .signWith(stateHmac)
-                .setAudience(STATE_AUDIENCE_UI)
+                .audience().add(STATE_AUDIENCE_UI).and()
                 .claim(HANDLER_STATE_CLAIM, handlerState.orElse(null))
-                .setExpiration(Date.from(challengeExpiration))
+                .expiration(Date.from(challengeExpiration))
                 .compact();
 
         OAuth2Client.Request request = client.createAuthorizationRequest(state, callbackUri);
+        // redirect the user to the OAuth2 server
         Response.ResponseBuilder response = Response.seeOther(request.getAuthorizationUri());
         request.getNonce().ifPresent(nce -> response.cookie(NonceCookie.create(nce, challengeExpiration)));
         return response.build();
@@ -147,7 +152,7 @@ public class OAuth2Service
                 .build();
     }
 
-    public Response finishOAuth2Challenge(String state, String code, URI callbackUri, Optional<String> nonce)
+    public Response finishOAuth2Challenge(String state, String code, ExternalUriInfo externalUriInfo, Optional<String> nonce)
     {
         Optional<String> handlerState;
         try {
@@ -165,20 +170,20 @@ public class OAuth2Service
         // Note: the Web UI may be disabled, so REST requests can not redirect to a success or error page inside of the Web UI
         try {
             // fetch access token
-            OAuth2Client.Response oauth2Response = client.getOAuth2Response(code, callbackUri, nonce);
+            OAuth2Client.Response oauth2Response = client.getOAuth2Response(code, externalUriInfo.absolutePath(CALLBACK_ENDPOINT), nonce);
 
+            Instant cookieExpirationTime = tokenExpiration
+                    .map(expiration -> Instant.now().plus(expiration))
+                    .orElse(oauth2Response.getExpiration());
             if (handlerState.isEmpty()) {
-                return Response
-                        .seeOther(URI.create(UI_LOCATION))
-                        .cookie(
-                                OAuthWebUiCookie.create(
-                                        tokenPairSerializer.serialize(
-                                                fromOAuth2Response(oauth2Response)),
-                                                tokenExpiration
-                                                        .map(expiration -> Instant.now().plus(expiration))
-                                                        .orElse(oauth2Response.getExpiration())),
-                                NonceCookie.delete())
-                        .build();
+                Response.ResponseBuilder builder = Response
+                        .seeOther(externalUriInfo.absolutePath(UI_LOCATION))
+                        .cookie(OAuthWebUiCookie.create(tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)), cookieExpirationTime))
+                        .cookie(NonceCookie.delete());
+                if (oauth2Response.getIdToken().isPresent()) {
+                    builder.cookie(OAuthIdTokenCookie.create(oauth2Response.getIdToken().get(), cookieExpirationTime));
+                }
+                return builder.build();
             }
 
             tokenHandler.setAccessToken(handlerState.get(), tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)));
@@ -186,10 +191,11 @@ public class OAuth2Service
             Response.ResponseBuilder builder = Response.ok(getSuccessHtml());
             if (webUiOAuthEnabled) {
                 builder.cookie(
-                        OAuthWebUiCookie.create(
-                                tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)),
-                                tokenExpiration.map(expiration -> Instant.now().plus(expiration))
-                                        .orElse(oauth2Response.getExpiration())));
+                        OAuthWebUiCookie.create(tokenPairSerializer.serialize(fromOAuth2Response(oauth2Response)), cookieExpirationTime));
+
+                if (oauth2Response.getIdToken().isPresent()) {
+                    builder.cookie(OAuthIdTokenCookie.create(oauth2Response.getIdToken().get(), cookieExpirationTime));
+                }
             }
             return builder.cookie(NonceCookie.delete()).build();
         }
@@ -209,8 +215,8 @@ public class OAuth2Service
     {
         try {
             return jwtParser
-                    .parseClaimsJws(state)
-                    .getBody();
+                    .parseSignedClaims(state)
+                    .getPayload();
         }
         catch (RuntimeException e) {
             throw new ChallengeFailedException("State validation failed", e);
@@ -241,17 +247,12 @@ public class OAuth2Service
 
     private static String getOAuth2ErrorMessage(String errorCode)
     {
-        switch (errorCode) {
-            case "access_denied":
-                return "OAuth2 server denied the login";
-            case "unauthorized_client":
-                return "OAuth2 server does not allow request from this Trino server";
-            case "server_error":
-                return "OAuth2 server had a failure";
-            case "temporarily_unavailable":
-                return "OAuth2 server is temporarily unavailable";
-            default:
-                return "OAuth2 unknown error code: " + errorCode;
-        }
+        return switch (errorCode) {
+            case "access_denied" -> "OAuth2 server denied the login";
+            case "unauthorized_client" -> "OAuth2 server does not allow request from this Trino server";
+            case "server_error" -> "OAuth2 server had a failure";
+            case "temporarily_unavailable" -> "OAuth2 server is temporarily unavailable";
+            default -> "OAuth2 unknown error code: " + errorCode;
+        };
     }
 }

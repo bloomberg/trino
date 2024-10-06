@@ -17,9 +17,9 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.errorprone.annotations.Immutable;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Row;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.Row;
 
 import java.util.List;
 import java.util.Optional;
@@ -51,6 +51,14 @@ public class ValuesNode
     }
 
     /**
+     * Constructor of ValuesNode with non-empty output symbols list and zero rows
+     */
+    public ValuesNode(PlanNodeId id, List<Symbol> outputSymbols)
+    {
+        this(id, outputSymbols, 0, Optional.of(ImmutableList.of()));
+    }
+
+    /**
      * Constructor of ValuesNode with empty output symbols list
      */
     public ValuesNode(PlanNodeId id, int rowCount)
@@ -77,7 +85,7 @@ public class ValuesNode
             List<Integer> rowSizes = rows.get().stream()
                     .map(row -> requireNonNull(row, "row is null"))
                     .filter(expression -> expression instanceof Row)
-                    .map(expression -> ((Row) expression).getItems().size())
+                    .map(expression -> ((Row) expression).items().size())
                     .distinct()
                     .collect(toImmutableList());
             checkState(rowSizes.size() <= 1, "mismatched rows. All rows must be the same size");
@@ -88,10 +96,10 @@ public class ValuesNode
             }
         }
         else {
-            checkArgument(outputSymbols.size() == 0, "missing rows specification for Values with non-empty output symbols");
+            checkArgument(outputSymbols.isEmpty(), "missing rows specification for Values with non-empty output symbols");
         }
 
-        if (outputSymbols.size() == 0) {
+        if (outputSymbols.isEmpty()) {
             this.rows = Optional.empty();
         }
         else {

@@ -13,8 +13,10 @@
  */
 package io.trino.server;
 
+import com.google.common.collect.ImmutableList;
 import com.google.inject.Key;
 import io.airlift.http.client.HttpClient;
+import io.airlift.http.client.HttpUriBuilder;
 import io.airlift.http.client.Request;
 import io.airlift.http.client.UnexpectedResponseException;
 import io.airlift.http.client.jetty.JettyHttpClient;
@@ -23,6 +25,8 @@ import io.airlift.json.JsonCodecFactory;
 import io.airlift.json.ObjectMapperProvider;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Span;
+import io.trino.client.QueryData;
+import io.trino.client.QueryDataClientJacksonModule;
 import io.trino.client.QueryResults;
 import io.trino.execution.QueryInfo;
 import io.trino.plugin.tpch.TpchPlugin;
@@ -36,6 +40,7 @@ import org.junit.jupiter.api.TestInstance;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.client.JsonResponseHandler.createJsonResponseHandler;
@@ -45,7 +50,6 @@ import static io.airlift.http.client.Request.Builder.preparePost;
 import static io.airlift.http.client.Request.Builder.preparePut;
 import static io.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
 import static io.airlift.http.client.StatusResponseHandler.createStatusResponseHandler;
-import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.airlift.testing.Closeables.closeAll;
 import static io.airlift.tracing.SpanSerialization.SpanDeserializer;
 import static io.airlift.tracing.SpanSerialization.SpanSerializer;
@@ -63,21 +67,23 @@ import static io.trino.testing.TestingAccessControlManager.privilege;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Fail.fail;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
 
 @TestInstance(PER_METHOD)
 public class TestQueryResource
 {
     static final JsonCodec<List<BasicQueryInfo>> BASIC_QUERY_INFO_CODEC = new JsonCodecFactory(
             new ObjectMapperProvider()
+                    .withModules(Set.of(new QueryDataClientJacksonModule()))
                     .withJsonSerializers(Map.of(Span.class, new SpanSerializer(OpenTelemetry.noop())))
                     .withJsonDeserializers(Map.of(Span.class, new SpanDeserializer(OpenTelemetry.noop()))))
             .listJsonCodec(BasicQueryInfo.class);
+
+    static final JsonCodec<QueryResults> QUERY_RESULTS_JSON_CODEC = new JsonCodecFactory(
+            new ObjectMapperProvider()
+                    .withModules(Set.of(new QueryDataClientJacksonModule())))
+            .jsonCodec(QueryResults.class);
 
     private HttpClient client;
     private TestingTrinoServer server;
@@ -111,7 +117,7 @@ public class TestQueryResource
                 .setBodyGenerator(createStaticBodyGenerator(sql, UTF_8))
                 .build();
 
-        QueryResults queryResults = client.execute(request, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+        QueryResults queryResults = client.execute(request, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         URI uri = queryResults.getNextUri();
         while (uri != null) {
             QueryResults attempt1 = client.execute(
@@ -119,17 +125,16 @@ public class TestQueryResource
                             .setHeader(TRINO_HEADERS.requestUser(), "user")
                             .setUri(uri)
                             .build(),
-                    createJsonResponseHandler(jsonCodec(QueryResults.class)));
+                    createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
 
             QueryResults attempt2 = client.execute(
                     prepareGet()
                             .setHeader(TRINO_HEADERS.requestUser(), "user")
                             .setUri(uri)
                             .build(),
-                    createJsonResponseHandler(jsonCodec(QueryResults.class)));
+                    createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
 
-            assertThat(attempt2.getData()).isEqualTo(attempt1.getData());
-
+            assertDataEquals(attempt2.getData(), attempt1.getData());
             uri = attempt1.getNextUri();
         }
     }
@@ -142,27 +147,27 @@ public class TestQueryResource
         runToCompletion("SELECT x FROM y");
 
         List<BasicQueryInfo> infos = getQueryInfos("/v1/query");
-        assertEquals(infos.size(), 3);
+        assertThat(infos.size()).isEqualTo(3);
         assertStateCounts(infos, 2, 1, 0);
 
         infos = getQueryInfos("/v1/query?state=finished");
-        assertEquals(infos.size(), 2);
+        assertThat(infos.size()).isEqualTo(2);
         assertStateCounts(infos, 2, 0, 0);
 
         infos = getQueryInfos("/v1/query?state=failed");
-        assertEquals(infos.size(), 1);
+        assertThat(infos.size()).isEqualTo(1);
         assertStateCounts(infos, 0, 1, 0);
 
         infos = getQueryInfos("/v1/query?state=running");
-        assertEquals(infos.size(), 0);
+        assertThat(infos.size()).isEqualTo(0);
         assertStateCounts(infos, 0, 0, 0);
 
         server.getAccessControl().deny(privilege("query", VIEW_QUERY));
         try {
-            assertTrue(getQueryInfos("/v1/query").isEmpty());
-            assertTrue(getQueryInfos("/v1/query?state=finished").isEmpty());
-            assertTrue(getQueryInfos("/v1/query?state=failed").isEmpty());
-            assertTrue(getQueryInfos("/v1/query?state=running").isEmpty());
+            assertThat(getQueryInfos("/v1/query")).isEmpty();
+            assertThat(getQueryInfos("/v1/query?state=finished")).isEmpty();
+            assertThat(getQueryInfos("/v1/query?state=failed")).isEmpty();
+            assertThat(getQueryInfos("/v1/query?state=running")).isEmpty();
         }
         finally {
             server.getAccessControl().reset();
@@ -170,13 +175,34 @@ public class TestQueryResource
     }
 
     @Test
+    public void testGetQueryInfoPruned()
+    {
+        String queryId = runToCompletion("SELECT now()");
+
+        QueryInfo queryInfoPruned = getQueryInfo(queryId, true);
+        QueryInfo queryInfoNotPruned = getQueryInfo(queryId);
+
+        assertThat(queryInfoPruned.getRoutines().size()).isEqualTo(1);
+        assertThat(queryInfoNotPruned.getRoutines().size()).isEqualTo(1);
+
+        assertThat(queryInfoPruned.getRoutines().get(0).getRoutine()).isEqualTo("now");
+        assertThat(queryInfoNotPruned.getRoutines().get(0).getRoutine()).isEqualTo("now");
+
+        assertThat(queryInfoPruned.getOutputStage()).isPresent();
+        assertThat(queryInfoNotPruned.getOutputStage()).isPresent();
+
+        assertThat(queryInfoPruned.getOutputStage().get().getTasks()).isEmpty();
+        assertThat(queryInfoNotPruned.getOutputStage().get().getTasks()).isNotEmpty();
+    }
+
+    @Test
     public void testGetQueryInfoDispatchFailure()
     {
         String queryId = runToCompletion("SELECT");
         QueryInfo info = getQueryInfo(queryId);
-        assertFalse(info.isScheduled());
-        assertNotNull(info.getFailureInfo());
-        assertEquals(info.getFailureInfo().getErrorCode(), SYNTAX_ERROR.toErrorCode());
+        assertThat(info.isScheduled()).isFalse();
+        assertThat(info.getFailureInfo()).isNotNull();
+        assertThat(info.getFailureInfo().getErrorCode()).isEqualTo(SYNTAX_ERROR.toErrorCode());
 
         server.getAccessControl().deny(privilege("query", VIEW_QUERY));
         try {
@@ -194,9 +220,9 @@ public class TestQueryResource
     {
         String queryId = runToCompletion("SELECT cast(rand() AS integer) / 0");
         QueryInfo info = getQueryInfo(queryId);
-        assertTrue(info.isScheduled());
-        assertNotNull(info.getFailureInfo());
-        assertEquals(info.getFailureInfo().getErrorCode(), DIVISION_BY_ZERO.toErrorCode());
+        assertThat(info.isScheduled()).isTrue();
+        assertThat(info.getFailureInfo()).isNotNull();
+        assertThat(info.getFailureInfo().getErrorCode()).isEqualTo(DIVISION_BY_ZERO.toErrorCode());
     }
 
     @Test
@@ -206,17 +232,17 @@ public class TestQueryResource
 
         server.getAccessControl().deny(privilege("query", KILL_QUERY));
         try {
-            assertEquals(cancelQueryInfo(queryId), 403);
+            assertThat(cancelQueryInfo(queryId)).isEqualTo(403);
         }
         finally {
             server.getAccessControl().reset();
         }
 
-        assertEquals(cancelQueryInfo(queryId), 204);
-        assertEquals(cancelQueryInfo(queryId), 204);
+        assertThat(cancelQueryInfo(queryId)).isEqualTo(204);
+        assertThat(cancelQueryInfo(queryId)).isEqualTo(204);
         BasicQueryInfo queryInfo = server.getDispatchManager().getQueryInfo(new QueryId(queryId));
-        assertEquals(queryInfo.getState(), FAILED);
-        assertEquals(queryInfo.getErrorCode(), USER_CANCELED.toErrorCode());
+        assertThat(queryInfo.getState()).isEqualTo(FAILED);
+        assertThat(queryInfo.getErrorCode()).isEqualTo(USER_CANCELED.toErrorCode());
     }
 
     @Test
@@ -231,27 +257,46 @@ public class TestQueryResource
         testKilled("preempted");
     }
 
+    private void assertDataEquals(QueryData left, QueryData right)
+    {
+        if (left == null) {
+            assertThat(right).isNull();
+            return;
+        }
+
+        if (left.getData() == null) {
+            assertThat(right.getData()).isNull();
+            return;
+        }
+
+        if (right.getData() == null) {
+            throw new AssertionError("Expected right data to be non-null");
+        }
+
+        assertThat(ImmutableList.copyOf(left.getData())).isEqualTo(ImmutableList.copyOf(right.getData()));
+    }
+
     private void testKilled(String killType)
     {
         String queryId = startQuery("SELECT * FROM tpch.sf100.lineitem");
 
         server.getAccessControl().deny(privilege("query", KILL_QUERY));
         try {
-            assertEquals(killQueryInfo(queryId, killType), 403);
+            assertThat(killQueryInfo(queryId, killType)).isEqualTo(403);
         }
         finally {
             server.getAccessControl().reset();
         }
 
-        assertEquals(killQueryInfo(queryId, killType), 202);
-        assertEquals(killQueryInfo(queryId, killType), 409);
+        assertThat(killQueryInfo(queryId, killType)).isEqualTo(202);
+        assertThat(killQueryInfo(queryId, killType)).isEqualTo(409);
         BasicQueryInfo queryInfo = server.getDispatchManager().getQueryInfo(new QueryId(queryId));
-        assertEquals(queryInfo.getState(), FAILED);
+        assertThat(queryInfo.getState()).isEqualTo(FAILED);
         if (killType.equals("killed")) {
-            assertEquals(queryInfo.getErrorCode(), ADMINISTRATIVELY_KILLED.toErrorCode());
+            assertThat(queryInfo.getErrorCode()).isEqualTo(ADMINISTRATIVELY_KILLED.toErrorCode());
         }
         else {
-            assertEquals(queryInfo.getErrorCode(), ADMINISTRATIVELY_PREEMPTED.toErrorCode());
+            assertThat(queryInfo.getErrorCode()).isEqualTo(ADMINISTRATIVELY_PREEMPTED.toErrorCode());
         }
     }
 
@@ -263,13 +308,13 @@ public class TestQueryResource
                 .setUri(uri)
                 .setBodyGenerator(createStaticBodyGenerator(sql, UTF_8))
                 .build();
-        QueryResults queryResults = client.execute(request, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+        QueryResults queryResults = client.execute(request, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         while (queryResults.getNextUri() != null) {
             request = prepareGet()
                     .setHeader(TRINO_HEADERS.requestUser(), "user")
                     .setUri(queryResults.getNextUri())
                     .build();
-            queryResults = client.execute(request, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+            queryResults = client.execute(request, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         }
         return queryResults.getId();
     }
@@ -282,13 +327,13 @@ public class TestQueryResource
                 .setBodyGenerator(createStaticBodyGenerator(sql, UTF_8))
                 .setHeader(TRINO_HEADERS.requestUser(), "user")
                 .build();
-        QueryResults queryResults = client.execute(request, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+        QueryResults queryResults = client.execute(request, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         while (queryResults.getNextUri() != null && !queryResults.getStats().getState().equals(RUNNING.toString())) {
             request = prepareGet()
                     .setHeader(TRINO_HEADERS.requestUser(), "user")
                     .setUri(queryResults.getNextUri())
                     .build();
-            queryResults = client.execute(request, createJsonResponseHandler(jsonCodec(QueryResults.class)));
+            queryResults = client.execute(request, createJsonResponseHandler(QUERY_RESULTS_JSON_CODEC));
         }
         return queryResults.getId();
     }
@@ -322,18 +367,28 @@ public class TestQueryResource
                     fail("Unexpected query state " + info.getState());
             }
         }
-        assertEquals(failed, expectedFailed);
-        assertEquals(finished, expectedFinished);
-        assertEquals(running, expectedRunning);
+        assertThat(failed).isEqualTo(expectedFailed);
+        assertThat(finished).isEqualTo(expectedFinished);
+        assertThat(running).isEqualTo(expectedRunning);
     }
 
     private QueryInfo getQueryInfo(String queryId)
     {
-        URI uri = uriBuilderFrom(server.getBaseUrl())
+        return getQueryInfo(queryId, false);
+    }
+
+    private QueryInfo getQueryInfo(String queryId, boolean pruned)
+    {
+        HttpUriBuilder builder = uriBuilderFrom(server.getBaseUrl())
                 .replacePath("/v1/query")
                 .appendPath(queryId)
-                .addParameter("pretty", "true")
-                .build();
+                .addParameter("pretty", "true");
+
+        if (pruned) {
+            builder.addParameter("pruned", "true");
+        }
+
+        URI uri = builder.build();
         Request request = prepareGet()
                 .setUri(uri)
                 .setHeader(TRINO_HEADERS.requestUser(), "unknown")

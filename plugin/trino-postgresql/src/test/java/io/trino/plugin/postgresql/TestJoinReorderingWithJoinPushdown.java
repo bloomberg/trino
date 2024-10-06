@@ -17,22 +17,20 @@ import io.trino.Session;
 import io.trino.sql.planner.assertions.PlanMatchPattern;
 import io.trino.sql.planner.plan.JoinNode;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
 import static io.trino.plugin.jdbc.JdbcJoinPushdownSessionProperties.JOIN_PUSHDOWN_STRATEGY;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.JOIN_PUSHDOWN_ENABLED;
-import static io.trino.plugin.postgresql.PostgreSqlQueryRunner.createPostgreSqlQueryRunner;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.join;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.node;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
-import static io.trino.sql.planner.plan.JoinNode.Type.INNER;
+import static io.trino.sql.planner.plan.JoinType.INNER;
 import static io.trino.tpch.TpchTable.CUSTOMER;
 import static io.trino.tpch.TpchTable.NATION;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -45,16 +43,14 @@ public class TestJoinReorderingWithJoinPushdown
             throws Exception
     {
         TestingPostgreSqlServer postgreSqlServer = closeAfterClass(new TestingPostgreSqlServer());
-        DistributedQueryRunner distributedQueryRunner = createPostgreSqlQueryRunner(
-                postgreSqlServer,
-                Map.of(),
-                Map.of(),
-                List.of(CUSTOMER, NATION));
+        QueryRunner queryRunner = PostgreSqlQueryRunner.builder(postgreSqlServer)
+                .setInitialTables(List.of(CUSTOMER, NATION))
+                .build();
 
         postgreSqlServer.execute("ANALYZE " + CUSTOMER.getTableName());
         postgreSqlServer.execute("ANALYZE " + NATION.getTableName());
 
-        return distributedQueryRunner;
+        return queryRunner;
     }
 
     @Test

@@ -13,73 +13,40 @@
  */
 package io.trino.sql.planner;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonValue;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.SymbolReference;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import io.trino.spi.type.Type;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Reference;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
-public class Symbol
-        implements Comparable<Symbol>
+@JsonSerialize(keyUsing = SymbolKeySerializer.class)
+public record Symbol(Type type, String name)
 {
-    private final String name;
-
     public static Symbol from(Expression expression)
     {
-        checkArgument(expression instanceof SymbolReference, "Unexpected expression: %s", expression);
-        return new Symbol(((SymbolReference) expression).getName());
+        if (!(expression instanceof Reference symbol)) {
+            throw new IllegalArgumentException("Unexpected expression: " + expression);
+        }
+        return new Symbol(symbol.type(), symbol.name());
     }
 
-    @JsonCreator
-    public Symbol(String name)
+    public Symbol
     {
         requireNonNull(name, "name is null");
-        this.name = name;
+        checkArgument(!name.isEmpty(), "name is empty");
+        requireNonNull(type, "type is null");
     }
 
-    @JsonValue
-    public String getName()
+    public Reference toSymbolReference()
     {
-        return name;
-    }
-
-    public SymbolReference toSymbolReference()
-    {
-        return new SymbolReference(name);
+        return new Reference(type, name);
     }
 
     @Override
     public String toString()
     {
-        return name;
-    }
-
-    @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-
-        Symbol symbol = (Symbol) o;
-
-        return name.equals(symbol.name);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return name.hashCode();
-    }
-
-    @Override
-    public int compareTo(Symbol o)
-    {
-        return name.compareTo(o.name);
+        return name + "::[" + type + "]";
     }
 }

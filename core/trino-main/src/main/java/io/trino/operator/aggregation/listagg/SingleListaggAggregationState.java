@@ -13,8 +13,9 @@
  */
 package io.trino.operator.aggregation.listagg;
 
+import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.SliceOutput;
-import io.trino.spi.block.SingleRowBlock;
+import io.trino.spi.block.SqlRow;
 import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.function.AccumulatorState;
 
@@ -25,7 +26,9 @@ import static java.lang.Math.toIntExact;
 public class SingleListaggAggregationState
         extends AbstractListaggAggregationState
 {
-    private SingleRowBlock tempSerializedState;
+    private final DynamicSliceOutput out = new DynamicSliceOutput(0);
+
+    private SqlRow tempSerializedState;
 
     public SingleListaggAggregationState()
     {
@@ -46,7 +49,9 @@ public class SingleListaggAggregationState
             blockBuilder.appendNull();
             return;
         }
-        blockBuilder.buildEntry(this::writeNotGrouped);
+        out.reset();
+        writeNotGrouped(out);
+        blockBuilder.writeEntry(out.slice());
     }
 
     private void writeNotGrouped(SliceOutput out)
@@ -80,16 +85,16 @@ public class SingleListaggAggregationState
         return new SingleListaggAggregationState(this);
     }
 
-    void setTempSerializedState(SingleRowBlock tempSerializedState)
+    void setTempSerializedState(SqlRow tempSerializedState)
     {
         this.tempSerializedState = tempSerializedState;
     }
 
-    SingleRowBlock removeTempSerializedState()
+    SqlRow removeTempSerializedState()
     {
-        SingleRowBlock block = tempSerializedState;
-        checkState(block != null, "tempDeserializeBlock is null");
+        SqlRow sqlRow = tempSerializedState;
+        checkState(sqlRow != null, "tempDeserializeBlock is null");
         tempSerializedState = null;
-        return block;
+        return sqlRow;
     }
 }

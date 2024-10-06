@@ -47,7 +47,7 @@ import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.ColumnarMap;
-import io.trino.spi.block.ColumnarRow;
+import io.trino.spi.block.RowBlock;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
@@ -582,92 +582,92 @@ public class OrcWriteValidation
 
             if (BOOLEAN.equals(type)) {
                 statisticsBuilder = new BooleanStatisticsBuilder();
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TINYINT.equals(type)) {
                 statisticsBuilder = new CountStatisticsBuilder();
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (SMALLINT.equals(type)) {
                 statisticsBuilder = new IntegerStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (INTEGER.equals(type)) {
                 statisticsBuilder = new IntegerStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (BIGINT.equals(type)) {
                 statisticsBuilder = new IntegerStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (DOUBLE.equals(type)) {
                 statisticsBuilder = new DoubleStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (REAL.equals(type)) {
                 statisticsBuilder = new DoubleStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (type instanceof VarcharType) {
                 statisticsBuilder = new StringStatisticsBuilder(stringStatisticsLimitInBytes, new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (type instanceof CharType) {
                 statisticsBuilder = new StringStatisticsBuilder(stringStatisticsLimitInBytes, new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (VARBINARY.equals(type) || UUID.equals(type)) {
                 statisticsBuilder = new BinaryStatisticsBuilder();
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TIME_MICROS.equals(type)) {
                 statisticsBuilder = new TimeMicrosStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (DATE.equals(type)) {
                 statisticsBuilder = new DateStatisticsBuilder(new NoOpBloomFilterBuilder());
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TIMESTAMP_MILLIS.equals(type) || TIMESTAMP_MICROS.equals(type)) {
                 statisticsBuilder = new TimestampStatisticsBuilder(this::timestampMicrosToMillis);
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TIMESTAMP_NANOS.equals(type)) {
                 statisticsBuilder = new TimestampStatisticsBuilder(this::timestampNanosToMillis);
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TIMESTAMP_TZ_MILLIS.equals(type)) {
                 statisticsBuilder = new TimestampStatisticsBuilder(this::timestampTzShortToMillis);
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (TIMESTAMP_TZ_MICROS.equals(type) || TIMESTAMP_TZ_NANOS.equals(type)) {
                 statisticsBuilder = new TimestampStatisticsBuilder(this::timestampTzLongToMillis);
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (type instanceof DecimalType decimalType) {
                 if (decimalType.isShort()) {
-                    statisticsBuilder = new ShortDecimalStatisticsBuilder((decimalType).getScale());
+                    statisticsBuilder = new ShortDecimalStatisticsBuilder(decimalType.getScale());
                 }
                 else {
                     statisticsBuilder = new LongDecimalStatisticsBuilder();
                 }
-                fieldExtractor = ignored -> ImmutableList.of();
+                fieldExtractor = _ -> ImmutableList.of();
                 fieldBuilders = ImmutableList.of();
             }
             else if (type instanceof ArrayType) {
@@ -687,14 +687,7 @@ public class OrcWriteValidation
             }
             else if (type instanceof RowType) {
                 statisticsBuilder = new CountStatisticsBuilder();
-                fieldExtractor = block -> {
-                    ColumnarRow columnarRow = ColumnarRow.toColumnarRow(block);
-                    ImmutableList.Builder<Block> fields = ImmutableList.builder();
-                    for (int index = 0; index < columnarRow.getFieldCount(); index++) {
-                        fields.add(columnarRow.getField(index));
-                    }
-                    return fields.build();
-                };
+                fieldExtractor = block -> RowBlock.getRowFieldsFromBlock(block.getLoadedBlock());
                 fieldBuilders = type.getTypeParameters().stream()
                         .map(ColumnStatisticsValidation::new)
                         .collect(toImmutableList());

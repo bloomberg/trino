@@ -1,7 +1,6 @@
 # Conditional expressions
 
 (case-expression)=
-
 ## CASE
 
 The standard SQL `CASE` expression has two forms.
@@ -52,8 +51,11 @@ SELECT a, b,
        END
 ```
 
-(if-function)=
+SQL routines can use [`CASE` statements](/routines/case) that use a slightly
+different syntax from the CASE expressions. Specifically note the requirements
+for terminating each clause with a semicolon `;` and the usage of `END CASE`.
 
+(if-expression)=
 ## IF
 
 The `IF` expression has two forms, one supplying only a
@@ -93,8 +95,11 @@ SELECT
 FROM tpch.sf1.orders;
 ```
 
-(coalesce-function)=
+SQL routines can use [`IF` statements](/routines/if) that use a slightly
+different syntax from `IF` expressions. Specifically note the requirement
+for terminating each clause with a semicolon `;` and the usage of `END IF`.
 
+(coalesce-function)=
 ## COALESCE
 
 :::{function} coalesce(value1, value2[, ...])
@@ -103,7 +108,6 @@ Like a `CASE` expression, arguments are only evaluated if necessary.
 :::
 
 (nullif-function)=
-
 ## NULLIF
 
 :::{function} nullif(value1, value2)
@@ -111,7 +115,6 @@ Returns null if `value1` equals `value2`, otherwise returns `value1`.
 :::
 
 (try-function)=
-
 ## TRY
 
 :::{function} try(expression)

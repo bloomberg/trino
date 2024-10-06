@@ -14,15 +14,13 @@
 package io.trino.security;
 
 import io.trino.metadata.QualifiedObjectName;
-import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.ViewExpression;
-import io.trino.spi.type.Type;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Verify.verify;
@@ -52,12 +50,6 @@ public class ViewAccessControl
         // This means that the owner of the view is effectively granting permissions to the user running the query,
         // and thus must have the equivalent of the SQL standard "GRANT ... WITH GRANT OPTION".
         wrapAccessDeniedException(() -> delegate.checkCanCreateViewWithSelectFromColumns(context, tableName, columnNames));
-    }
-
-    @Override
-    public Set<String> filterColumns(SecurityContext context, CatalogSchemaTableName tableName, Set<String> columns)
-    {
-        return delegate.filterColumns(context, tableName, columns);
     }
 
     @Override
@@ -91,9 +83,9 @@ public class ViewAccessControl
     }
 
     @Override
-    public Optional<ViewExpression> getColumnMask(SecurityContext context, QualifiedObjectName tableName, String columnName, Type type)
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(SecurityContext context, QualifiedObjectName tableName, List<ColumnSchema> columns)
     {
-        return delegate.getColumnMask(context, tableName, columnName, type);
+        return delegate.getColumnMasks(context, tableName, columns);
     }
 
     private static void wrapAccessDeniedException(Runnable runnable)

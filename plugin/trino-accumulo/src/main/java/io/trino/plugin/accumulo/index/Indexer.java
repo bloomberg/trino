@@ -32,20 +32,20 @@ import io.trino.plugin.accumulo.serializers.AccumuloRowSerializer;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.type.Type;
+import org.apache.accumulo.core.client.AccumuloClient;
 import org.apache.accumulo.core.client.BatchWriter;
 import org.apache.accumulo.core.client.BatchWriterConfig;
-import org.apache.accumulo.core.client.Connector;
 import org.apache.accumulo.core.client.IteratorSetting;
 import org.apache.accumulo.core.client.MutationsRejectedException;
 import org.apache.accumulo.core.client.Scanner;
 import org.apache.accumulo.core.client.TableNotFoundException;
+import org.apache.accumulo.core.client.lexicoder.AbstractLexicoder;
 import org.apache.accumulo.core.data.ColumnUpdate;
 import org.apache.accumulo.core.data.Key;
 import org.apache.accumulo.core.data.Mutation;
 import org.apache.accumulo.core.data.Range;
 import org.apache.accumulo.core.data.Value;
 import org.apache.accumulo.core.iterators.LongCombiner;
-import org.apache.accumulo.core.iterators.TypedValueCombiner;
 import org.apache.accumulo.core.iterators.user.SummingCombiner;
 import org.apache.accumulo.core.security.Authorizations;
 import org.apache.accumulo.core.security.ColumnVisibility;
@@ -65,6 +65,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Maps.immutableEntry;
 import static io.trino.plugin.accumulo.AccumuloErrorCode.ACCUMULO_TABLE_DNE;
 import static io.trino.plugin.accumulo.AccumuloErrorCode.UNEXPECTED_ACCUMULO_ERROR;
@@ -86,7 +88,6 @@ import static java.util.Objects.requireNonNull;
  * table to improve index lookup times.
  * <p>
  * Sample usage of an indexer:
- * <p>
  * <pre>
  * <code>
  * Indexer indexer = new Indexer(connector, userAuths, table, writerConf);
@@ -118,12 +119,12 @@ public class Indexer
 
     private static final byte[] EMPTY_BYTES = new byte[0];
     private static final byte[] UNDERSCORE = {'_'};
-    private static final TypedValueCombiner.Encoder<Long> ENCODER = new LongCombiner.StringEncoder();
+    private static final AbstractLexicoder<Long> ENCODER = new LongCombiner.StringEncoder();
 
     private final AccumuloTable table;
     private final BatchWriter indexWriter;
     private final BatchWriterConfig writerConfig;
-    private final Connector connector;
+    private final AccumuloClient client;
     private final Map<MetricsKey, AtomicLong> metrics = new HashMap<>();
     private final Multimap<ByteBuffer, ByteBuffer> indexColumns;
     private final Map<ByteBuffer, Map<ByteBuffer, Type>> indexColumnTypes;
@@ -134,13 +135,13 @@ public class Indexer
     private byte[] lastRow;
 
     public Indexer(
-            Connector connector,
+            AccumuloClient client,
             Authorizations auths,
             AccumuloTable table,
             BatchWriterConfig writerConfig)
             throws TableNotFoundException
     {
-        this.connector = requireNonNull(connector, "connector is null");
+        this.client = requireNonNull(client, "client is null");
         this.table = requireNonNull(table, "table is null");
         this.writerConfig = requireNonNull(writerConfig, "writerConfig is null");
         requireNonNull(auths, "auths is null");
@@ -148,23 +149,23 @@ public class Indexer
         this.serializer = table.getSerializerInstance();
 
         // Create our batch writer
-        indexWriter = connector.createBatchWriter(table.getIndexTableName(), writerConfig);
+        indexWriter = client.createBatchWriter(table.getIndexTableName(), writerConfig);
 
         ImmutableMultimap.Builder<ByteBuffer, ByteBuffer> indexColumnsBuilder = ImmutableMultimap.builder();
         Table<ByteBuffer, ByteBuffer, Type> indexColumnTypesBuilder = HashBasedTable.create();
 
         // Initialize metadata
         table.getColumns().forEach(columnHandle -> {
-            if (columnHandle.isIndexed()) {
+            if (columnHandle.indexed()) {
                 // Wrap the column family and qualifier for this column and add it to
                 // collection of indexed columns
-                ByteBuffer family = wrap(columnHandle.getFamily().get().getBytes(UTF_8));
-                ByteBuffer qualifier = wrap(columnHandle.getQualifier().get().getBytes(UTF_8));
+                ByteBuffer family = wrap(columnHandle.family().get().getBytes(UTF_8));
+                ByteBuffer qualifier = wrap(columnHandle.qualifier().get().getBytes(UTF_8));
                 indexColumnsBuilder.put(family, qualifier);
 
                 // Create a mapping for this column's Trino type, again creating a new one for the
                 // family if necessary
-                indexColumnTypesBuilder.put(family, qualifier, columnHandle.getType());
+                indexColumnTypesBuilder.put(family, qualifier, columnHandle.type());
             }
         });
 
@@ -181,7 +182,7 @@ public class Indexer
         metrics.put(METRICS_TABLE_ROW_COUNT, new AtomicLong(0));
 
         // Scan the metrics table for existing first row and last row
-        Entry<byte[], byte[]> minmax = getMinMaxRowIds(connector, table, auths);
+        Entry<byte[], byte[]> minmax = getMinMaxRowIds(client, table, auths);
         firstRow = minmax.getKey();
         lastRow = minmax.getValue();
     }
@@ -254,7 +255,9 @@ public class Indexer
     private void addIndexMutation(ByteBuffer row, ByteBuffer family, ColumnVisibility visibility, byte[] qualifier)
     {
         // Create the mutation and add it to the batch writer
+        checkArgument(row.arrayOffset() == 0, "Unexpected row buffer offset: %s", row.arrayOffset());
         Mutation indexMutation = new Mutation(row.array());
+        checkArgument(family.arrayOffset() == 0, "Unexpected family buffer offset: %s", family.arrayOffset());
         indexMutation.put(family.array(), qualifier, visibility, EMPTY_BYTES);
         try {
             indexWriter.addMutation(indexMutation);
@@ -286,7 +289,7 @@ public class Indexer
             indexWriter.flush();
 
             // Write out metrics mutations
-            BatchWriter metricsWriter = connector.createBatchWriter(table.getMetricsTableName(), writerConfig);
+            BatchWriter metricsWriter = client.createBatchWriter(table.getMetricsTableName(), writerConfig);
             metricsWriter.addMutations(getMetricsMutations());
             metricsWriter.close();
 
@@ -327,7 +330,9 @@ public class Indexer
             // Qualifier: CARDINALITY_CQ
             // Visibility: Inherited from indexed Mutation
             // Value: Cardinality
+            checkState(entry.getKey().row.arrayOffset() == 0, "Unexpected row buffer offset: %s", entry.getKey().row.arrayOffset());
             Mutation mut = new Mutation(entry.getKey().row.array());
+            checkState(entry.getKey().family.arrayOffset() == 0, "Unexpected family buffer offset: %s", entry.getKey().family.arrayOffset());
             mut.put(entry.getKey().family.array(), CARDINALITY_CQ, entry.getKey().visibility, ENCODER.encode(entry.getValue().get()));
 
             // Add to our list of mutations
@@ -406,9 +411,9 @@ public class Indexer
     {
         Map<String, Set<Text>> groups = new HashMap<>();
         // For each indexed column
-        for (AccumuloColumnHandle columnHandle : table.getColumns().stream().filter(AccumuloColumnHandle::isIndexed).collect(Collectors.toList())) {
+        for (AccumuloColumnHandle columnHandle : table.getColumns().stream().filter(AccumuloColumnHandle::indexed).collect(Collectors.toList())) {
             // Create a Text version of the index column family
-            Text indexColumnFamily = new Text(getIndexColumnFamily(columnHandle.getFamily().get().getBytes(UTF_8), columnHandle.getQualifier().get().getBytes(UTF_8)).array());
+            Text indexColumnFamily = new Text(getIndexColumnFamily(columnHandle.family().get().getBytes(UTF_8), columnHandle.qualifier().get().getBytes(UTF_8)).array());
 
             // Add this to the locality groups,
             // it is a 1:1 mapping of locality group to column families
@@ -464,7 +469,7 @@ public class Indexer
         return getMetricsTableName(tableName.getSchemaName(), tableName.getTableName());
     }
 
-    public static Entry<byte[], byte[]> getMinMaxRowIds(Connector connector, AccumuloTable table, Authorizations auths)
+    public static Entry<byte[], byte[]> getMinMaxRowIds(AccumuloClient connector, AccumuloTable table, Authorizations auths)
             throws TableNotFoundException
     {
         Scanner scanner = connector.createScanner(table.getMetricsTableName(), auths);
@@ -505,6 +510,8 @@ public class Indexer
         {
             requireNonNull(row, "row is null");
             requireNonNull(family, "family is null");
+            checkArgument(row.arrayOffset() == 0, "Unexpected row buffer offset: %s", row.arrayOffset());
+            checkArgument(family.arrayOffset() == 0, "Unexpected family buffer offset: %s", family.arrayOffset());
             this.row = row;
             this.family = family;
             this.visibility = EMPTY_VISIBILITY;
@@ -515,6 +522,8 @@ public class Indexer
             requireNonNull(row, "row is null");
             requireNonNull(family, "family is null");
             requireNonNull(visibility, "visibility is null");
+            checkArgument(row.arrayOffset() == 0, "Unexpected row buffer offset: %s", row.arrayOffset());
+            checkArgument(family.arrayOffset() == 0, "Unexpected family buffer offset: %s", family.arrayOffset());
             this.row = row;
             this.family = family;
             this.visibility = visibility.getExpression() != null ? visibility : EMPTY_VISIBILITY;
@@ -547,7 +556,9 @@ public class Indexer
         {
             return toStringHelper(this)
                     .add("row", new String(row.array(), UTF_8))
-                    .add("family", new String(row.array(), UTF_8))
+                    .add("rowOffset", row.arrayOffset())
+                    .add("family", new String(family.array(), UTF_8))
+                    .add("familyOffset", family.arrayOffset())
                     .add("visibility", visibility.toString())
                     .toString();
         }

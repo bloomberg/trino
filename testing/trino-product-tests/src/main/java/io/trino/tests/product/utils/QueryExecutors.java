@@ -24,7 +24,6 @@ import java.sql.Connection;
 import java.time.temporal.ChronoUnit;
 
 import static io.trino.tempto.context.ThreadLocalTestContextHolder.testContext;
-import static io.trino.tests.product.utils.DeltaQueryExecutors.createDeltaQueryExecutor;
 import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_COMMITTING_WRITE_TO_HIVE_RETRY_POLICY;
 
 public final class QueryExecutors
@@ -67,6 +66,11 @@ public final class QueryExecutors
                 delegate.close();
             }
         };
+    }
+
+    public static QueryExecutor onExasol()
+    {
+        return testContext().getDependency(QueryExecutor.class, "exasol");
     }
 
     public static QueryExecutor onHive()
@@ -127,7 +131,7 @@ public final class QueryExecutors
 
         return new QueryExecutor()
         {
-            private final QueryExecutor delegate = createDeltaQueryExecutor(testContext());
+            private final QueryExecutor delegate = testContext().getDependency(QueryExecutor.class, "delta");
 
             @Override
             public QueryResult executeQuery(String sql, QueryParam... params)

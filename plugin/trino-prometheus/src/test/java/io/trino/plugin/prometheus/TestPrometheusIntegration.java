@@ -13,24 +13,24 @@
  */
 package io.trino.plugin.prometheus;
 
-import com.google.common.collect.ImmutableMap;
 import io.airlift.units.Duration;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import io.trino.testing.TestingConnectorSession;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
 import static io.trino.plugin.prometheus.PrometheusQueryRunner.createPrometheusClient;
-import static io.trino.plugin.prometheus.PrometheusQueryRunner.createPrometheusQueryRunner;
+import static io.trino.plugin.prometheus.TestPrometheusTableHandle.newTableHandle;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
 
 public class TestPrometheusIntegration
         extends AbstractTestQueryFramework
@@ -46,7 +46,7 @@ public class TestPrometheusIntegration
     {
         this.server = closeAfterClass(new PrometheusServer());
         this.client = createPrometheusClient(server);
-        return createPrometheusQueryRunner(server, ImmutableMap.of(), ImmutableMap.of());
+        return PrometheusQueryRunner.builder(server).build();
     }
 
     @Test
@@ -112,6 +112,7 @@ public class TestPrometheusIntegration
                         "('value', 'double', '', '')");
     }
 
+    // TODO rewrite this test based on query.
     @Test
     public void testCorrectNumberOfSplitsCreated()
     {
@@ -122,14 +123,17 @@ public class TestPrometheusIntegration
         config.setCacheDuration(new Duration(30, SECONDS));
         PrometheusTable table = client.getTable("default", "up");
         PrometheusSplitManager splitManager = new PrometheusSplitManager(client, new PrometheusClock(), config);
+        PrometheusSessionProperties sessionProperties = new PrometheusSessionProperties(config);
+        ConnectorSession session = TestingConnectorSession.builder()
+                .setPropertyMetadata(sessionProperties.getSessionProperties())
+                .build();
         ConnectorSplitSource splits = splitManager.getSplits(
                 null,
-                null,
-                new PrometheusTableHandle("default", table.getName()),
+                session,
+                newTableHandle("default", table.name()),
                 (DynamicFilter) null,
                 Constraint.alwaysTrue());
         int numSplits = splits.getNextBatch(NUMBER_MORE_THAN_EXPECTED_NUMBER_SPLITS).getNow(null).getSplits().size();
-        assertEquals(numSplits, config.getMaxQueryRangeDuration().getValue(TimeUnit.SECONDS) / config.getQueryChunkSizeDuration().getValue(TimeUnit.SECONDS),
-                0.001);
+        assertThat((double) numSplits).isEqualTo(config.getMaxQueryRangeDuration().getValue(TimeUnit.SECONDS) / config.getQueryChunkSizeDuration().getValue(TimeUnit.SECONDS));
     }
 }

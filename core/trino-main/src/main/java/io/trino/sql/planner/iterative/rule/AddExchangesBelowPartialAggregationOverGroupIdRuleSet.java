@@ -13,6 +13,7 @@
  */
 package io.trino.sql.planner.iterative.rule;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multiset;
@@ -29,7 +30,6 @@ import io.trino.sql.PlannerContext;
 import io.trino.sql.planner.Partitioning;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.planner.TypeAnalyzer;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.optimizations.StreamPreferredProperties;
 import io.trino.sql.planner.optimizations.StreamPropertyDerivations.StreamProperties;
@@ -68,6 +68,7 @@ import static io.trino.sql.planner.plan.Patterns.Exchange.scope;
 import static io.trino.sql.planner.plan.Patterns.source;
 import static java.lang.Double.isNaN;
 import static java.lang.Math.min;
+import static java.util.Comparator.comparing;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -129,18 +130,15 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
     private static final double ANTI_SKEWNESS_MARGIN = 3;
 
     private final PlannerContext plannerContext;
-    private final TypeAnalyzer typeAnalyzer;
     private final TaskCountEstimator taskCountEstimator;
     private final DataSize maxPartialAggregationMemoryUsage;
 
     public AddExchangesBelowPartialAggregationOverGroupIdRuleSet(
             PlannerContext plannerContext,
-            TypeAnalyzer typeAnalyzer,
             TaskCountEstimator taskCountEstimator,
             TaskManagerConfig taskManagerConfig)
     {
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
-        this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
         this.taskCountEstimator = requireNonNull(taskCountEstimator, "taskCountEstimator is null");
         this.maxPartialAggregationMemoryUsage = taskManagerConfig.getMaxPartialAggregationMemoryUsage();
     }
@@ -148,8 +146,20 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
     public Set<Rule<?>> rules()
     {
         return ImmutableSet.of(
-                new AddExchangesBelowProjectionPartialAggregationGroupId(),
-                new AddExchangesBelowExchangePartialAggregationGroupId());
+                belowProjectionRule(),
+                belowExchangeRule());
+    }
+
+    @VisibleForTesting
+    AddExchangesBelowExchangePartialAggregationGroupId belowExchangeRule()
+    {
+        return new AddExchangesBelowExchangePartialAggregationGroupId();
+    }
+
+    @VisibleForTesting
+    AddExchangesBelowProjectionPartialAggregationGroupId belowProjectionRule()
+    {
+        return new AddExchangesBelowProjectionPartialAggregationGroupId();
     }
 
     private class AddExchangesBelowProjectionPartialAggregationGroupId
@@ -177,7 +187,8 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
         }
     }
 
-    private class AddExchangesBelowExchangePartialAggregationGroupId
+    @VisibleForTesting
+    class AddExchangesBelowExchangePartialAggregationGroupId
             extends BaseAddExchangesBelowExchangePartialAggregationGroupId
     {
         @Override
@@ -251,6 +262,14 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
                     .map(groupId.getGroupingColumns()::get)
                     .collect(toImmutableList());
 
+            // Use only the symbol with the highest cardinality (if we have statistics). This makes partial aggregation more efficient in case of
+            // low correlation between symbol that are in every grouping set vs additional symbols.
+            PlanNodeStatsEstimate sourceStats = context.getStatsProvider().getStats(groupId.getSource());
+            desiredHashSymbols = desiredHashSymbols.stream()
+                    .filter(symbol -> !isNaN(sourceStats.getSymbolStatistics(symbol).getDistinctValuesCount()))
+                    .max(comparing(symbol -> sourceStats.getSymbolStatistics(symbol).getDistinctValuesCount()))
+                    .map(symbol -> (List<Symbol>) ImmutableList.of(symbol)).orElse(desiredHashSymbols);
+
             StreamPreferredProperties requiredProperties = fixedParallelism().withPartitioning(desiredHashSymbols);
             StreamProperties sourceProperties = derivePropertiesRecursively(groupId.getSource(), context);
             if (requiredProperties.isSatisfiedBy(sourceProperties)) {
@@ -317,7 +336,7 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
                         .map(groupId.getGroupingColumns()::get)
                         .collect(toImmutableList());
 
-                double keyWidth = sourceStats.getOutputSizeInBytes(sourceSymbols, context.getSymbolAllocator().getTypes()) / sourceStats.getOutputRowCount();
+                double keyWidth = sourceStats.getOutputSizeInBytes(sourceSymbols) / sourceStats.getOutputRowCount();
                 double keyNdv = min(estimatedGroupCount(sourceSymbols, sourceStats), sourceStats.getOutputRowCount());
 
                 keysMemoryRequirements += keyWidth * keyNdv;
@@ -350,7 +369,7 @@ public class AddExchangesBelowPartialAggregationOverGroupIdRuleSet
             List<StreamProperties> inputProperties = resolvedPlanNode.getSources().stream()
                     .map(source -> derivePropertiesRecursively(source, context))
                     .collect(toImmutableList());
-            return deriveProperties(resolvedPlanNode, inputProperties, plannerContext, context.getSession(), context.getSymbolAllocator().getTypes(), typeAnalyzer);
+            return deriveProperties(resolvedPlanNode, inputProperties, plannerContext, context.getSession());
         }
     }
 }

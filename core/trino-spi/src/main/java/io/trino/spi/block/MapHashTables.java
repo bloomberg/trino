@@ -14,7 +14,6 @@
 package io.trino.spi.block;
 
 import com.google.errorprone.annotations.ThreadSafe;
-import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.MapType;
 import jakarta.annotation.Nullable;
@@ -24,6 +23,7 @@ import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
+import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
 
@@ -35,29 +35,38 @@ public final class MapHashTables
     // inverse of the hash fill ratio must be integer
     static final int HASH_MULTIPLIER = 2;
 
-    enum HashBuildMode
+    public enum HashBuildMode
     {
         DUPLICATE_NOT_CHECKED, STRICT_EQUALS, STRICT_NOT_DISTINCT_FROM
     }
 
     private final MapType mapType;
+    private final HashBuildMode mode;
     private final int hashTableCount;
 
     @SuppressWarnings("VolatileArrayField")
-    @GuardedBy("this")
     @Nullable
     private volatile int[] hashTables;
 
+    static MapHashTables createSingleTable(MapType mapType, HashBuildMode mode, Block keyBlock)
+    {
+        int[] hashTables = new int[keyBlock.getPositionCount() * HASH_MULTIPLIER];
+        Arrays.fill(hashTables, -1);
+        buildHashTable(mode, mapType, keyBlock, 0, keyBlock.getPositionCount(), hashTables);
+        return new MapHashTables(mapType, mode, 1, Optional.of(hashTables));
+    }
+
     static MapHashTables create(HashBuildMode mode, MapType mapType, int hashTableCount, Block keyBlock, int[] offsets, @Nullable boolean[] mapIsNull)
     {
-        MapHashTables hashTables = new MapHashTables(mapType, hashTableCount, Optional.empty());
-        hashTables.buildAllHashTables(mode, keyBlock, offsets, mapIsNull);
+        MapHashTables hashTables = new MapHashTables(mapType, mode, hashTableCount, Optional.empty());
+        hashTables.buildAllHashTables(keyBlock, offsets, mapIsNull);
         return hashTables;
     }
 
-    MapHashTables(MapType mapType, int hashTableCount, Optional<int[]> hashTables)
+    MapHashTables(MapType mapType, HashBuildMode mode, int hashTableCount, Optional<int[]> hashTables)
     {
         this.mapType = mapType;
+        this.mode = mode;
         this.hashTableCount = hashTableCount;
         this.hashTables = hashTables.orElse(null);
     }
@@ -88,15 +97,15 @@ public final class MapHashTables
         return Optional.ofNullable(hashTables);
     }
 
-    void buildAllHashTablesIfNecessary(HashBuildMode mode, Block rawKeyBlock, int[] offsets, @Nullable boolean[] mapIsNull)
+    void buildAllHashTablesIfNecessary(Block rawKeyBlock, int[] offsets, @Nullable boolean[] mapIsNull)
     {
         // this is double-checked locking
         if (hashTables == null) {
-            buildAllHashTables(mode, rawKeyBlock, offsets, mapIsNull);
+            buildAllHashTables(rawKeyBlock, offsets, mapIsNull);
         }
     }
 
-    private synchronized void buildAllHashTables(HashBuildMode mode, Block rawKeyBlock, int[] offsets, @Nullable boolean[] mapIsNull)
+    private synchronized void buildAllHashTables(Block rawKeyBlock, int[] offsets, @Nullable boolean[] mapIsNull)
     {
         if (hashTables != null) {
             return;
@@ -114,16 +123,21 @@ public final class MapHashTables
             if (mapIsNull != null && mapIsNull[i] && keyCount != 0) {
                 throw new IllegalArgumentException("A null map must have zero entries");
             }
-            switch (mode) {
-                case DUPLICATE_NOT_CHECKED -> buildHashTable(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
-                case STRICT_EQUALS -> buildHashTableStrict(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
-                case STRICT_NOT_DISTINCT_FROM -> buildDistinctHashTableStrict(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
-            }
+            buildHashTable(mode, mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
         }
         this.hashTables = hashTables;
     }
 
-    private static void buildHashTable(MapType mapType, Block keyBlock, int keyOffset, int keyCount, int[] hashTables)
+    private static void buildHashTable(HashBuildMode mode, MapType mapType, Block rawKeyBlock, int keyOffset, int keyCount, int[] hashTables)
+    {
+        switch (mode) {
+            case DUPLICATE_NOT_CHECKED -> buildHashTableDuplicateNotChecked(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
+            case STRICT_EQUALS -> buildHashTableStrict(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
+            case STRICT_NOT_DISTINCT_FROM -> buildDistinctHashTableStrict(mapType, rawKeyBlock, keyOffset, keyCount, hashTables);
+        }
+    }
+
+    private static void buildHashTableDuplicateNotChecked(MapType mapType, Block keyBlock, int keyOffset, int keyCount, int[] hashTables)
     {
         int hashTableOffset = keyOffset * HASH_MULTIPLIER;
         int hashTableSize = keyCount * HASH_MULTIPLIER;
@@ -204,14 +218,10 @@ public final class MapHashTables
                     break;
                 }
 
-                if (keyBlock.isNull(keyOffset + i)) {
-                    throw new TrinoException(NOT_SUPPORTED, "map key cannot be null or contain nulls");
-                }
-
                 boolean isDuplicateKey;
                 try {
                     // assuming maps with indeterminate keys are not supported
-                    isDuplicateKey = (boolean) mapType.getKeyBlockNotDistinctFrom().invokeExact(keyBlock, keyOffset + i, keyBlock, keyOffset + hashTables[hashTableOffset + hash]);
+                    isDuplicateKey = (boolean) mapType.getKeyBlockIdentical().invokeExact(keyBlock, keyOffset + i, keyBlock, keyOffset + hashTables[hashTableOffset + hash]);
                 }
                 catch (RuntimeException e) {
                     throw e;
@@ -235,7 +245,7 @@ public final class MapHashTables
     private static int getHashPosition(MapType mapType, Block keyBlock, int position, int hashTableSize)
     {
         if (keyBlock.isNull(position)) {
-            throw new IllegalArgumentException("map keys cannot be null");
+            throw new TrinoException(INVALID_FUNCTION_ARGUMENT, "map key cannot be null");
         }
 
         long hashCode;

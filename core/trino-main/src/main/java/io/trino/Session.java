@@ -14,7 +14,6 @@
 package io.trino;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
@@ -24,7 +23,6 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.Span;
 import io.trino.client.ProtocolHeaders;
-import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.security.AccessControl;
 import io.trino.security.SecurityContext;
@@ -58,7 +56,7 @@ import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.client.ProtocolHeaders.TRINO_HEADERS;
-import static io.trino.metadata.GlobalFunctionCatalog.BUILTIN_SCHEMA;
+import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.NOT_FOUND;
 import static io.trino.sql.SqlPath.EMPTY_PATH;
 import static io.trino.util.Failures.checkCondition;
@@ -93,6 +91,7 @@ public final class Session
     private final Map<String, String> preparedStatements;
     private final ProtocolHeaders protocolHeaders;
     private final Optional<Slice> exchangeEncryptionKey;
+    private final Optional<String> queryDataEncoding;
 
     public Session(
             QueryId queryId,
@@ -120,7 +119,8 @@ public final class Session
             SessionPropertyManager sessionPropertyManager,
             Map<String, String> preparedStatements,
             ProtocolHeaders protocolHeaders,
-            Optional<Slice> exchangeEncryptionKey)
+            Optional<Slice> exchangeEncryptionKey,
+            Optional<String> queryDataEncoding)
     {
         this.queryId = requireNonNull(queryId, "queryId is null");
         this.querySpan = requireNonNull(querySpan, "querySpan is null");
@@ -147,6 +147,7 @@ public final class Session
         this.preparedStatements = requireNonNull(preparedStatements, "preparedStatements is null");
         this.protocolHeaders = requireNonNull(protocolHeaders, "protocolHeaders is null");
         this.exchangeEncryptionKey = requireNonNull(exchangeEncryptionKey, "exchangeEncryptionKey is null");
+        this.queryDataEncoding = requireNonNull(queryDataEncoding, "queryDataEncoding is null");
 
         requireNonNull(catalogProperties, "catalogProperties is null");
         ImmutableMap.Builder<String, Map<String, String>> catalogPropertiesBuilder = ImmutableMap.builder();
@@ -302,7 +303,7 @@ public final class Session
     public String getPreparedStatement(String name)
     {
         String sql = preparedStatements.get(name);
-        checkCondition(sql != null, NOT_FOUND, "Prepared statement not found: " + name);
+        checkCondition(sql != null, NOT_FOUND, "Prepared statement not found: %s", name);
         return sql;
     }
 
@@ -314,6 +315,16 @@ public final class Session
     public Optional<Slice> getExchangeEncryptionKey()
     {
         return exchangeEncryptionKey;
+    }
+
+    public Optional<String> getQueryDataEncoding()
+    {
+        return queryDataEncoding;
+    }
+
+    public SessionPropertyManager getSessionPropertyManager()
+    {
+        return sessionPropertyManager;
     }
 
     public Session beginTransactionId(TransactionId transactionId, TransactionManager transactionManager, AccessControl accessControl)
@@ -334,7 +345,7 @@ public final class Session
                 continue;
             }
             CatalogHandle catalogHandle = transactionManager.getCatalogHandle(transactionId, catalogName)
-                    .orElseThrow(() -> new TrinoException(NOT_FOUND, "Session property catalog does not exist: " + catalogName));
+                    .orElseThrow(() -> new TrinoException(CATALOG_NOT_FOUND, "Catalog '%s' not found".formatted(catalogName)));
 
             validateCatalogProperties(Optional.of(transactionId), accessControl, catalogName, catalogHandle, catalogProperties);
             connectorProperties.put(catalogName, catalogProperties);
@@ -345,7 +356,7 @@ public final class Session
             String catalogName = entry.getKey();
             SelectedRole role = entry.getValue();
             if (transactionManager.getCatalogHandle(transactionId, catalogName).isEmpty()) {
-                throw new TrinoException(NOT_FOUND, "Catalog for role does not exist: " + catalogName);
+                throw new TrinoException(CATALOG_NOT_FOUND, "Catalog '%s' not found".formatted(catalogName));
             }
             if (role.getType() == SelectedRole.Type.ROLE) {
                 accessControl.checkCanSetCatalogRole(new SecurityContext(transactionId, identity, queryId, start), role.getRole().orElseThrow(), catalogName);
@@ -381,7 +392,8 @@ public final class Session
                 sessionPropertyManager,
                 preparedStatements,
                 protocolHeaders,
-                exchangeEncryptionKey);
+                exchangeEncryptionKey,
+                queryDataEncoding);
     }
 
     public Session withDefaultProperties(Map<String, String> systemPropertyDefaults, Map<String, Map<String, String>> catalogPropertyDefaults, AccessControl accessControl)
@@ -430,7 +442,8 @@ public final class Session
                 sessionPropertyManager,
                 preparedStatements,
                 protocolHeaders,
-                exchangeEncryptionKey);
+                exchangeEncryptionKey,
+                queryDataEncoding);
     }
 
     public Session withExchangeEncryption(Slice encryptionKey)
@@ -462,7 +475,8 @@ public final class Session
                 sessionPropertyManager,
                 preparedStatements,
                 protocolHeaders,
-                Optional.of(encryptionKey));
+                Optional.of(encryptionKey),
+                queryDataEncoding);
     }
 
     public ConnectorSession toConnectorSession()
@@ -474,7 +488,7 @@ public final class Session
     {
         requireNonNull(catalogHandle, "catalogHandle is null");
 
-        String catalogName = catalogHandle.getCatalogName();
+        String catalogName = catalogHandle.getCatalogName().toString();
         return new FullConnectorSession(
                 this,
                 identity.toConnectorIdentity(catalogName),
@@ -515,7 +529,8 @@ public final class Session
                 catalogProperties,
                 identity.getCatalogRoles(),
                 preparedStatements,
-                protocolHeaders.getProtocolName());
+                protocolHeaders.getProtocolName(),
+                queryDataEncoding);
     }
 
     @Override
@@ -577,23 +592,20 @@ public final class Session
     {
         for (Entry<String, String> property : systemProperties.entrySet()) {
             // verify permissions
-            accessControl.checkCanSetSystemSessionProperty(identity, property.getKey());
+            accessControl.checkCanSetSystemSessionProperty(identity, queryId, property.getKey());
 
             // validate session property value
             sessionPropertyManager.validateSystemSessionProperty(property.getKey(), property.getValue());
         }
     }
 
-    public Session createViewSession(Optional<String> catalog, Optional<String> schema, Identity identity, List<CatalogSchemaName> path)
+    public Session createViewSession(Optional<String> catalog, Optional<String> schema, Identity identity, List<CatalogSchemaName> viewPath)
     {
-        // For a view, we prepend the global function schema to the path, which should not be in the path
-        // We do not change the raw path, as that is use for the current_path function
-        SqlPath sqlPath = new SqlPath(
-                ImmutableList.<CatalogSchemaName>builder()
-                        .add(new CatalogSchemaName(GlobalSystemConnector.NAME, BUILTIN_SCHEMA))
-                        .addAll(path)
-                        .build(),
-                getPath().getRawPath());
+        return createViewSession(catalog, schema, identity, path.forView(viewPath));
+    }
+
+    public Session createViewSession(Optional<String> catalog, Optional<String> schema, Identity identity, SqlPath sqlPath)
+    {
         return builder(sessionPropertyManager)
                 .setQueryId(getQueryId())
                 .setTransactionId(getTransactionId().orElse(null))
@@ -648,6 +660,7 @@ public final class Session
         private String clientInfo;
         private Set<String> clientTags = ImmutableSet.of();
         private Set<String> clientCapabilities = ImmutableSet.of();
+        private Optional<String> queryDataEncoding = Optional.empty();
         private ResourceEstimates resourceEstimates;
         private Instant start = Instant.now();
         private final Map<String, String> systemProperties = new HashMap<>();
@@ -682,6 +695,7 @@ public final class Session
             this.userAgent = session.userAgent.orElse(null);
             this.clientInfo = session.clientInfo.orElse(null);
             this.clientCapabilities = ImmutableSet.copyOf(session.clientCapabilities);
+            this.queryDataEncoding = session.queryDataEncoding;
             this.clientTags = ImmutableSet.copyOf(session.clientTags);
             this.start = session.start;
             this.systemProperties.putAll(session.systemProperties);
@@ -930,6 +944,12 @@ public final class Session
             return this;
         }
 
+        public SessionBuilder setQueryDataEncoding(Optional<String> value)
+        {
+            this.queryDataEncoding = value;
+            return this;
+        }
+
         public Session build()
         {
             return new Session(
@@ -958,7 +978,8 @@ public final class Session
                     sessionPropertyManager,
                     preparedStatements,
                     protocolHeaders,
-                    Optional.empty());
+                    Optional.empty(),
+                    queryDataEncoding);
         }
     }
 

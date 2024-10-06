@@ -21,7 +21,6 @@ import io.trino.spi.predicate.TupleDomain;
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 
 public interface HivePageSourceFactory
 {
@@ -31,7 +30,8 @@ public interface HivePageSourceFactory
             long start,
             long length,
             long estimatedFileSize,
-            Properties schema,
+            long fileModifiedTime,
+            Schema schema,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
             Optional<AcidInfo> acidInfo,

@@ -13,13 +13,11 @@
  */
 package io.trino.plugin.prometheus;
 
-import io.airlift.testing.EquivalenceTester;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.plugin.prometheus.MetadataUtil.COLUMN_CODEC;
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestPrometheusColumnHandle
 {
@@ -30,21 +28,6 @@ public class TestPrometheusColumnHandle
     {
         String json = COLUMN_CODEC.toJson(columnHandle);
         PrometheusColumnHandle copy = COLUMN_CODEC.fromJson(json);
-        assertEquals(copy, columnHandle);
-    }
-
-    @Test
-    public void testEquivalence()
-    {
-        EquivalenceTester.equivalenceTester()
-                .addEquivalentGroup(
-                        new PrometheusColumnHandle("columnName", createUnboundedVarcharType(), 0),
-                        new PrometheusColumnHandle("columnName", BIGINT, 0),
-                        new PrometheusColumnHandle("columnName", createUnboundedVarcharType(), 1))
-                .addEquivalentGroup(
-                        new PrometheusColumnHandle("columnNameX", createUnboundedVarcharType(), 0),
-                        new PrometheusColumnHandle("columnNameX", BIGINT, 0),
-                        new PrometheusColumnHandle("columnNameX", createUnboundedVarcharType(), 1))
-                .check();
+        assertThat(copy).isEqualTo(columnHandle);
     }
 }

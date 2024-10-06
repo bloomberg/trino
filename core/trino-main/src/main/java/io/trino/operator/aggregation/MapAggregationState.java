@@ -15,7 +15,8 @@ package io.trino.operator.aggregation;
 
 import io.trino.spi.block.Block;
 import io.trino.spi.block.MapBlockBuilder;
-import io.trino.spi.block.SingleMapBlock;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AccumulatorState;
 import io.trino.spi.function.AccumulatorStateMetadata;
 
@@ -27,13 +28,19 @@ import io.trino.spi.function.AccumulatorStateMetadata;
 public interface MapAggregationState
         extends AccumulatorState
 {
-    void add(Block keyBlock, int keyPosition, Block valueBlock, int valuePosition);
+    void add(ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition);
 
     default void merge(MapAggregationState other)
     {
-        SingleMapBlock serializedState = ((SingleMapAggregationState) other).removeTempSerializedState();
-        for (int i = 0; i < serializedState.getPositionCount(); i += 2) {
-            add(serializedState, i, serializedState, i + 1);
+        SqlMap serializedState = ((SingleMapAggregationState) other).removeTempSerializedState();
+        int rawOffset = serializedState.getRawOffset();
+        Block rawKeyBlock = serializedState.getRawKeyBlock();
+        Block rawValueBlock = serializedState.getRawValueBlock();
+
+        ValueBlock rawKeyValues = rawKeyBlock.getUnderlyingValueBlock();
+        ValueBlock rawValueValues = rawValueBlock.getUnderlyingValueBlock();
+        for (int i = 0; i < serializedState.getSize(); i++) {
+            add(rawKeyValues, rawKeyBlock.getUnderlyingValuePosition(rawOffset + i), rawValueValues, rawValueBlock.getUnderlyingValuePosition(rawOffset + i));
         }
     }
 

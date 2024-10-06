@@ -13,7 +13,6 @@
  */
 package io.trino.plugin.hudi;
 
-import com.google.common.collect.ImmutableMap;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.plugin.hudi.testing.TpchHudiTablesInitializer;
 import io.trino.testing.QueryRunner;
@@ -21,7 +20,6 @@ import io.trino.testing.QueryRunner;
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
 import static io.trino.plugin.hudi.testing.HudiTestUtils.COLUMNS_TO_HIDE;
 import static io.trino.testing.TestingNames.randomNameSuffix;
-import static org.apache.hudi.common.model.HoodieTableType.MERGE_ON_READ;
 
 public class TestHudiMergeOnReadMinioConnectorSmokeTest
         extends BaseHudiConnectorSmokeTest
@@ -35,10 +33,9 @@ public class TestHudiMergeOnReadMinioConnectorSmokeTest
         hiveMinioDataLake.start();
         hiveMinioDataLake.getMinioClient().ensureBucketExists(bucketName);
 
-        return S3HudiQueryRunner.create(
-                ImmutableMap.of(),
-                ImmutableMap.of("hudi.columns-to-hide", COLUMNS_TO_HIDE),
-                new TpchHudiTablesInitializer(MERGE_ON_READ, REQUIRED_TPCH_TABLES),
-                hiveMinioDataLake);
+        return HudiQueryRunner.builder(hiveMinioDataLake)
+                .setDataLoader(new TpchHudiTablesInitializer(REQUIRED_TPCH_TABLES))
+                .addConnectorProperty("hudi.columns-to-hide", COLUMNS_TO_HIDE)
+                .build();
     }
 }

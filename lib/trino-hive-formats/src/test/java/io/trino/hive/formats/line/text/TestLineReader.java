@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.hive.formats.compression.CompressionKind;
 import io.trino.hive.formats.line.LineBuffer;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -232,10 +232,8 @@ public class TestLineReader
         }
     }
 
-    @SuppressWarnings("unused")
     private record TestData(byte[] inputData, List<ExpectedLine> expectedLines) {}
 
-    @SuppressWarnings("unused")
     private record ExpectedLine(String line, int start, int endExclusive) {}
 
     private static TestData createInputData(List<String> lines, String delimiter, boolean delimiterAtEndOfFile, boolean bom)

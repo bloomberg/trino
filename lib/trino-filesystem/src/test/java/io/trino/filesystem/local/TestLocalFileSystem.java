@@ -47,6 +47,12 @@ public class TestLocalFileSystem
         fileSystem = new LocalFileSystem(tempDirectory);
     }
 
+    @Override
+    protected boolean supportsCreateExclusive()
+    {
+        return false;
+    }
+
     @AfterEach
     void afterEach()
             throws IOException
@@ -80,6 +86,12 @@ public class TestLocalFileSystem
     protected boolean isHierarchical()
     {
         return true;
+    }
+
+    @Override
+    protected boolean supportsIncompleteWriteNoClobber()
+    {
+        return false;
     }
 
     @Override

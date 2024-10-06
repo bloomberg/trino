@@ -42,6 +42,7 @@ public final class TestingOperatorContext
                 taskContext,
                 executor,
                 scheduledExecutor,
+                scheduledExecutor,
                 pipelineMemoryContext,
                 false,
                 false,
@@ -50,6 +51,7 @@ public final class TestingOperatorContext
         DriverContext driverContext = new DriverContext(
                 pipelineContext,
                 executor,
+                scheduledExecutor,
                 scheduledExecutor,
                 pipelineMemoryContext,
                 0L);
@@ -60,6 +62,38 @@ public final class TestingOperatorContext
                 "operator type");
 
         return operatorContext;
+    }
+
+    public static DriverContext createDriverContext(ScheduledExecutorService scheduledExecutor)
+    {
+        Executor executor = MoreExecutors.directExecutor();
+
+        TaskContext taskContext = TestingTaskContext.createTaskContext(
+                executor,
+                scheduledExecutor,
+                TestingSession.testSessionBuilder().build());
+
+        MemoryTrackingContext pipelineMemoryContext = new MemoryTrackingContext(newSimpleAggregatedMemoryContext(), newSimpleAggregatedMemoryContext());
+
+        PipelineContext pipelineContext = new PipelineContext(
+                1,
+                taskContext,
+                executor,
+                scheduledExecutor,
+                scheduledExecutor,
+                pipelineMemoryContext,
+                false,
+                false,
+                false);
+
+        DriverContext driverContext = new DriverContext(
+                pipelineContext,
+                executor,
+                scheduledExecutor,
+                scheduledExecutor,
+                pipelineMemoryContext,
+                0L);
+        return driverContext;
     }
 
     private TestingOperatorContext() {}

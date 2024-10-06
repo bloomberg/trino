@@ -14,9 +14,10 @@
 package io.trino.plugin.prometheus;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.net.HttpHeaders;
 import com.google.inject.ConfigurationException;
 import io.airlift.units.Duration;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.net.URI;
@@ -40,10 +41,12 @@ public class TestPrometheusConnectorConfig
                 .setMaxQueryRangeDuration(new Duration(21, DAYS))
                 .setCacheDuration(new Duration(30, SECONDS))
                 .setBearerTokenFile(null)
+                .setHttpAuthHeaderName(HttpHeaders.AUTHORIZATION)
                 .setUser(null)
                 .setPassword(null)
                 .setReadTimeout(new Duration(10, SECONDS))
-                .setCaseInsensitiveNameMatching(false));
+                .setCaseInsensitiveNameMatching(false)
+                .setAdditionalHeaders(null));
     }
 
     @Test
@@ -54,11 +57,13 @@ public class TestPrometheusConnectorConfig
                 .put("prometheus.query.chunk.size.duration", "365d")
                 .put("prometheus.max.query.range.duration", "1095d")
                 .put("prometheus.cache.ttl", "60s")
+                .put("prometheus.auth.http.header.name", "X-team-auth")
                 .put("prometheus.bearer.token.file", "/tmp/bearer_token.txt")
                 .put("prometheus.auth.user", "admin")
                 .put("prometheus.auth.password", "password")
                 .put("prometheus.read-timeout", "30s")
                 .put("prometheus.case-insensitive-name-matching", "true")
+                .put("prometheus.http.additional-headers", "key\\:1:value\\,1, key\\,2:value\\:2")
                 .buildOrThrow();
 
         URI uri = URI.create("file://test.json");
@@ -67,11 +72,13 @@ public class TestPrometheusConnectorConfig
         expected.setQueryChunkSizeDuration(new Duration(365, DAYS));
         expected.setMaxQueryRangeDuration(new Duration(1095, DAYS));
         expected.setCacheDuration(new Duration(60, SECONDS));
+        expected.setHttpAuthHeaderName("X-team-auth");
         expected.setBearerTokenFile(new File("/tmp/bearer_token.txt"));
         expected.setUser("admin");
         expected.setPassword("password");
         expected.setReadTimeout(new Duration(30, SECONDS));
         expected.setCaseInsensitiveNameMatching(true);
+        expected.setAdditionalHeaders("key\\:1:value\\,1, key\\,2:value\\:2");
 
         assertFullMapping(properties, expected);
     }
@@ -107,5 +114,10 @@ public class TestPrometheusConnectorConfig
         assertThatThrownBy(new PrometheusConnectorConfig().setPassword("test")::checkConfig)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Both username and password must be set when using basic authentication");
+
+        assertThatThrownBy(new PrometheusConnectorConfig().setAdditionalHeaders("Authorization: test").setHttpAuthHeaderName("Authorization")
+                ::checkConfig)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Additional headers can not include: Authorization");
     }
 }

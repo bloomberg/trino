@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.spi.StandardErrorCode.DIVISION_BY_ZERO;
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
@@ -27,8 +28,8 @@ import static io.trino.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
 import static io.trino.spi.function.OperatorType.ADD;
 import static io.trino.spi.function.OperatorType.DIVIDE;
 import static io.trino.spi.function.OperatorType.EQUAL;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.MODULUS;
@@ -41,8 +42,10 @@ import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExcept
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSmallintOperators
 {
     private QueryAssertions assertions;
@@ -507,22 +510,22 @@ public class TestSmallintOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "cast(NULL as SMALLINT)", "CAST(NULL AS SMALLINT)"))
+        assertThat(assertions.operator(IDENTICAL, "cast(NULL as SMALLINT)", "CAST(NULL AS SMALLINT)"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "SMALLINT '37'"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "SMALLINT '38'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "SMALLINT '37'"))
+        assertThat(assertions.operator(IDENTICAL, "NULL", "SMALLINT '37'"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "SMALLINT '38'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "SMALLINT '37'"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "SMALLINT '37'", "NULL"))
-                .isEqualTo(true);
+        assertThat(assertions.operator(IDENTICAL, "SMALLINT '37'", "NULL"))
+                .isEqualTo(false);
     }
 
     @Test

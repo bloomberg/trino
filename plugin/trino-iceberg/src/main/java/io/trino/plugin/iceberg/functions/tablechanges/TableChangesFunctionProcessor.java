@@ -120,12 +120,16 @@ public class TableChangesFunctionProcessor
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
                 TupleDomain.all(),
+                TupleDomain.all(),
                 split.path(),
                 split.start(),
                 split.length(),
                 split.fileSize(),
+                split.fileRecordCount(),
                 split.partitionDataJson(),
                 split.fileFormat(),
+                split.fileIoProperties(),
+                0,
                 functionHandle.nameMappingJson().map(NameMappingParser::fromJson));
         this.delegateColumnMap = delegateColumnMap;
 

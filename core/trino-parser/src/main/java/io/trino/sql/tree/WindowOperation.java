@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -40,22 +39,12 @@ public class WindowOperation
     private final Identifier name;
     private final Window window;
 
-    public WindowOperation(Identifier name, Window window)
-    {
-        this(Optional.empty(), name, window);
-    }
-
     public WindowOperation(NodeLocation location, Identifier name, Window window)
-    {
-        this(Optional.of(location), name, window);
-    }
-
-    private WindowOperation(Optional<NodeLocation> location, Identifier name, Window window)
     {
         super(location);
         requireNonNull(name, "name is null");
         requireNonNull(window, "window is null");
-        checkArgument(window instanceof WindowReference || window instanceof WindowSpecification, "unexpected window: " + window.getClass().getSimpleName());
+        checkArgument(window instanceof WindowReference || window instanceof WindowSpecification, "unexpected window: %s", window.getClass().getSimpleName());
 
         this.name = name;
         this.window = window;

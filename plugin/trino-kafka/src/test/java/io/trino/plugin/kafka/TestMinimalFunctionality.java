@@ -20,15 +20,17 @@ import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.kafka.TestingKafka;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.stream.LongStream;
 
 import static io.trino.plugin.kafka.util.TestUtils.createEmptyTopicDescription;
 import static java.util.UUID.randomUUID;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
-@Test(singleThreaded = true)
+@Execution(SAME_THREAD)
 public class TestMinimalFunctionality
         extends AbstractTestQueryFramework
 {
@@ -40,19 +42,19 @@ public class TestMinimalFunctionality
             throws Exception
     {
         testingKafka = closeAfterClass(TestingKafka.create());
+        testingKafka.start();
         topicName = "test_" + randomUUID().toString().replaceAll("-", "_");
         SchemaTableName schemaTableName = new SchemaTableName("default", topicName);
-        QueryRunner queryRunner = KafkaQueryRunner.builder(testingKafka)
+        return KafkaQueryRunner.builder(testingKafka)
                 .setExtraTopicDescription(ImmutableMap.of(schemaTableName, createEmptyTopicDescription(topicName, schemaTableName).getValue()))
-                .setExtraKafkaProperties(ImmutableMap.of("kafka.messages-per-split", "100"))
+                .addConnectorProperties(ImmutableMap.of("kafka.messages-per-split", "100"))
                 .build();
-        return queryRunner;
     }
 
     @Test
     public void testTopicExists()
     {
-        assertTrue(getQueryRunner().listTables(getSession(), "kafka", "default").contains(QualifiedObjectName.valueOf("kafka.default." + topicName)));
+        assertThat(getQueryRunner().listTables(getSession(), "kafka", "default")).contains(QualifiedObjectName.valueOf("kafka.default." + topicName));
     }
 
     @Test

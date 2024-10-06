@@ -48,23 +48,15 @@ public class ComparisonExpression
 
         public Operator flip()
         {
-            switch (this) {
-                case EQUAL:
-                    return EQUAL;
-                case NOT_EQUAL:
-                    return NOT_EQUAL;
-                case LESS_THAN:
-                    return GREATER_THAN;
-                case LESS_THAN_OR_EQUAL:
-                    return GREATER_THAN_OR_EQUAL;
-                case GREATER_THAN:
-                    return LESS_THAN;
-                case GREATER_THAN_OR_EQUAL:
-                    return LESS_THAN_OR_EQUAL;
-                case IS_DISTINCT_FROM:
-                    return IS_DISTINCT_FROM;
-            }
-            throw new IllegalArgumentException("Unsupported comparison: " + this);
+            return switch (this) {
+                case EQUAL -> EQUAL;
+                case NOT_EQUAL -> NOT_EQUAL;
+                case LESS_THAN -> GREATER_THAN;
+                case LESS_THAN_OR_EQUAL -> GREATER_THAN_OR_EQUAL;
+                case GREATER_THAN -> LESS_THAN;
+                case GREATER_THAN_OR_EQUAL -> LESS_THAN_OR_EQUAL;
+                case IS_DISTINCT_FROM -> IS_DISTINCT_FROM;
+            };
         }
 
         public Operator negate()
@@ -94,6 +86,7 @@ public class ComparisonExpression
     private final Expression left;
     private final Expression right;
 
+    @Deprecated
     public ComparisonExpression(Operator operator, Expression left, Expression right)
     {
         this(Optional.empty(), operator, left, right);
@@ -101,7 +94,10 @@ public class ComparisonExpression
 
     public ComparisonExpression(NodeLocation location, Operator operator, Expression left, Expression right)
     {
-        this(Optional.of(location), operator, left, right);
+        super(location);
+        this.operator = requireNonNull(operator, "operator is null");
+        this.left = requireNonNull(left, "left is null");
+        this.right = requireNonNull(right, "right is null");
     }
 
     private ComparisonExpression(Optional<NodeLocation> location, Operator operator, Expression left, Expression right)

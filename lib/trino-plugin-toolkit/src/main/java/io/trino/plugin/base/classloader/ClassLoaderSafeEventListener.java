@@ -38,7 +38,7 @@ public class ClassLoaderSafeEventListener
     @Override
     public void queryCreated(QueryCreatedEvent queryCreatedEvent)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.queryCreated(queryCreatedEvent);
         }
     }
@@ -46,7 +46,7 @@ public class ClassLoaderSafeEventListener
     @Override
     public void queryCompleted(QueryCompletedEvent queryCompletedEvent)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.queryCompleted(queryCompletedEvent);
         }
     }
@@ -54,7 +54,7 @@ public class ClassLoaderSafeEventListener
     @Override
     public void splitCompleted(SplitCompletedEvent splitCompletedEvent)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             delegate.splitCompleted(splitCompletedEvent);
         }
     }
@@ -62,8 +62,16 @@ public class ClassLoaderSafeEventListener
     @Override
     public boolean requiresAnonymizedPlan()
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(classLoader)) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
             return delegate.requiresAnonymizedPlan();
+        }
+    }
+
+    @Override
+    public void shutdown()
+    {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(classLoader)) {
+            delegate.shutdown();
         }
     }
 }

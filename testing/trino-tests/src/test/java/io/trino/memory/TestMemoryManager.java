@@ -24,13 +24,14 @@ import io.trino.server.testing.TestingTrinoServer;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
-import io.trino.tests.tpch.TpchQueryRunnerBuilder;
+import io.trino.tests.tpch.TpchQueryRunner;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -56,13 +57,10 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 @TestInstance(PER_CLASS)
+@Execution(SAME_THREAD) // run single threaded to avoid creating multiple query runners at once
 public class TestMemoryManager
 {
     private static final Session SESSION = testSessionBuilder()
@@ -101,7 +99,7 @@ public class TestMemoryManager
                 .put("query.max-memory", "1kB")
                 .buildOrThrow();
 
-        try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
+        try (QueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             assertThatThrownBy(() -> queryRunner.execute("SELECT COUNT(*), clerk FROM orders GROUP BY clerk"))
                     .isInstanceOf(RuntimeException.class)
                     .hasMessageStartingWith("Query exceeded per-node memory limit of ");
@@ -120,7 +118,6 @@ public class TestMemoryManager
             throws Exception
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("query.low-memory-killer.delay", "5s")
                 .put("query.low-memory-killer.policy", "total-reservation")
                 .buildOrThrow();
 
@@ -135,7 +132,7 @@ public class TestMemoryManager
             TaskId fakeTaskId = new TaskId(new StageId("fake", 0), 0, 0);
             for (TestingTrinoServer server : queryRunner.getServers()) {
                 MemoryPool memoryPool = server.getLocalMemoryManager().getMemoryPool();
-                assertTrue(memoryPool.tryReserve(fakeTaskId, "test", memoryPool.getMaxBytes()));
+                assertThat(memoryPool.tryReserve(fakeTaskId, "test", memoryPool.getMaxBytes())).isTrue();
             }
 
             int queries = 2;
@@ -155,10 +152,10 @@ public class TestMemoryManager
 
             for (TestingTrinoServer server : queryRunner.getServers()) {
                 MemoryPool pool = server.getLocalMemoryManager().getMemoryPool();
-                assertTrue(pool.getReservedBytes() > 0);
+                assertThat(pool.getReservedBytes() > 0).isTrue();
                 // Free up the entire pool
                 pool.free(fakeTaskId, "test", pool.getMaxBytes());
-                assertTrue(pool.getFreeBytes() > 0);
+                assertThat(pool.getFreeBytes() > 0).isTrue();
             }
 
             assertThatThrownBy(() -> {
@@ -171,17 +168,19 @@ public class TestMemoryManager
         }
     }
 
-    private void waitForQueryToBeKilled(DistributedQueryRunner queryRunner)
+    private void waitForQueryToBeKilled(QueryRunner queryRunner)
             throws InterruptedException
     {
         while (true) {
             boolean hasRunningQuery = false;
             for (BasicQueryInfo info : queryRunner.getCoordinator().getQueryManager().getQueries()) {
                 if (info.getState() == FAILED) {
-                    assertEquals(info.getErrorCode(), CLUSTER_OUT_OF_MEMORY.toErrorCode());
+                    assertThat(info.getErrorCode()).isEqualTo(CLUSTER_OUT_OF_MEMORY.toErrorCode());
                     return;
                 }
-                assertNull(info.getErrorCode(), "errorCode unexpectedly present for " + info);
+                assertThat(info.getErrorCode())
+                        .describedAs("errorCode unexpectedly present for " + info)
+                        .isNull();
                 if (!info.getState().isDone()) {
                     hasRunningQuery = true;
                 }
@@ -203,19 +202,19 @@ public class TestMemoryManager
     private void testNoLeak(@Language("SQL") String query)
             throws Exception
     {
-        Map<String, String> properties = ImmutableMap.of("task.verbose-stats", "true");
+        Map<String, String> properties = ImmutableMap.of("task.per-operator-cpu-timer-enabled", "true");
 
         try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             executor.submit(() -> queryRunner.execute(query)).get();
 
             for (BasicQueryInfo info : queryRunner.getCoordinator().getQueryManager().getQueries()) {
-                assertEquals(info.getState(), FINISHED);
+                assertThat(info.getState()).isEqualTo(FINISHED);
             }
 
             // Make sure we didn't leak any memory on the workers
             for (TestingTrinoServer worker : queryRunner.getServers()) {
                 MemoryPool pool = worker.getLocalMemoryManager().getMemoryPool();
-                assertEquals(pool.getMaxBytes(), pool.getFreeBytes());
+                assertThat(pool.getMaxBytes()).isEqualTo(pool.getFreeBytes());
             }
         }
     }
@@ -225,14 +224,14 @@ public class TestMemoryManager
     public void testClusterPools()
             throws Exception
     {
-        Map<String, String> properties = ImmutableMap.of("task.verbose-stats", "true");
+        Map<String, String> properties = ImmutableMap.of("task.per-operator-cpu-timer-enabled", "true");
 
         try (DistributedQueryRunner queryRunner = createQueryRunner(TINY_SESSION, properties)) {
             // Reserve all the memory
             TaskId fakeTaskId = new TaskId(new StageId("fake", 0), 0, 0);
             for (TestingTrinoServer server : queryRunner.getServers()) {
                 MemoryPool pool = server.getLocalMemoryManager().getMemoryPool();
-                assertTrue(pool.tryReserve(fakeTaskId, "test", pool.getMaxBytes()));
+                assertThat(pool.tryReserve(fakeTaskId, "test", pool.getMaxBytes())).isTrue();
             }
 
             List<Future<?>> queryFutures = new ArrayList<>();
@@ -244,7 +243,7 @@ public class TestMemoryManager
             ClusterMemoryManager memoryManager = queryRunner.getCoordinator().getClusterMemoryManager();
 
             ClusterMemoryPool clusterPool = memoryManager.getPool();
-            assertNotNull(clusterPool);
+            assertThat(clusterPool).isNotNull();
 
             // Wait for the pools to become blocked
             while (clusterPool.getBlockedNodes() != 2) {
@@ -260,14 +259,14 @@ public class TestMemoryManager
 
             // Make sure the queries are blocked
             for (BasicQueryInfo info : currentQueryInfos) {
-                assertFalse(info.getState().isDone());
+                assertThat(info.getState().isDone()).isFalse();
             }
 
             while (!currentQueryInfos.stream().allMatch(TestMemoryManager::isBlockedWaitingForMemory)) {
                 MILLISECONDS.sleep(10);
                 currentQueryInfos = queryRunner.getCoordinator().getQueryManager().getQueries();
                 for (BasicQueryInfo info : currentQueryInfos) {
-                    assertFalse(info.getState().isDone());
+                    assertThat(info.getState().isDone()).isFalse();
                 }
             }
 
@@ -276,7 +275,7 @@ public class TestMemoryManager
                 MemoryPool pool = server.getLocalMemoryManager().getMemoryPool();
                 // Free up the entire pool
                 pool.free(fakeTaskId, "test", pool.getMaxBytes());
-                assertTrue(pool.getFreeBytes() > 0);
+                assertThat(pool.getFreeBytes() > 0).isTrue();
             }
 
             // Make sure both queries finish now that there's memory free in the memory pool.
@@ -285,13 +284,13 @@ public class TestMemoryManager
             }
 
             for (BasicQueryInfo info : queryRunner.getCoordinator().getQueryManager().getQueries()) {
-                assertEquals(info.getState(), FINISHED);
+                assertThat(info.getState()).isEqualTo(FINISHED);
             }
 
             // Make sure we didn't leak any memory on the workers
             for (TestingTrinoServer worker : queryRunner.getServers()) {
                 MemoryPool pool = worker.getLocalMemoryManager().getMemoryPool();
-                assertEquals(pool.getMaxBytes(), pool.getFreeBytes());
+                assertThat(pool.getMaxBytes()).isEqualTo(pool.getFreeBytes());
             }
         }
     }
@@ -369,9 +368,9 @@ public class TestMemoryManager
     public static DistributedQueryRunner createQueryRunner(Session session, Map<String, String> extraProperties)
             throws Exception
     {
-        return TpchQueryRunnerBuilder.builder()
+        return TpchQueryRunner.builder()
                 .amendSession(sessionBuilder -> Session.builder(session))
-                .setNodeCount(2)
+                .setWorkerCount(1)
                 .setExtraProperties(extraProperties)
                 .build();
     }

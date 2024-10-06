@@ -18,18 +18,12 @@ import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.function.OperatorType;
 import io.trino.spi.type.Type;
-import io.trino.sql.tree.ArithmeticBinaryExpression.Operator;
-import io.trino.sql.tree.ComparisonExpression;
+import io.trino.sql.ir.Comparison;
 
-import static io.trino.spi.function.OperatorType.ADD;
-import static io.trino.spi.function.OperatorType.DIVIDE;
 import static io.trino.spi.function.OperatorType.EQUAL;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
-import static io.trino.spi.function.OperatorType.MODULUS;
-import static io.trino.spi.function.OperatorType.MULTIPLY;
-import static io.trino.spi.function.OperatorType.SUBTRACT;
 import static java.util.Objects.requireNonNull;
 
 public final class StandardFunctionResolution
@@ -41,50 +35,15 @@ public final class StandardFunctionResolution
         this.metadata = requireNonNull(metadata, "metadata is null");
     }
 
-    public ResolvedFunction arithmeticFunction(Operator operator, Type leftType, Type rightType)
+    public ResolvedFunction comparisonFunction(Comparison.Operator operator, Type leftType, Type rightType)
     {
-        OperatorType operatorType;
-        switch (operator) {
-            case ADD:
-                operatorType = ADD;
-                break;
-            case SUBTRACT:
-                operatorType = SUBTRACT;
-                break;
-            case MULTIPLY:
-                operatorType = MULTIPLY;
-                break;
-            case DIVIDE:
-                operatorType = DIVIDE;
-                break;
-            case MODULUS:
-                operatorType = MODULUS;
-                break;
-            default:
-                throw new IllegalStateException("Unknown arithmetic operator: " + operator);
-        }
-        return metadata.resolveOperator(operatorType, ImmutableList.of(leftType, rightType));
-    }
-
-    public ResolvedFunction comparisonFunction(ComparisonExpression.Operator operator, Type leftType, Type rightType)
-    {
-        OperatorType operatorType;
-        switch (operator) {
-            case EQUAL:
-                operatorType = EQUAL;
-                break;
-            case LESS_THAN:
-                operatorType = LESS_THAN;
-                break;
-            case LESS_THAN_OR_EQUAL:
-                operatorType = LESS_THAN_OR_EQUAL;
-                break;
-            case IS_DISTINCT_FROM:
-                operatorType = IS_DISTINCT_FROM;
-                break;
-            default:
-                throw new IllegalStateException("Unsupported comparison operator type: " + operator);
-        }
+        OperatorType operatorType = switch (operator) {
+            case EQUAL -> EQUAL;
+            case LESS_THAN -> LESS_THAN;
+            case LESS_THAN_OR_EQUAL -> LESS_THAN_OR_EQUAL;
+            case IDENTICAL -> IDENTICAL;
+            default -> throw new IllegalStateException("Unsupported comparison operator type: " + operator);
+        };
 
         return metadata.resolveOperator(operatorType, ImmutableList.of(leftType, rightType));
     }

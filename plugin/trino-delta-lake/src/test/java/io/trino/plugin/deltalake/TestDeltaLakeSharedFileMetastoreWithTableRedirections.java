@@ -44,21 +44,22 @@ public class TestDeltaLakeSharedFileMetastoreWithTableRedirections
                 .setSchema(schema)
                 .build();
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(deltaLakeSession).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(deltaLakeSession).build();
         dataDirectory = queryRunner.getCoordinator().getBaseDataDir().resolve("data");
 
-        queryRunner.installPlugin(new TestingDeltaLakePlugin());
+        queryRunner.installPlugin(new TestingDeltaLakePlugin(dataDirectory));
         Map<String, String> deltaLakeProperties = ImmutableMap.<String, String>builder()
                 .put("hive.metastore", "file")
                 .put("hive.metastore.catalog.dir", dataDirectory.toString())
                 .put("delta.enable-non-concurrent-writes", "true")
                 .put("delta.hive-catalog-name", "hive_with_redirections")
+                .put("fs.hadoop.enabled", "true")
                 .buildOrThrow();
 
         queryRunner.createCatalog("delta_with_redirections", CONNECTOR_NAME, deltaLakeProperties);
         queryRunner.execute("CREATE SCHEMA " + schema);
 
-        queryRunner.installPlugin(new TestingHivePlugin());
+        queryRunner.installPlugin(new TestingHivePlugin(dataDirectory));
 
         queryRunner.createCatalog(
                 "hive_with_redirections",
@@ -67,6 +68,7 @@ public class TestDeltaLakeSharedFileMetastoreWithTableRedirections
                         .put("hive.metastore", "file")
                         .put("hive.metastore.catalog.dir", dataDirectory.toString())
                         .put("hive.delta-lake-catalog-name", "delta_with_redirections")
+                        .put("fs.hadoop.enabled", "true")
                         .buildOrThrow());
 
         queryRunner.execute("CREATE TABLE hive_with_redirections." + schema + ".hive_table (a_integer) WITH (format='PARQUET') AS VALUES 1, 2, 3");

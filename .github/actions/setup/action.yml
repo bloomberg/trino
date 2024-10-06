@@ -3,16 +3,13 @@ description: "Verify checked out commits and setup Java"
 inputs:
   java-version:
     description: "Java version to setup"
-    default: 17
+    default: 23
   cache:
     description: "Cache Maven repo (true/false/restore)"
-    default: true
+    default: restore
   cleanup-node:
     description: "Clean up node (true/false) to increase free disk space"
     default: false # Disabled by default as it adds ~4 minutes of test runtime. Should be enabled case by case.
-  download_dependencies:
-    description: "Download all Maven dependencies so Maven can work in offline mode"
-    default: true
 
 runs:
   using: composite
@@ -40,16 +37,46 @@ runs:
         if: ${{ format('{0}', inputs.cleanup-node) == 'true' }}
         shell: bash
         run: ./.github/bin/free-disk-space.sh
-      - uses: actions/setup-java@v3
+      - uses: actions/setup-java@v4
         if: ${{ inputs.java-version != '' }}
         with:
           distribution: 'temurin' # use same JDK distro as in Trino docker images
           java-version: ${{ inputs.java-version }}
+      - name: Get NodeJS version from parent pom
+        shell: bash
+        run: |
+          node_version=$(grep -m 1 '<dep.frontend-node.version>' "pom.xml" | sed -n 's/.*<dep.frontend-node.version>\(.*\)<\/dep.frontend-node.version>.*/\1/p')
+          if [ -n "$node_version" ]; then
+            echo "node version is $node_version"
+            echo "NODE_VERSION=$node_version" >>${GITHUB_ENV}
+            exit 0
+          fi
+      - name: Cache and Restore local NodeJS
+        id: cache-nodejs
+        if: ${{ format('{0}', inputs.cache) == 'true' && env.NODE_VERSION != '' }}
+        uses: actions/cache@v4
+        with:
+          # Note: must be same set of paths as for cache:restore mode
+          path: .node
+          key: ${{ runner.os }}-nodejs-${{ env.NODE_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-nodejs-
+      - name: Restore local NodeJS
+        id: cache_restore-nodejs
+        if: ${{ format('{0}', inputs.cache) == 'restore' && env.NODE_VERSION != '' }}
+        uses: actions/cache/restore@v4
+        with:
+          # Note: must be same set of paths as for cache:true mode
+          path: .node
+          key: ${{ runner.os }}-nodejs-${{ env.NODE_VERSION }}
+          restore-keys: |
+            ${{ runner.os }}-nodejs-
       - name: Cache and Restore local Maven repo
         id: cache
         if: ${{ format('{0}', inputs.cache) == 'true' }}
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
+          # Note: must be same set of paths as for cache:restore mode
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
@@ -57,16 +84,13 @@ runs:
       - name: Restore local Maven repo
         id: cache_restore
         if: ${{ format('{0}', inputs.cache) == 'restore' }}
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
+          # Note: must be same set of paths as for cache:true mode
           path: ~/.m2/repository
           key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
             ${{ runner.os }}-maven-
-      - name: Fetch any missing dependencies
-        shell: bash
-        if: ${{ format('{0}', inputs.download_dependencies) == 'true' }}
-        run: ./.github/bin/download-maven-dependencies.sh
       - name: Configure Problem Matchers
         if: ${{ inputs.java-version != '' }}
         shell: bash

@@ -15,8 +15,8 @@ package io.trino.operator.aggregation.arrayagg;
 
 import com.google.common.base.Throwables;
 import io.trino.operator.VariableWidthData;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
@@ -33,6 +33,7 @@ import static io.airlift.slice.SizeOf.sizeOfObjectArray;
 import static io.trino.operator.VariableWidthData.EMPTY_CHUNK;
 import static io.trino.operator.VariableWidthData.POINTER_SIZE;
 import static io.trino.operator.VariableWidthData.getChunkOffset;
+import static java.lang.Math.toIntExact;
 import static java.nio.ByteOrder.LITTLE_ENDIAN;
 import static java.util.Objects.checkIndex;
 import static java.util.Objects.requireNonNull;
@@ -131,7 +132,7 @@ public class FlatArrayBuilder
         return INSTANCE_SIZE +
                 sizeOfObjectArray(closedRecordGroups.size()) +
                 ((long) closedRecordGroups.size() * RECORDS_PER_GROUP * recordSize) +
-                (openRecordGroup == null ? 0 : sizeOf(openRecordGroup)) +
+                sizeOf(openRecordGroup) +
                 (variableWidthData == null ? 0 : variableWidthData.getRetainedSizeBytes());
     }
 
@@ -154,7 +155,7 @@ public class FlatArrayBuilder
         LONG_HANDLE.set(records, recordOffset + recordNextIndexOffset, nextIndex);
     }
 
-    public void add(Block block, int position)
+    public void add(ValueBlock block, int position)
     {
         if (size == capacity) {
             growCapacity();
@@ -208,7 +209,8 @@ public class FlatArrayBuilder
                 recordOffset += recordSize;
             }
         }
-        int recordsInOpenGroup = ((int) size) & RECORDS_PER_GROUP_MASK;
+
+        int recordsInOpenGroup = toIntExact(size - ((long) closedRecordGroups.size() * RECORDS_PER_GROUP));
         int recordOffset = 0;
         for (int recordIndex = 0; recordIndex < recordsInOpenGroup; recordIndex++) {
             write(openRecordGroup, recordOffset, blockBuilder);

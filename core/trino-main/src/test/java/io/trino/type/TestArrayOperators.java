@@ -30,11 +30,11 @@ import io.trino.spi.type.BooleanType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.sql.query.QueryAssertions;
-import io.trino.testing.LocalQueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Collections;
 
@@ -48,8 +48,8 @@ import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.OPERATOR_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DecimalType.createDecimalType;
@@ -80,9 +80,10 @@ import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestArrayOperators
 {
     private QueryAssertions assertions;
@@ -118,7 +119,7 @@ public class TestArrayOperators
         ArrayType arrayType = new ArrayType(BIGINT);
         Block actualBlock = arrayBlockOf(arrayType, arrayBlockOf(BIGINT, 1L, 2L), arrayBlockOf(BIGINT, 3L));
         DynamicSliceOutput actualSliceOutput = new DynamicSliceOutput(100);
-        writeBlock(((LocalQueryRunner) assertions.getQueryRunner()).getPlannerContext().getBlockEncodingSerde(), actualSliceOutput, actualBlock);
+        writeBlock(assertions.getQueryRunner().getPlannerContext().getBlockEncodingSerde(), actualSliceOutput, actualBlock);
 
         ArrayBlockBuilder expectedBlockBuilder = arrayType.createBlockBuilder(null, 3);
         expectedBlockBuilder.buildEntry(elementBuilder -> {
@@ -128,9 +129,9 @@ public class TestArrayOperators
         expectedBlockBuilder.buildEntry(elementBuilder -> BIGINT.writeLong(elementBuilder, 3));
         Block expectedBlock = expectedBlockBuilder.build();
         DynamicSliceOutput expectedSliceOutput = new DynamicSliceOutput(100);
-        writeBlock(((LocalQueryRunner) assertions.getQueryRunner()).getPlannerContext().getBlockEncodingSerde(), expectedSliceOutput, expectedBlock);
+        writeBlock(assertions.getQueryRunner().getPlannerContext().getBlockEncodingSerde(), expectedSliceOutput, expectedBlock);
 
-        assertEquals(actualSliceOutput.slice(), expectedSliceOutput.slice());
+        assertThat(actualSliceOutput.slice()).isEqualTo(expectedSliceOutput.slice());
     }
 
     @Test
@@ -264,11 +265,8 @@ public class TestArrayOperators
     public void testArraySize()
     {
         int size = toIntExact(MAX_FUNCTION_MEMORY.toBytes() + 1);
-        assertTrinoExceptionThrownBy(() -> assertions.expression("array_distinct(ARRAY['" +
-                                                                 "x".repeat(size) + "', '" +
-                                                                 "y".repeat(size) + "', '" +
-                                                                 "z".repeat(size) +
-                                                                 "'])").evaluate())
+        assertTrinoExceptionThrownBy(
+                () -> assertions.expression("array_distinct(ARRAY[lpad('', %1$s , 'x'), lpad('', %1$s , 'y'), lpad('', %1$s , 'z')])".formatted(size)).evaluate())
                 .hasErrorCode(EXCEEDED_FUNCTION_MEMORY_LIMIT);
     }
 
@@ -322,9 +320,7 @@ public class TestArrayOperators
         assertThat(assertions.expression("CAST(a AS JSON)")
                 .binding("a", "ARRAY[3.14E0, 1e-323, 1e308, nan(), infinity(), -infinity(), null]"))
                 .hasType(JSON)
-                .isEqualTo(Runtime.version().feature() >= 19
-                        ? "[3.14,9.9E-324,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]"
-                        : "[3.14,1.0E-323,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]");
+                .isEqualTo("[3.14,9.9E-324,1.0E308,\"NaN\",\"Infinity\",\"-Infinity\",null]");
 
         assertThat(assertions.expression("CAST(a AS JSON)")
                 .binding("a", "ARRAY[DECIMAL '3.14', null]"))
@@ -2871,7 +2867,7 @@ public class TestArrayOperators
                 .isEqualTo(ImmutableList.of(asList(123, 456), asList(123, 789)));
 
         assertThat(assertions.function("array_intersect", "ARRAY[ARRAY[123, 456], ARRAY[123, 789]]", "ARRAY[ARRAY[123, 456], ARRAY[123, 456], ARRAY[123, 789]]"))
-                .hasType(new ArrayType(new ArrayType((INTEGER))))
+                .hasType(new ArrayType(new ArrayType(INTEGER)))
                 .isEqualTo(ImmutableList.of(asList(123, 456), asList(123, 789)));
 
         assertThat(assertions.function("array_intersect", "ARRAY[(123, 'abc'), (123, 'cde')]", "ARRAY[(123, 'abc'), (123, 'cde')]"))
@@ -3872,67 +3868,67 @@ public class TestArrayOperators
     }
 
     @Test
-    public void testDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS ARRAY(UNKNOWN))", "CAST(NULL AS ARRAY(UNKNOWN))"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS ARRAY(UNKNOWN))", "CAST(NULL AS ARRAY(UNKNOWN))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[NULL]", "ARRAY[NULL]"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "NULL", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[NULL]", "ARRAY[NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "NULL"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, 2]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "NULL"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2, 3]", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2, 3]", "ARRAY[1, 2]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, NULL]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2]", "ARRAY[1, 3]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, NULL]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2]", "ARRAY[1, 3]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[1, 2, NULL]", "ARRAY[1, 2]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[TRUE, FALSE]", "ARRAY[TRUE, FALSE]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, NULL]", "ARRAY[1, NULL]"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[1, 2, NULL]", "ARRAY[1, 2]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[TRUE, NULL]", "ARRAY[TRUE, FALSE]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[TRUE, FALSE]", "ARRAY[TRUE, FALSE]"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[FALSE, NULL]", "ARRAY[NULL, FALSE]"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', 'kittens']", "ARRAY['puppies', 'kittens']"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[TRUE, NULL]", "ARRAY[TRUE, FALSE]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', NULL]", "ARRAY['puppies', 'kittens']"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY['puppies', NULL]", "ARRAY[NULL, 'kittens']"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], ARRAY['kittens']]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[FALSE, NULL]", "ARRAY[NULL, FALSE]"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', 'kittens']", "ARRAY['puppies', 'kittens']"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[NULL, ARRAY['kittens']]"))
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', NULL]", "ARRAY['puppies', 'kittens']"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY['puppies', NULL]", "ARRAY[NULL, 'kittens']"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], ARRAY['kittens']]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
                 .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[ARRAY['puppies'], ARRAY['kittens']]"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ARRAY['puppies'], NULL]", "ARRAY[NULL, ARRAY['kittens']]"))
+                .isEqualTo(false);
     }
 
     @Test

@@ -15,6 +15,8 @@ package io.trino.filesystem.s3;
 
 import com.adobe.testing.s3mock.testcontainers.S3MockContainer;
 import io.airlift.units.DataSize;
+import io.opentelemetry.api.OpenTelemetry;
+import org.junit.jupiter.api.Test;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -23,6 +25,8 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 
 import java.net.URI;
+
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Testcontainers
 public class TestS3FileSystemS3Mock
@@ -33,6 +37,18 @@ public class TestS3FileSystemS3Mock
     @Container
     private static final S3MockContainer S3_MOCK = new S3MockContainer("3.0.1")
             .withInitialBuckets(BUCKET);
+
+    @Override
+    protected boolean isCreateExclusive()
+    {
+        return false; // not supported by s3-mock
+    }
+
+    @Override
+    protected boolean supportsCreateExclusive()
+    {
+        return false; // not supported by s3-mock
+    }
 
     @Override
     protected String bucket()
@@ -55,12 +71,22 @@ public class TestS3FileSystemS3Mock
     @Override
     protected S3FileSystemFactory createS3FileSystemFactory()
     {
-        return new S3FileSystemFactory(new S3FileSystemConfig()
+        return new S3FileSystemFactory(OpenTelemetry.noop(), new S3FileSystemConfig()
                 .setAwsAccessKey("accesskey")
                 .setAwsSecretKey("secretkey")
                 .setEndpoint(S3_MOCK.getHttpEndpoint())
                 .setRegion(Region.US_EAST_1.id())
                 .setPathStyleAccess(true)
-                .setStreamingPartSize(DataSize.valueOf("5.5MB")));
+                .setStreamingPartSize(DataSize.valueOf("5.5MB"))
+                .setSupportsExclusiveCreate(false), new S3FileSystemStats());
+    }
+
+    @Test
+    @Override
+    public void testPreSignedUris()
+    {
+        // S3 mock doesn't expire pre-signed URLs
+        assertThatThrownBy(super::testPreSignedUris)
+                .hasMessageContaining("Expecting code to raise a throwable");
     }
 }

@@ -32,6 +32,7 @@ import io.trino.sql.tree.QualifiedName;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.trino.metadata.MetadataUtil.createQualifiedObjectName;
@@ -116,7 +117,7 @@ public class CommentTask
     private void commentOnView(Comment statement, Session session)
     {
         QualifiedObjectName viewName = createQualifiedObjectName(session, statement, statement.getName());
-        if (metadata.getView(session, viewName).isEmpty()) {
+        if (!metadata.isView(session, viewName)) {
             String additionalInformation;
             if (metadata.getMaterializedView(session, viewName).isPresent()) {
                 additionalInformation = ", but a materialized view with that name exists. Setting comments on materialized views is unsupported.";
@@ -140,15 +141,16 @@ public class CommentTask
                 .orElseThrow(() -> semanticException(MISSING_TABLE, statement, "Table must be specified"));
 
         QualifiedObjectName originalObjectName = createQualifiedObjectName(session, statement, prefix);
-        if (metadata.isView(session, originalObjectName)) {
-            ViewDefinition viewDefinition = metadata.getView(session, originalObjectName).get();
+        Optional<ViewDefinition> view = metadata.getView(session, originalObjectName);
+        if (view.isPresent()) {
+            ViewDefinition viewDefinition = view.get();
             ViewColumn viewColumn = findAndCheckViewColumn(statement, session, viewDefinition, originalObjectName);
-            metadata.setViewColumnComment(session, originalObjectName, viewColumn.getName(), statement.getComment());
+            metadata.setViewColumnComment(session, originalObjectName, viewColumn.name(), statement.getComment());
         }
         else if (metadata.isMaterializedView(session, originalObjectName)) {
             MaterializedViewDefinition materializedViewDefinition = metadata.getMaterializedView(session, originalObjectName).get();
             ViewColumn viewColumn = findAndCheckViewColumn(statement, session, materializedViewDefinition, originalObjectName);
-            metadata.setMaterializedViewColumnComment(session, originalObjectName, viewColumn.getName(), statement.getComment());
+            metadata.setMaterializedViewColumnComment(session, originalObjectName, viewColumn.name(), statement.getComment());
         }
         else {
             RedirectionAwareTableHandle redirectionAwareTableHandle = metadata.getRedirectionAwareTableHandle(session, originalObjectName);
@@ -173,7 +175,7 @@ public class CommentTask
     {
         String columnName = statement.getName().getSuffix();
         ViewColumn viewColumn = viewDefinition.getColumns().stream()
-                .filter(column -> column.getName().equals(columnName))
+                .filter(column -> column.name().equals(columnName))
                 .findAny()
                 .orElseThrow(() -> semanticException(COLUMN_NOT_FOUND, statement, "Column does not exist: %s", columnName));
         accessControl.checkCanSetColumnComment(session.toSecurityContext(), originalObjectName);

@@ -21,17 +21,22 @@ import io.trino.plugin.tpch.TpchPlugin;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.tpch.TpchTable;
-import org.testng.annotations.AfterClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.nio.file.Path;
 
-import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.plugin.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.testing.QueryAssertions.copyTpchTables;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestSharedHiveMetastore
         extends BaseSharedMetastoreTest
 {
@@ -44,14 +49,14 @@ public class TestSharedHiveMetastore
     {
         Session icebergSession = testSessionBuilder()
                 .setCatalog(ICEBERG_CATALOG)
-                .setSchema(schema)
+                .setSchema(tpchSchema)
                 .build();
         Session hiveSession = testSessionBuilder()
                 .setCatalog(HIVE_CATALOG)
-                .setSchema(schema)
+                .setSchema(tpchSchema)
                 .build();
 
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession).build();
+        QueryRunner queryRunner = DistributedQueryRunner.builder(icebergSession).build();
 
         queryRunner.installPlugin(new TpchPlugin());
         queryRunner.createCatalog("tpch", "tpch");
@@ -65,46 +70,50 @@ public class TestSharedHiveMetastore
                 "iceberg",
                 ImmutableMap.of(
                         "iceberg.catalog.type", "TESTING_FILE_METASTORE",
-                        "hive.metastore.catalog.dir", dataDirectory.toString()));
+                        "hive.metastore.catalog.dir", dataDirectory.toString(),
+                        "fs.hadoop.enabled", "true"));
         queryRunner.createCatalog(
                 "iceberg_with_redirections",
                 "iceberg",
                 ImmutableMap.of(
                         "iceberg.catalog.type", "TESTING_FILE_METASTORE",
                         "hive.metastore.catalog.dir", dataDirectory.toString(),
-                        "iceberg.hive-catalog-name", "hive"));
+                        "iceberg.hive-catalog-name", "hive",
+                        "fs.hadoop.enabled", "true"));
 
-        queryRunner.installPlugin(new TestingHivePlugin(createTestingFileHiveMetastore(dataDirectory.toFile())));
-        queryRunner.createCatalog(HIVE_CATALOG, "hive", ImmutableMap.of("hive.allow-drop-table", "true"));
+        queryRunner.installPlugin(new TestingHivePlugin(dataDirectory));
+        queryRunner.createCatalog(HIVE_CATALOG, "hive");
         queryRunner.createCatalog(
                 "hive_with_redirections",
                 "hive",
                 ImmutableMap.of("hive.iceberg-catalog-name", "iceberg"));
 
-        queryRunner.execute("CREATE SCHEMA " + schema);
+        queryRunner.execute("CREATE SCHEMA " + tpchSchema);
         copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, icebergSession, ImmutableList.of(TpchTable.NATION));
         copyTpchTables(queryRunner, "tpch", TINY_SCHEMA_NAME, hiveSession, ImmutableList.of(TpchTable.REGION));
+        queryRunner.execute("CREATE SCHEMA " + testSchema);
 
         return queryRunner;
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
     {
-        assertQuerySucceeds("DROP TABLE IF EXISTS hive." + schema + ".region");
-        assertQuerySucceeds("DROP TABLE IF EXISTS iceberg." + schema + ".nation");
-        assertQuerySucceeds("DROP SCHEMA IF EXISTS hive." + schema);
+        assertQuerySucceeds("DROP TABLE IF EXISTS hive." + tpchSchema + ".region");
+        assertQuerySucceeds("DROP TABLE IF EXISTS iceberg." + tpchSchema + ".nation");
+        assertQuerySucceeds("DROP SCHEMA IF EXISTS hive." + tpchSchema);
+        assertQuerySucceeds("DROP SCHEMA IF EXISTS hive." + testSchema);
     }
 
     @Override
     protected String getExpectedHiveCreateSchema(String catalogName)
     {
-        String expectedHiveCreateSchema = "CREATE SCHEMA %s.%s\n" +
-                "WITH (\n" +
-                "   location = 'file:%s/%s'\n" +
-                ")";
-
-        return format(expectedHiveCreateSchema, catalogName, schema, dataDirectory, schema);
+        return """
+               CREATE SCHEMA %s.%s
+               WITH (
+                  location = 'local:///%s'
+               )"""
+                .formatted(catalogName, tpchSchema, tpchSchema);
     }
 
     @Override
@@ -115,6 +124,6 @@ public class TestSharedHiveMetastore
                 "WITH (\n" +
                 "   location = '%s/%s'\n" +
                 ")";
-        return format(expectedIcebergCreateSchema, catalogName, schema, dataDirectory, schema);
+        return format(expectedIcebergCreateSchema, catalogName, tpchSchema, dataDirectory, tpchSchema);
     }
 }

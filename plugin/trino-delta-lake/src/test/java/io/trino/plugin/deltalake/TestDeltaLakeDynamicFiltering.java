@@ -14,7 +14,6 @@
 package io.trino.plugin.deltalake;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.opentelemetry.api.trace.Span;
 import io.trino.Session;
@@ -23,7 +22,6 @@ import io.trino.execution.QueryStats;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.Split;
 import io.trino.metadata.TableHandle;
-import io.trino.operator.OperatorStats;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.QueryId;
@@ -33,37 +31,33 @@ import io.trino.spi.predicate.TupleDomain;
 import io.trino.split.SplitSource;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.MaterializedResultWithQueryId;
 import io.trino.testing.QueryRunner;
+import io.trino.testing.QueryRunner.MaterializedResultWithPlan;
 import io.trino.transaction.TransactionId;
 import io.trino.transaction.TransactionManager;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Stream;
 
 import static com.google.common.base.Verify.verify;
-import static io.airlift.concurrent.MoreFutures.unmodifiableFuture;
 import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static io.airlift.testing.Assertions.assertGreaterThan;
 import static io.trino.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
 import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createS3DeltaLakeQueryRunner;
 import static io.trino.spi.connector.Constraint.alwaysTrue;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tpch.TpchTable.LINE_ITEM;
 import static io.trino.tpch.TpchTable.ORDERS;
 import static java.lang.String.format;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
+import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
+@Isolated
 public class TestDeltaLakeDynamicFiltering
         extends AbstractTestQueryFramework
 {
@@ -78,49 +72,44 @@ public class TestDeltaLakeDynamicFiltering
         hiveMinioDataLake = closeAfterClass(new HiveMinioDataLake(bucketName));
         hiveMinioDataLake.start();
 
-        QueryRunner queryRunner = createS3DeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                "default",
-                ImmutableMap.of("delta.register-table-procedure.enabled", "true"),
-                hiveMinioDataLake.getMinio().getMinioAddress(),
-                hiveMinioDataLake.getHiveHadoop());
+        QueryRunner queryRunner = DeltaLakeQueryRunner.builder()
+                .addMetastoreProperties(hiveMinioDataLake.getHiveHadoop())
+                .addS3Properties(hiveMinioDataLake.getMinio(), bucketName)
+                .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .build();
 
         ImmutableList.of(LINE_ITEM, ORDERS).forEach(table -> {
             String tableName = table.getTableName();
             hiveMinioDataLake.copyResources("io/trino/plugin/deltalake/testing/resources/databricks73/" + tableName, tableName);
-            queryRunner.execute(format("CALL %1$s.system.register_table('%2$s', '%3$s', 's3://%4$s/%3$s')",
-                    DELTA_CATALOG,
-                    "default",
+            queryRunner.execute(format("CALL system.register_table(CURRENT_SCHEMA, '%1$s', 's3://%2$s/%1$s')",
                     tableName,
                     bucketName));
         });
         return queryRunner;
     }
 
-    @DataProvider
-    public Object[][] joinDistributionTypes()
+    @Test
+    @Timeout(60)
+    public void testDynamicFiltering()
     {
-        return Stream.of(JoinDistributionType.values())
-                .collect(toDataProvider());
+        for (JoinDistributionType joinDistributionType : JoinDistributionType.values()) {
+            String query = "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.totalprice > 59995 AND orders.totalprice < 60000";
+            MaterializedResultWithPlan filteredResult = getDistributedQueryRunner().executeWithPlan(sessionWithDynamicFiltering(true, joinDistributionType), query);
+            MaterializedResultWithPlan unfilteredResult = getDistributedQueryRunner().executeWithPlan(sessionWithDynamicFiltering(false, joinDistributionType), query);
+            assertEqualsIgnoreOrder(filteredResult.result().getMaterializedRows(), unfilteredResult.result().getMaterializedRows());
+
+            QueryStats filteredStats = getQueryStats(filteredResult.queryId());
+            QueryStats unfilteredStats = getQueryStats(unfilteredResult.queryId());
+            assertGreaterThan(unfilteredStats.getPhysicalInputPositions(), filteredStats.getPhysicalInputPositions());
+        }
     }
 
-    @Test(timeOut = 60_000, dataProvider = "joinDistributionTypes")
-    public void testDynamicFiltering(JoinDistributionType joinDistributionType)
-    {
-        String query = "SELECT * FROM lineitem JOIN orders ON lineitem.orderkey = orders.orderkey AND orders.totalprice > 59995 AND orders.totalprice < 60000";
-        MaterializedResultWithQueryId filteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(true, joinDistributionType), query);
-        MaterializedResultWithQueryId unfilteredResult = getDistributedQueryRunner().executeWithQueryId(sessionWithDynamicFiltering(false, joinDistributionType), query);
-        assertEqualsIgnoreOrder(filteredResult.getResult().getMaterializedRows(), unfilteredResult.getResult().getMaterializedRows());
-
-        QueryInputStats filteredStats = getQueryInputStats(filteredResult.getQueryId());
-        QueryInputStats unfilteredStats = getQueryInputStats(unfilteredResult.getQueryId());
-        assertGreaterThan(unfilteredStats.inputPositions, filteredStats.inputPositions);
-    }
-
-    @Test(timeOut = 30_000)
+    @Test
+    @Timeout(30)
     public void testIncompleteDynamicFilterTimeout()
             throws Exception
     {
+        String schemaName = getSession().getSchema().orElseThrow();
         QueryRunner runner = getQueryRunner();
         TransactionManager transactionManager = runner.getTransactionManager();
         TransactionId transactionId = transactionManager.beginTransaction(true);
@@ -128,17 +117,22 @@ public class TestDeltaLakeDynamicFiltering
                 .setCatalogSessionProperty(DELTA_CATALOG, "dynamic_filtering_wait_timeout", "1s")
                 .build()
                 .beginTransactionId(transactionId, transactionManager, new AllowAllAccessControl());
-        QualifiedObjectName tableName = new QualifiedObjectName(DELTA_CATALOG, "default", "orders");
-        Optional<TableHandle> tableHandle = runner.getMetadata().getTableHandle(session, tableName);
-        assertTrue(tableHandle.isPresent());
-        SplitSource splitSource = runner.getSplitManager()
-                .getSplits(session, Span.getInvalid(), tableHandle.get(), new IncompleteDynamicFilter(), alwaysTrue());
-        List<Split> splits = new ArrayList<>();
-        while (!splitSource.isFinished()) {
-            splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
+        QualifiedObjectName tableName = new QualifiedObjectName(DELTA_CATALOG, schemaName, "orders");
+        TableHandle tableHandle = runner.getPlannerContext().getMetadata().getTableHandle(session, tableName).orElseThrow();
+        CompletableFuture<Void> dynamicFilterBlocked = new CompletableFuture<>();
+        try {
+            SplitSource splitSource = runner.getSplitManager()
+                    .getSplits(session, Span.getInvalid(), tableHandle, new BlockedDynamicFilter(dynamicFilterBlocked), alwaysTrue());
+            List<Split> splits = new ArrayList<>();
+            while (!splitSource.isFinished()) {
+                splits.addAll(splitSource.getNextBatch(1000).get().getSplits());
+            }
+            splitSource.close();
+            assertThat(splits).isNotEmpty();
         }
-        splitSource.close();
-        assertFalse(splits.isEmpty());
+        finally {
+            dynamicFilterBlocked.complete(null);
+        }
     }
 
     private Session sessionWithDynamicFiltering(boolean enabled, JoinDistributionType joinDistributionType)
@@ -149,21 +143,21 @@ public class TestDeltaLakeDynamicFiltering
                 .build();
     }
 
-    private QueryInputStats getQueryInputStats(QueryId queryId)
+    private QueryStats getQueryStats(QueryId queryId)
     {
-        QueryStats stats = getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(queryId).getQueryStats();
-        long numberOfSplits = stats.getOperatorSummaries()
-                .stream()
-                .filter(summary -> summary.getOperatorType().equals("ScanFilterAndProjectOperator"))
-                .mapToLong(OperatorStats::getTotalDrivers)
-                .sum();
-        long inputPositions = stats.getPhysicalInputPositions();
-        return new QueryInputStats(numberOfSplits, inputPositions);
+        return getDistributedQueryRunner().getCoordinator().getQueryManager().getFullQueryInfo(queryId).getQueryStats();
     }
 
-    private static class IncompleteDynamicFilter
+    private static class BlockedDynamicFilter
             implements DynamicFilter
     {
+        private final CompletableFuture<?> isBlocked;
+
+        public BlockedDynamicFilter(CompletableFuture<?> isBlocked)
+        {
+            this.isBlocked = requireNonNull(isBlocked, "isBlocked is null");
+        }
+
         @Override
         public Set<ColumnHandle> getColumnsCovered()
         {
@@ -173,14 +167,7 @@ public class TestDeltaLakeDynamicFiltering
         @Override
         public CompletableFuture<?> isBlocked()
         {
-            return unmodifiableFuture(CompletableFuture.runAsync(() -> {
-                try {
-                    TimeUnit.HOURS.sleep(1);
-                }
-                catch (InterruptedException e) {
-                    throw new IllegalStateException(e);
-                }
-            }));
+            return isBlocked;
         }
 
         @Override
@@ -199,18 +186,6 @@ public class TestDeltaLakeDynamicFiltering
         public TupleDomain<ColumnHandle> getCurrentPredicate()
         {
             return TupleDomain.all();
-        }
-    }
-
-    private static class QueryInputStats
-    {
-        final long numberOfSplits;
-        final long inputPositions;
-
-        QueryInputStats(long numberOfSplits, long inputPositions)
-        {
-            this.numberOfSplits = numberOfSplits;
-            this.inputPositions = inputPositions;
         }
     }
 }

@@ -37,15 +37,19 @@ import io.trino.spi.connector.FixedPageSource;
 import io.trino.spi.connector.RecordPageSource;
 import io.trino.sql.gen.ExpressionCompiler;
 import io.trino.sql.gen.PageFunctionCompiler;
+import io.trino.sql.gen.columnar.ColumnarFilterCompiler;
+import io.trino.sql.gen.columnar.PageFilterEvaluator;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.sql.relational.RowExpression;
-import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.MaterializedResult;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
 import io.trino.testing.TestingSplit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Optional;
@@ -77,26 +81,28 @@ import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestScanFilterAndProjectOperator
 {
     private final Session session = TEST_SESSION;
 
     private ExecutorService executor = newCachedThreadPool(daemonThreadsNamed(getClass().getSimpleName() + "-%s"));
     private ScheduledExecutorService scheduledExecutor = newScheduledThreadPool(2, daemonThreadsNamed(getClass().getSimpleName() + "-scheduledExecutor-%s"));
-    private LocalQueryRunner runner;
+    private QueryRunner runner;
     private ExpressionCompiler expressionCompiler;
 
     @BeforeAll
     public final void initTestFunctions()
     {
-        runner = LocalQueryRunner.builder(session).build();
-        expressionCompiler = new ExpressionCompiler(runner.getFunctionManager(), new PageFunctionCompiler(runner.getFunctionManager(), 0));
+        runner = new StandaloneQueryRunner(session);
+        FunctionManager functionManager = runner.getPlannerContext().getFunctionManager();
+        expressionCompiler = new ExpressionCompiler(
+                functionManager,
+                new PageFunctionCompiler(functionManager, 0),
+                new ColumnarFilterCompiler(functionManager, 0));
     }
 
     @AfterAll
@@ -125,9 +131,9 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
                 cursorProcessor,
-                pageProcessor,
+                (_) -> pageProcessor.get(),
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -167,9 +173,9 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(input),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new FixedPageSource(input),
                 cursorProcessor,
-                pageProcessor,
+                (_) -> pageProcessor.get(),
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -182,7 +188,7 @@ public class TestScanFilterAndProjectOperator
         operator.noMoreSplits();
 
         List<Page> actual = toPages(operator);
-        assertEquals(actual.size(), 1);
+        assertThat(actual.size()).isEqualTo(1);
 
         List<Page> expected = rowPagesBuilder(BIGINT)
                 .row(10L)
@@ -206,15 +212,15 @@ public class TestScanFilterAndProjectOperator
 
         List<RowExpression> projections = ImmutableList.of(field(0, VARCHAR));
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(Optional.empty(), projections, "key");
-        PageProcessor pageProcessor = new PageProcessor(Optional.of(new SelectAllFilter()), ImmutableList.of(new LazyPagePageProjection()));
+        PageProcessor pageProcessor = new PageProcessor(Optional.of(new PageFilterEvaluator(new SelectAllFilter())), ImmutableList.of(new LazyPagePageProjection()));
 
         ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory factory = new ScanFilterAndProjectOperator.ScanFilterAndProjectOperatorFactory(
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new SinglePagePageSource(input),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new SinglePagePageSource(input),
                 cursorProcessor,
-                () -> pageProcessor,
+                (_) -> pageProcessor,
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -246,9 +252,9 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(VARCHAR), input)),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(VARCHAR), input)),
                 cursorProcessor,
-                pageProcessor,
+                (_) -> pageProcessor.get(),
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -285,10 +291,14 @@ public class TestScanFilterAndProjectOperator
         runner.addFunctions(new InternalFunctionBundle(functions.build()));
 
         // match each column with a projection
-        ExpressionCompiler expressionCompiler = new ExpressionCompiler(runner.getFunctionManager(), new PageFunctionCompiler(runner.getFunctionManager(), 0));
+        FunctionManager functionManager = runner.getPlannerContext().getFunctionManager();
+        ExpressionCompiler expressionCompiler = new ExpressionCompiler(
+                functionManager,
+                new PageFunctionCompiler(functionManager, 0),
+                new ColumnarFilterCompiler(functionManager, 0));
         ImmutableList.Builder<RowExpression> projections = ImmutableList.builder();
         for (int i = 0; i < totalColumns; i++) {
-            projections.add(call(runner.getMetadata().resolveBuiltinFunction("generic_long_page_col" + i, fromTypes(BIGINT)), field(0, BIGINT)));
+            projections.add(call(runner.getPlannerContext().getMetadata().resolveBuiltinFunction("generic_long_page_col" + i, fromTypes(BIGINT)), field(0, BIGINT)));
         }
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(Optional.empty(), projections.build(), "key");
         Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(Optional.empty(), projections.build(), MAX_BATCH_SIZE);
@@ -297,9 +307,9 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new FixedPageSource(ImmutableList.of(input)),
                 cursorProcessor,
-                pageProcessor,
+                (_) -> pageProcessor.get(),
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -319,15 +329,15 @@ public class TestScanFilterAndProjectOperator
             driverContext.getYieldSignal().setWithDelay(SECONDS.toNanos(1000), driverContext.getYieldExecutor());
             Page page = operator.getOutput();
             if (i == totalColumns) {
-                assertNotNull(page);
-                assertEquals(page.getPositionCount(), totalRows);
-                assertEquals(page.getChannelCount(), totalColumns);
+                assertThat(page).isNotNull();
+                assertThat(page.getPositionCount()).isEqualTo(totalRows);
+                assertThat(page.getChannelCount()).isEqualTo(totalColumns);
                 for (int j = 0; j < totalColumns; j++) {
-                    assertEquals(toValues(BIGINT, page.getBlock(j)), toValues(BIGINT, input.getBlock(0)));
+                    assertThat(toValues(BIGINT, page.getBlock(j))).isEqualTo(toValues(BIGINT, input.getBlock(0)));
                 }
             }
             else {
-                assertNull(page);
+                assertThat(page).isNull();
             }
             driverContext.getYieldSignal().reset();
         }
@@ -349,11 +359,14 @@ public class TestScanFilterAndProjectOperator
             driverContext.getYieldSignal().forceYieldForTesting();
             return value;
         })));
-        FunctionManager functionManager = runner.getFunctionManager();
-        ExpressionCompiler expressionCompiler = new ExpressionCompiler(functionManager, new PageFunctionCompiler(functionManager, 0));
+        FunctionManager functionManager = runner.getPlannerContext().getFunctionManager();
+        ExpressionCompiler expressionCompiler = new ExpressionCompiler(
+                functionManager,
+                new PageFunctionCompiler(functionManager, 0),
+                new ColumnarFilterCompiler(functionManager, 0));
 
         List<RowExpression> projections = ImmutableList.of(call(
-                runner.getMetadata().resolveBuiltinFunction("generic_long_record_cursor", fromTypes(BIGINT)),
+                runner.getPlannerContext().getMetadata().resolveBuiltinFunction("generic_long_record_cursor", fromTypes(BIGINT)),
                 field(0, BIGINT)));
         Supplier<CursorProcessor> cursorProcessor = expressionCompiler.compileCursorProcessor(Optional.empty(), projections, "key");
         Supplier<PageProcessor> pageProcessor = expressionCompiler.compilePageProcessor(Optional.empty(), projections);
@@ -362,9 +375,9 @@ public class TestScanFilterAndProjectOperator
                 0,
                 new PlanNodeId("test"),
                 new PlanNodeId("0"),
-                (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(BIGINT), input)),
+                (catalog) -> (session, split, table, columns, dynamicFilter) -> new RecordPageSource(new PageRecordSet(ImmutableList.of(BIGINT), input)),
                 cursorProcessor,
-                pageProcessor,
+                (_) -> pageProcessor.get(),
                 TEST_TABLE_HANDLE,
                 ImmutableList.of(),
                 DynamicFilter.EMPTY,
@@ -379,7 +392,7 @@ public class TestScanFilterAndProjectOperator
         // start driver; get null value due to yield for the first 15 times
         for (int i = 0; i < length; i++) {
             driverContext.getYieldSignal().setWithDelay(SECONDS.toNanos(1000), driverContext.getYieldExecutor());
-            assertNull(operator.getOutput());
+            assertThat(operator.getOutput()).isNull();
             driverContext.getYieldSignal().reset();
         }
 
@@ -387,8 +400,8 @@ public class TestScanFilterAndProjectOperator
         driverContext.getYieldSignal().setWithDelay(SECONDS.toNanos(1000), driverContext.getYieldExecutor());
         Page output = operator.getOutput();
         driverContext.getYieldSignal().reset();
-        assertNotNull(output);
-        assertEquals(toValues(BIGINT, output.getBlock(0)), toValues(BIGINT, input.getBlock(0)));
+        assertThat(output).isNotNull();
+        assertThat(toValues(BIGINT, output.getBlock(0))).isEqualTo(toValues(BIGINT, input.getBlock(0)));
     }
 
     private static List<Page> toPages(Operator operator)
@@ -401,7 +414,9 @@ public class TestScanFilterAndProjectOperator
             Page outputPage = operator.getOutput();
             if (outputPage == null) {
                 // break infinite loop due to null pages
-                assertTrue(nullPages < 1_000_000, "Too many null pages; infinite loop?");
+                assertThat(nullPages < 1_000_000)
+                        .describedAs("Too many null pages; infinite loop?")
+                        .isTrue();
                 nullPages++;
             }
             else {

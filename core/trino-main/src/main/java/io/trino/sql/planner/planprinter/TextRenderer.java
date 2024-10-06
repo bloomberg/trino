@@ -20,6 +20,7 @@ import io.trino.cost.PlanNodeStatsAndCostSummary;
 import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.metrics.Metric;
 import io.trino.spi.metrics.Metrics;
+import io.trino.sql.planner.plan.PlanNodeId;
 
 import java.util.Iterator;
 import java.util.List;
@@ -33,6 +34,7 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.Iterables.getOnlyElement;
+import static io.trino.server.protocol.spooling.SpooledBlock.SPOOLING_METADATA_COLUMN_NAME;
 import static java.lang.Double.NEGATIVE_INFINITY;
 import static java.lang.Double.POSITIVE_INFINITY;
 import static java.lang.Double.isFinite;
@@ -60,10 +62,10 @@ public class TextRenderer
         StringBuilder output = new StringBuilder();
         NodeRepresentation root = plan.getRoot();
         boolean hasChildren = hasChildren(root, plan);
-        return writeTextOutput(output, plan, Indent.newInstance(level, hasChildren), root);
+        return writeTextOutput(output, plan, Indent.newInstance(level, hasChildren), root, false);
     }
 
-    private String writeTextOutput(StringBuilder output, PlanRepresentation plan, Indent indent, NodeRepresentation node)
+    private String writeTextOutput(StringBuilder output, PlanRepresentation plan, Indent indent, NodeRepresentation node, boolean isAdaptivePlanInitialNode)
     {
         output.append(indent.nodeIndent())
                 .append(node.getName())
@@ -74,7 +76,8 @@ public class TextRenderer
                 .append("\n");
 
         String columns = node.getOutputs().stream()
-                .map(s -> s.getSymbol() + ":" + s.getType())
+                .filter(s -> !s.name().equals(SPOOLING_METADATA_COLUMN_NAME))
+                .map(s -> s.name() + ":" + s.type())
                 .collect(joining(", "));
 
         output.append(indentMultilineString("Layout: [" + columns + "]\n", indent.detailIndent()));
@@ -84,7 +87,7 @@ public class TextRenderer
             output.append(indentMultilineString(reorderJoinStatsAndCost, indent.detailIndent()));
         }
 
-        List<PlanNodeStatsAndCostSummary> estimates = node.getEstimates(plan.getTypes());
+        List<PlanNodeStatsAndCostSummary> estimates = node.getEstimates();
         if (!estimates.isEmpty()) {
             output.append(indentMultilineString(printEstimates(estimates), indent.detailIndent()));
         }
@@ -102,18 +105,30 @@ public class TextRenderer
             }
         }
 
-        List<NodeRepresentation> children = node.getChildren().stream()
-                .map(plan::getNode)
+        // Print the initial children first, then the children
+        printChildren(output, plan, node.getInitialChildren(), indent, true);
+        printChildren(output, plan, node.getChildren(), indent, isAdaptivePlanInitialNode);
+
+        return output.toString();
+    }
+
+    private void printChildren(
+            StringBuilder output,
+            PlanRepresentation plan,
+            List<PlanNodeId> childrenIds,
+            Indent indent,
+            boolean isAdaptivePlanInitialNode)
+    {
+        List<NodeRepresentation> children = childrenIds.stream()
+                .map(isAdaptivePlanInitialNode ? plan::getInitialNode : plan::getNode)
                 .filter(Optional::isPresent)
                 .map(Optional::get)
                 .collect(toList());
 
         for (Iterator<NodeRepresentation> iterator = children.iterator(); iterator.hasNext(); ) {
             NodeRepresentation child = iterator.next();
-            writeTextOutput(output, plan, indent.forChild(!iterator.hasNext(), hasChildren(child, plan)), child);
+            writeTextOutput(output, plan, indent.forChild(!iterator.hasNext(), hasChildren(child, plan)), child, isAdaptivePlanInitialNode);
         }
-
-        return output.toString();
     }
 
     private String printStats(PlanRepresentation plan, NodeRepresentation node)

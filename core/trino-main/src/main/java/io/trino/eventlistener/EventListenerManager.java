@@ -16,13 +16,18 @@ package io.trino.eventlistener;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.log.Logger;
+import io.airlift.stats.TimeStat;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.eventlistener.EventListenerFactory;
 import io.trino.spi.eventlistener.QueryCompletedEvent;
 import io.trino.spi.eventlistener.QueryCreatedEvent;
 import io.trino.spi.eventlistener.SplitCompletedEvent;
+import jakarta.annotation.PreDestroy;
+import org.weakref.jmx.Managed;
+import org.weakref.jmx.Nested;
 
 import java.io.File;
 import java.io.IOException;
@@ -34,6 +39,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -43,6 +49,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.configuration.ConfigurationLoader.loadPropertiesFrom;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class EventListenerManager
 {
@@ -54,11 +61,18 @@ public class EventListenerManager
     private final List<EventListener> providedEventListeners = Collections.synchronizedList(new ArrayList<>());
     private final AtomicReference<List<EventListener>> configuredEventListeners = new AtomicReference<>(ImmutableList.of());
     private final AtomicBoolean loading = new AtomicBoolean(false);
+    private final AtomicInteger concurrentQueryCompletedEvents = new AtomicInteger();
+
+    private final TimeStat queryCreatedTime = new TimeStat(MILLISECONDS);
+    private final TimeStat queryCompletedTime = new TimeStat(MILLISECONDS);
+    private final TimeStat splitCompletedTime = new TimeStat(MILLISECONDS);
+    private final SecretsResolver secretsResolver;
 
     @Inject
-    public EventListenerManager(EventListenerConfig config)
+    public EventListenerManager(EventListenerConfig config, SecretsResolver secretsResolver)
     {
         this.configFiles = ImmutableList.copyOf(config.getEventListenerFiles());
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
     }
 
     public void addEventListenerFactory(EventListenerFactory eventListenerFactory)
@@ -114,8 +128,8 @@ public class EventListenerManager
         checkArgument(factory != null, "Event listener factory '%s' is not registered. Available factories: %s", name, eventListenerFactories.keySet());
 
         EventListener eventListener;
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
-            eventListener = factory.create(properties);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(factory.getClass().getClassLoader())) {
+            eventListener = factory.create(secretsResolver.getResolvedConfiguration(properties));
         }
 
         log.info("-- Loaded event listener %s --", configFile);
@@ -134,6 +148,15 @@ public class EventListenerManager
 
     public void queryCompleted(Function<Boolean, QueryCompletedEvent> queryCompletedEventProvider)
     {
+        try (TimeStat.BlockTimer _ = queryCompletedTime.time()) {
+            concurrentQueryCompletedEvents.incrementAndGet();
+            doQueryCompleted(queryCompletedEventProvider);
+            concurrentQueryCompletedEvents.decrementAndGet();
+        }
+    }
+
+    private void doQueryCompleted(Function<Boolean, QueryCompletedEvent> queryCompletedEventProvider)
+    {
         for (EventListener listener : configuredEventListeners.get()) {
             QueryCompletedEvent event = queryCompletedEventProvider.apply(listener.requiresAnonymizedPlan());
             try {
@@ -147,6 +170,13 @@ public class EventListenerManager
 
     public void queryCreated(QueryCreatedEvent queryCreatedEvent)
     {
+        try (TimeStat.BlockTimer _ = queryCreatedTime.time()) {
+            doQueryCreated(queryCreatedEvent);
+        }
+    }
+
+    private void doQueryCreated(QueryCreatedEvent queryCreatedEvent)
+    {
         for (EventListener listener : configuredEventListeners.get()) {
             try {
                 listener.queryCreated(queryCreatedEvent);
@@ -159,12 +189,59 @@ public class EventListenerManager
 
     public void splitCompleted(SplitCompletedEvent splitCompletedEvent)
     {
+        try (TimeStat.BlockTimer _ = splitCompletedTime.time()) {
+            doSplitCompleted(splitCompletedEvent);
+        }
+    }
+
+    private void doSplitCompleted(SplitCompletedEvent splitCompletedEvent)
+    {
         for (EventListener listener : configuredEventListeners.get()) {
             try {
                 listener.splitCompleted(splitCompletedEvent);
             }
             catch (Throwable e) {
                 log.warn(e, "Failed to publish SplitCompletedEvent for query %s", splitCompletedEvent.getQueryId());
+            }
+        }
+    }
+
+    @Managed
+    @Nested
+    public TimeStat getQueryCreatedTime()
+    {
+        return queryCreatedTime;
+    }
+
+    @Managed
+    @Nested
+    public TimeStat getQueryCompletedTime()
+    {
+        return queryCompletedTime;
+    }
+
+    @Managed
+    @Nested
+    public TimeStat getSplitCompletedTime()
+    {
+        return splitCompletedTime;
+    }
+
+    @Managed
+    public int getConcurrentQueryCompletedEvents()
+    {
+        return concurrentQueryCompletedEvents.get();
+    }
+
+    @PreDestroy
+    public void shutdown()
+    {
+        for (EventListener listener : configuredEventListeners.getAndSet(List.of())) {
+            try {
+                listener.shutdown();
+            }
+            catch (Throwable e) {
+                log.warn(e, "Failed to shutdown event listener: " + listener.getClass().getCanonicalName());
             }
         }
     }

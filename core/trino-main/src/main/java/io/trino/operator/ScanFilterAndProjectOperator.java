@@ -26,7 +26,6 @@ import io.trino.metadata.Split;
 import io.trino.metadata.TableHandle;
 import io.trino.operator.WorkProcessor.ProcessState;
 import io.trino.operator.WorkProcessor.TransformationState;
-import io.trino.operator.WorkProcessorSourceOperatorAdapter.AdapterWorkProcessorSourceOperatorFactory;
 import io.trino.operator.project.CursorProcessor;
 import io.trino.operator.project.CursorProcessorOutput;
 import io.trino.operator.project.PageProcessor;
@@ -44,6 +43,7 @@ import io.trino.spi.metrics.Metrics;
 import io.trino.spi.type.Type;
 import io.trino.split.EmptySplit;
 import io.trino.split.PageSourceProvider;
+import io.trino.split.PageSourceProviderFactory;
 import io.trino.sql.planner.plan.PlanNodeId;
 import jakarta.annotation.Nullable;
 
@@ -51,6 +51,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -87,7 +88,7 @@ public class ScanFilterAndProjectOperator
             Session session,
             MemoryTrackingContext memoryTrackingContext,
             DriverYieldSignal yieldSignal,
-            WorkProcessor<Split> splits,
+            WorkProcessor<Split> split,
             PageSourceProvider pageSourceProvider,
             CursorProcessor cursorProcessor,
             PageProcessor pageProcessor,
@@ -96,10 +97,9 @@ public class ScanFilterAndProjectOperator
             DynamicFilter dynamicFilter,
             Iterable<Type> types,
             DataSize minOutputPageSize,
-            int minOutputPageRowCount,
-            boolean avoidPageMaterialization)
+            int minOutputPageRowCount)
     {
-        pages = splits.flatTransform(
+        pages = split.flatTransform(
                 new SplitToPages(
                         session,
                         yieldSignal,
@@ -112,8 +112,7 @@ public class ScanFilterAndProjectOperator
                         types,
                         memoryTrackingContext.aggregateUserMemoryContext(),
                         minOutputPageSize,
-                        minOutputPageRowCount,
-                        avoidPageMaterialization));
+                        minOutputPageRowCount));
     }
 
     @Override
@@ -208,7 +207,6 @@ public class ScanFilterAndProjectOperator
         final LocalMemoryContext outputMemoryContext;
         final DataSize minOutputPageSize;
         final int minOutputPageRowCount;
-        final boolean avoidPageMaterialization;
 
         SplitToPages(
                 Session session,
@@ -222,8 +220,7 @@ public class ScanFilterAndProjectOperator
                 Iterable<Type> types,
                 AggregatedMemoryContext aggregatedMemoryContext,
                 DataSize minOutputPageSize,
-                int minOutputPageRowCount,
-                boolean avoidPageMaterialization)
+                int minOutputPageRowCount)
         {
             this.session = requireNonNull(session, "session is null");
             this.yieldSignal = requireNonNull(yieldSignal, "yieldSignal is null");
@@ -240,7 +237,6 @@ public class ScanFilterAndProjectOperator
             this.outputMemoryContext = localAggregatedMemoryContext.newLocalMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
             this.minOutputPageSize = requireNonNull(minOutputPageSize, "minOutputPageSize is null");
             this.minOutputPageRowCount = minOutputPageRowCount;
-            this.avoidPageMaterialization = avoidPageMaterialization;
         }
 
         @Override
@@ -292,8 +288,7 @@ public class ScanFilterAndProjectOperator
                             yieldSignal,
                             outputMemoryContext,
                             pageProcessorMetrics,
-                            page,
-                            avoidPageMaterialization))
+                            page))
                     .transformProcessor(processor -> mergePages(types, minOutputPageSize.toBytes(), minOutputPageRowCount, processor, localAggregatedMemoryContext))
                     .blocking(() -> memoryContext.setBytes(localAggregatedMemoryContext.getBytes()));
         }
@@ -412,12 +407,12 @@ public class ScanFilterAndProjectOperator
     }
 
     public static class ScanFilterAndProjectOperatorFactory
-            implements SourceOperatorFactory, AdapterWorkProcessorSourceOperatorFactory
+            implements SourceOperatorFactory, WorkProcessorSourceOperatorFactory
     {
         private final int operatorId;
         private final PlanNodeId planNodeId;
         private final Supplier<CursorProcessor> cursorProcessor;
-        private final Supplier<PageProcessor> pageProcessor;
+        private final Function<DynamicFilter, PageProcessor> pageProcessor;
         private final PlanNodeId sourceId;
         private final PageSourceProvider pageSourceProvider;
         private final TableHandle table;
@@ -432,9 +427,9 @@ public class ScanFilterAndProjectOperator
                 int operatorId,
                 PlanNodeId planNodeId,
                 PlanNodeId sourceId,
-                PageSourceProvider pageSourceProvider,
+                PageSourceProviderFactory pageSourceProvider,
                 Supplier<CursorProcessor> cursorProcessor,
-                Supplier<PageProcessor> pageProcessor,
+                Function<DynamicFilter, PageProcessor> pageProcessor,
                 TableHandle table,
                 Iterable<ColumnHandle> columns,
                 DynamicFilter dynamicFilter,
@@ -447,13 +442,13 @@ public class ScanFilterAndProjectOperator
             this.cursorProcessor = requireNonNull(cursorProcessor, "cursorProcessor is null");
             this.pageProcessor = requireNonNull(pageProcessor, "pageProcessor is null");
             this.sourceId = requireNonNull(sourceId, "sourceId is null");
-            this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
             this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
             this.dynamicFilter = dynamicFilter;
             this.types = requireNonNull(types, "types is null");
             this.minOutputPageSize = requireNonNull(minOutputPageSize, "minOutputPageSize is null");
             this.minOutputPageRowCount = minOutputPageRowCount;
+            this.pageSourceProvider = pageSourceProvider.createPageSourceProvider(table.catalogHandle());
         }
 
         @Override
@@ -493,43 +488,22 @@ public class ScanFilterAndProjectOperator
                 OperatorContext operatorContext,
                 MemoryTrackingContext memoryTrackingContext,
                 DriverYieldSignal yieldSignal,
-                WorkProcessor<Split> splits)
-        {
-            return create(operatorContext, memoryTrackingContext, yieldSignal, splits, true);
-        }
-
-        @Override
-        public WorkProcessorSourceOperator createAdapterOperator(
-                OperatorContext operatorContext,
-                MemoryTrackingContext memoryTrackingContext,
-                DriverYieldSignal yieldSignal,
-                WorkProcessor<Split> splits)
-        {
-            return create(operatorContext, memoryTrackingContext, yieldSignal, splits, false);
-        }
-
-        private ScanFilterAndProjectOperator create(
-                OperatorContext operatorContext,
-                MemoryTrackingContext memoryTrackingContext,
-                DriverYieldSignal yieldSignal,
-                WorkProcessor<Split> splits,
-                boolean avoidPageMaterialization)
+                WorkProcessor<Split> split)
         {
             return new ScanFilterAndProjectOperator(
                     operatorContext.getSession(),
                     memoryTrackingContext,
                     yieldSignal,
-                    splits,
+                    split,
                     pageSourceProvider,
                     cursorProcessor.get(),
-                    pageProcessor.get(),
+                    pageProcessor.apply(dynamicFilter),
                     table,
                     columns,
                     dynamicFilter,
                     types,
                     minOutputPageSize,
-                    minOutputPageRowCount,
-                    avoidPageMaterialization);
+                    minOutputPageRowCount);
         }
 
         @Override

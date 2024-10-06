@@ -16,17 +16,20 @@ package io.trino.plugin.hive.procedure;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Lists;
 import com.google.inject.Inject;
 import com.google.inject.Provider;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.hive.PartitionStatistics;
+import io.trino.metastore.Column;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.Table;
+import io.trino.plugin.base.util.UncheckedCloseable;
+import io.trino.plugin.hive.TransactionalMetadata;
 import io.trino.plugin.hive.TransactionalMetadataFactory;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Partition;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.spi.TrinoException;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorAccessControl;
@@ -43,10 +46,11 @@ import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Sets.difference;
 import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
-import static io.trino.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
+import static io.trino.plugin.hive.HiveMetadata.TRINO_QUERY_ID_NAME;
 import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -65,6 +69,7 @@ public class SyncPartitionMetadataProcedure
         ADD, DROP, FULL
     }
 
+    private static final int PARTITION_NAMES_BATCH_SIZE = 1000;
     private static final MethodHandle SYNC_PARTITION_METADATA;
 
     static {
@@ -104,7 +109,7 @@ public class SyncPartitionMetadataProcedure
 
     public void syncPartitionMetadata(ConnectorSession session, ConnectorAccessControl accessControl, String schemaName, String tableName, String mode, boolean caseSensitive)
     {
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(getClass().getClassLoader())) {
             doSyncPartitionMetadata(session, accessControl, schemaName, tableName, mode, caseSensitive);
         }
     }
@@ -116,36 +121,82 @@ public class SyncPartitionMetadataProcedure
         checkProcedureArgument(mode != null, "mode cannot be null");
 
         SyncMode syncMode = toSyncMode(mode);
-        SemiTransactionalHiveMetastore metastore = hiveMetadataFactory.create(session.getIdentity(), true).getMetastore();
-        SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
+        TransactionalMetadata hiveMetadata = hiveMetadataFactory.create(session.getIdentity(), true);
+        hiveMetadata.beginQuery(session);
+        try (UncheckedCloseable ignore = () -> hiveMetadata.cleanupQuery(session)) {
+            SemiTransactionalHiveMetastore metastore = hiveMetadata.getMetastore();
+            SchemaTableName schemaTableName = new SchemaTableName(schemaName, tableName);
 
-        Table table = metastore.getTable(schemaName, tableName)
-                .orElseThrow(() -> new TableNotFoundException(schemaTableName));
-        if (table.getPartitionColumns().isEmpty()) {
-            throw new TrinoException(INVALID_PROCEDURE_ARGUMENT, "Table is not partitioned: " + schemaTableName);
+            Table table = metastore.getTable(schemaName, tableName)
+                    .orElseThrow(() -> new TableNotFoundException(schemaTableName));
+            if (table.getPartitionColumns().isEmpty()) {
+                throw new TrinoException(INVALID_PROCEDURE_ARGUMENT, "Table is not partitioned: " + schemaTableName);
+            }
+
+            if (syncMode == SyncMode.ADD || syncMode == SyncMode.FULL) {
+                accessControl.checkCanInsertIntoTable(null, new SchemaTableName(schemaName, tableName));
+            }
+            if (syncMode == SyncMode.DROP || syncMode == SyncMode.FULL) {
+                accessControl.checkCanDeleteFromTable(null, new SchemaTableName(schemaName, tableName));
+            }
+
+            Set<String> partitionNamesInMetastore = metastore.getPartitionNames(schemaName, tableName)
+                    .map(ImmutableSet::copyOf)
+                    .orElseThrow(() -> new TableNotFoundException(schemaTableName));
+            String tableStorageLocation = table.getStorage().getLocation();
+            Set<String> canonicalPartitionNamesInMetastore = partitionNamesInMetastore;
+            if (!caseSensitive) {
+                canonicalPartitionNamesInMetastore = Lists.partition(ImmutableList.copyOf(partitionNamesInMetastore), PARTITION_NAMES_BATCH_SIZE).stream()
+                        .flatMap(partitionNames -> metastore.getPartitionsByNames(schemaName, tableName, partitionNames).values().stream())
+                        .flatMap(Optional::stream) // disregard partitions which disappeared in the meantime since listing the partition names
+                        // Disregard the partitions which do not have a canonical Hive location (e.g. `ALTER TABLE ... ADD PARTITION (...) LOCATION '...'`)
+                        .flatMap(partition -> getCanonicalPartitionName(partition, table.getPartitionColumns(), tableStorageLocation).stream())
+                        .collect(toImmutableSet());
+            }
+            Set<String> partitionsInFileSystem = listPartitions(fileSystemFactory.create(session), Location.of(tableStorageLocation), table.getPartitionColumns(), caseSensitive);
+
+            // partitions in file system but not in metastore
+            Set<String> partitionsToAdd = difference(partitionsInFileSystem, canonicalPartitionNamesInMetastore);
+
+            // partitions in metastore but not in file system
+            Set<String> partitionsToDrop = difference(canonicalPartitionNamesInMetastore, partitionsInFileSystem);
+
+            syncPartitions(partitionsToAdd, partitionsToDrop, syncMode, metastore, session, table);
+        }
+    }
+
+    private static Optional<String> getCanonicalPartitionName(Partition partition, List<Column> partitionColumns, String tableLocation)
+    {
+        String partitionStorageLocation = partition.getStorage().getLocation();
+        if (!partitionStorageLocation.startsWith(tableLocation)) {
+            return Optional.empty();
         }
 
-        if (syncMode == SyncMode.ADD || syncMode == SyncMode.FULL) {
-            accessControl.checkCanInsertIntoTable(null, new SchemaTableName(schemaName, tableName));
+        String partitionName = partitionStorageLocation.substring(tableLocation.length());
+
+        if (partitionName.startsWith("/")) {
+            // Remove eventual forward slash from the name of the partition
+            partitionName = partitionName.replaceFirst("^/+", "");
         }
-        if (syncMode == SyncMode.DROP || syncMode == SyncMode.FULL) {
-            accessControl.checkCanDeleteFromTable(null, new SchemaTableName(schemaName, tableName));
+        if (partitionName.endsWith("/")) {
+            // Remove eventual trailing slash from the name of the partition
+            partitionName = partitionName.replaceFirst("/+$", "");
         }
 
-        Location tableLocation = Location.of(table.getStorage().getLocation());
+        // Ensure that the partition location is corresponding to a canonical Hive partition location
+        String[] partitionDirectories = partitionName.split("/");
+        if (partitionDirectories.length != partitionColumns.size()) {
+            return Optional.empty();
+        }
+        for (int i = 0; i < partitionDirectories.length; i++) {
+            String partitionDirectory = partitionDirectories[i];
+            Column column = partitionColumns.get(i);
+            if (!isValidPartitionPath(partitionDirectory, column, false)) {
+                return Optional.empty();
+            }
+        }
 
-        Set<String> partitionsInMetastore = metastore.getPartitionNames(schemaName, tableName)
-                .map(ImmutableSet::copyOf)
-                .orElseThrow(() -> new TableNotFoundException(schemaTableName));
-        Set<String> partitionsInFileSystem = listPartitions(fileSystemFactory.create(session), tableLocation, table.getPartitionColumns(), caseSensitive);
-
-        // partitions in file system but not in metastore
-        Set<String> partitionsToAdd = difference(partitionsInFileSystem, partitionsInMetastore);
-
-        // partitions in metastore but not in file system
-        Set<String> partitionsToDrop = difference(partitionsInMetastore, partitionsInFileSystem);
-
-        syncPartitions(partitionsToAdd, partitionsToDrop, syncMode, metastore, session, table);
+        return Optional.of(partitionName);
     }
 
     private static Set<String> listPartitions(TrinoFileSystem fileSystem, Location directory, List<Column> partitionColumns, boolean caseSensitive)
@@ -185,7 +236,7 @@ public class SyncPartitionMetadataProcedure
     private static String listedDirectoryName(Location directory, Location location)
     {
         String prefix = directory.path();
-        if (!prefix.endsWith("/")) {
+        if (!prefix.isEmpty() && !prefix.endsWith("/")) {
             prefix += "/";
         }
         String path = location.path();
@@ -210,11 +261,11 @@ public class SyncPartitionMetadataProcedure
             ConnectorSession session,
             Table table)
     {
-        if (syncMode == SyncMode.ADD || syncMode == SyncMode.FULL) {
-            addPartitions(metastore, session, table, partitionsToAdd);
-        }
         if (syncMode == SyncMode.DROP || syncMode == SyncMode.FULL) {
             dropPartitions(metastore, session, table, partitionsToDrop);
+        }
+        if (syncMode == SyncMode.ADD || syncMode == SyncMode.FULL) {
+            addPartitions(metastore, session, table, partitionsToAdd);
         }
         metastore.commit();
     }
@@ -261,7 +312,7 @@ public class SyncPartitionMetadataProcedure
                 .setTableName(table.getTableName())
                 .setColumns(table.getDataColumns())
                 .setValues(extractPartitionValues(partitionName))
-                .setParameters(ImmutableMap.of(PRESTO_QUERY_ID_NAME, session.getQueryId()))
+                .setParameters(ImmutableMap.of(TRINO_QUERY_ID_NAME, session.getQueryId()))
                 .withStorage(storage -> storage
                         .setStorageFormat(table.getStorage().getStorageFormat())
                         .setLocation(Location.of(table.getStorage().getLocation()).appendPath(partitionName).toString())

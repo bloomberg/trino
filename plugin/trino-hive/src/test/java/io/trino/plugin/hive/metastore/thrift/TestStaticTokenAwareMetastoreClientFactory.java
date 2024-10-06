@@ -13,8 +13,8 @@
  */
 package io.trino.plugin.hive.metastore.thrift;
 
-import com.google.common.base.Joiner;
 import com.google.common.base.Ticker;
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.testing.TestingTicker;
 import io.trino.hive.thrift.metastore.Table;
@@ -26,8 +26,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestStaticTokenAwareMetastoreClientFactory
 {
@@ -39,17 +39,17 @@ public class TestStaticTokenAwareMetastoreClientFactory
     private static final String FALLBACK2_URI = "thrift://fallback2:8090";
 
     private static final StaticMetastoreConfig CONFIG_WITH_FALLBACK = new StaticMetastoreConfig()
-            .setMetastoreUris(Joiner.on(',').join(DEFAULT_URI, FALLBACK_URI, FALLBACK2_URI));
+            .setMetastoreUris(ImmutableList.of(DEFAULT_URI, FALLBACK_URI, FALLBACK2_URI));
 
     private static final StaticMetastoreConfig CONFIG_WITHOUT_FALLBACK = new StaticMetastoreConfig()
-            .setMetastoreUris(DEFAULT_URI);
+            .setMetastoreUris(ImmutableList.of(DEFAULT_URI));
 
     private static final StaticMetastoreConfig CONFIG_WITH_FALLBACK_WITH_USER = new StaticMetastoreConfig()
-            .setMetastoreUris(Joiner.on(',').join(DEFAULT_URI, FALLBACK_URI, FALLBACK2_URI))
+            .setMetastoreUris(ImmutableList.of(DEFAULT_URI, FALLBACK_URI, FALLBACK2_URI))
             .setMetastoreUsername("presto");
 
     private static final StaticMetastoreConfig CONFIG_WITHOUT_FALLBACK_WITH_USER = new StaticMetastoreConfig()
-            .setMetastoreUris(DEFAULT_URI)
+            .setMetastoreUris(ImmutableList.of(DEFAULT_URI))
             .setMetastoreUsername("presto");
 
     private static final Map<String, Optional<ThriftMetastoreClient>> CLIENTS = ImmutableMap.of(DEFAULT_URI, Optional.of(DEFAULT_CLIENT), FALLBACK_URI, Optional.of(FALLBACK_CLIENT));
@@ -228,6 +228,6 @@ public class TestStaticTokenAwareMetastoreClientFactory
         if (expected instanceof FailureAwareThriftMetastoreClient) {
             expected = ((FailureAwareThriftMetastoreClient) expected).getDelegate();
         }
-        assertEquals(actual, expected);
+        assertThat(actual).isEqualTo(expected);
     }
 }

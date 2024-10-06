@@ -1,7 +1,7 @@
 ---
 myst:
   substitutions:
-      default_domain_compaction_threshold: '`32`'
+      default_domain_compaction_threshold: '`256`'
 ---
 
 # Druid connector
@@ -65,14 +65,10 @@ properties files.
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
 ```
 
 (druid-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Druid each support types that the other does not, this
@@ -83,30 +79,29 @@ connector {ref}`modifies some types <type-mapping-overview>` when reading data.
 The connector maps Druid types to the corresponding Trino types according to the
 following table:
 
-```{eval-rst}
-.. list-table:: Druid type to Trino type mapping
-  :widths: 30, 30, 50
-  :header-rows: 1
+:::{list-table} Druid type to Trino type mapping
+:widths: 30, 30, 50
+:header-rows: 1
 
-  * - Druid type
-    - Trino type
-    - Notes
-  * - ``STRING``
-    - ``VARCHAR``
-    -
-  * - ``FLOAT``
-    - ``REAL``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``LONG``
-    - ``BIGINT``
-    - Except for the special ``_time`` column, which is mapped to ``TIMESTAMP``.
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP``
-    - Only applicable to the special ``_time`` column.
-```
+* - Druid type
+  - Trino type
+  - Notes
+* - `STRING`
+  - `VARCHAR`
+  -
+* - `FLOAT`
+  - `REAL`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `LONG`
+  - `BIGINT`
+  - Except for the special `_time` column, which is mapped to `TIMESTAMP`.
+* - `TIMESTAMP`
+  - `TIMESTAMP`
+  - Only applicable to the special `_time` column.
+:::
 
 No other data types are supported.
 
@@ -119,21 +114,26 @@ be an empty string `''`, and so forth.
 ```
 
 (druid-sql-support)=
-
 ## SQL support
 
 The connector provides {ref}`globally available <sql-globally-available>` and
 {ref}`read operation <sql-read-operations>` statements to access data and
 metadata in the Druid database.
 
-## Table functions
+### Procedures
+
+```{include} jdbc-procedures-flush.fragment
+```
+```{include} procedures-execute.fragment
+```
+
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Druid.
 
 (druid-query-function)=
-
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying database directly. It
 requires syntax native to Druid, because the full query is pushed down and

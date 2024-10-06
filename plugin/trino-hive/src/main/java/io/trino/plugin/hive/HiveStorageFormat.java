@@ -15,12 +15,12 @@ package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.hive.formats.compression.CompressionKind;
-import io.trino.plugin.hive.metastore.StorageFormat;
-import io.trino.plugin.hive.type.Category;
-import io.trino.plugin.hive.type.MapTypeInfo;
-import io.trino.plugin.hive.type.PrimitiveCategory;
-import io.trino.plugin.hive.type.PrimitiveTypeInfo;
-import io.trino.plugin.hive.type.TypeInfo;
+import io.trino.metastore.StorageFormat;
+import io.trino.metastore.type.Category;
+import io.trino.metastore.type.MapTypeInfo;
+import io.trino.metastore.type.PrimitiveCategory;
+import io.trino.metastore.type.PrimitiveTypeInfo;
+import io.trino.metastore.type.TypeInfo;
 import io.trino.spi.TrinoException;
 
 import java.util.Arrays;
@@ -29,28 +29,28 @@ import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.Functions.identity;
-import static io.trino.plugin.hive.util.HiveClassNames.AVRO_CONTAINER_INPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.AVRO_CONTAINER_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.AVRO_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.COLUMNAR_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.HIVE_SEQUENCEFILE_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.JSON_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.LAZY_BINARY_COLUMNAR_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.LAZY_SIMPLE_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.MAPRED_PARQUET_INPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.MAPRED_PARQUET_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.OPENCSV_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.OPENX_JSON_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_INPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.ORC_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.RCFILE_INPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.RCFILE_OUTPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.REGEX_SERDE_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.SEQUENCEFILE_INPUT_FORMAT_CLASS;
-import static io.trino.plugin.hive.util.HiveClassNames.TEXT_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.AVRO_CONTAINER_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.AVRO_CONTAINER_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.AVRO_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.COLUMNAR_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.HIVE_IGNORE_KEY_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.HIVE_SEQUENCEFILE_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.JSON_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.LAZY_BINARY_COLUMNAR_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.LAZY_SIMPLE_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.MAPRED_PARQUET_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.MAPRED_PARQUET_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.OPENCSV_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.OPENX_JSON_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.ORC_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.ORC_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.ORC_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.RCFILE_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.RCFILE_OUTPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.REGEX_SERDE_CLASS;
+import static io.trino.hive.formats.HiveClassNames.SEQUENCEFILE_INPUT_FORMAT_CLASS;
+import static io.trino.hive.formats.HiveClassNames.TEXT_INPUT_FORMAT_CLASS;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -138,6 +138,11 @@ public enum HiveStorageFormat
         };
     }
 
+    public StorageFormat toStorageFormat()
+    {
+        return StorageFormat.create(serde, inputFormat, outputFormat);
+    }
+
     public void validateColumns(List<HiveColumnHandle> handles)
     {
         if (this == AVRO) {
@@ -179,7 +184,6 @@ public enum HiveStorageFormat
         return (MapTypeInfo) typeInfo;
     }
 
-    @SuppressWarnings("unused")
     private record SerdeAndInputFormat(String serde, String inputFormat) {}
 
     private static final Map<SerdeAndInputFormat, HiveStorageFormat> HIVE_STORAGE_FORMATS = ImmutableMap.<SerdeAndInputFormat, HiveStorageFormat>builder()
@@ -194,5 +198,14 @@ public enum HiveStorageFormat
     {
         return Optional.ofNullable(HIVE_STORAGE_FORMATS.get(
                 new SerdeAndInputFormat(storageFormat.getSerde(), storageFormat.getInputFormat())));
+    }
+
+    public String humanName()
+    {
+        return switch (this) {
+            case AVRO -> "Avro";
+            case PARQUET -> "Parquet";
+            default -> toString();
+        };
     }
 }

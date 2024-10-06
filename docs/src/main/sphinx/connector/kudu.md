@@ -145,7 +145,6 @@ E.g. To query a Kudu table named `special.table!` use `SELECT * FROM example.def
   ```
 
 (behavior-with-schema-emulation)=
-
 ### Behavior with schema emulation
 
 If schema emulation has been enabled in the connector properties, i.e.
@@ -179,7 +178,6 @@ some conventions.
   `presto::$schemas` is created for managing the schemas.
 
 (kudu-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Kudu each support types that the other does not, this
@@ -193,36 +191,37 @@ each direction.
 The connector maps Kudu types to the corresponding Trino types following
 this table:
 
-```{eval-rst}
-.. list-table:: Kudu type to Trino type mapping
-  :widths: 30, 20
-  :header-rows: 1
+:::{list-table} Kudu type to Trino type mapping
+:widths: 50, 50
+:header-rows: 1
 
-  * - Kudu type
-    - Trino type
-  * - ``BOOL``
-    - ``BOOLEAN``
-  * - ``INT8``
-    - ``TINYINT``
-  * - ``INT16``
-    - ``SMALLINT``
-  * - ``INT32``
-    - ``INTEGER``
-  * - ``INT64``
-    - ``BIGINT``
-  * - ``FLOAT``
-    - ``REAL``
-  * - ``DOUBLE``
-    - ``DOUBLE``
-  * - ``DECIMAL(p,s)``
-    - ``DECIMAL(p,s)``
-  * - ``STRING``
-    - ``VARCHAR``
-  * - ``BINARY``
-    - ``VARBINARY``
-  * - ``UNIXTIME_MICROS``
-    - ``TIMESTAMP(3)``
-```
+* - Kudu type
+  - Trino type
+* - `BOOL`
+  - `BOOLEAN`
+* - `INT8`
+  - `TINYINT`
+* - `INT16`
+  - `SMALLINT`
+* - `INT32`
+  - `INTEGER`
+* - `INT64`
+  - `BIGINT`
+* - `FLOAT`
+  - `REAL`
+* - `DOUBLE`
+  - `DOUBLE`
+* - `DECIMAL(p,s)`
+  - `DECIMAL(p,s)`
+* - `STRING`
+  - `VARCHAR`
+* - `BINARY`
+  - `VARBINARY`
+* - `DATE`
+  - `DATE`
+* - `UNIXTIME_MICROS`
+  - `TIMESTAMP(3)`
+:::
 
 No other types are supported.
 
@@ -231,56 +230,54 @@ No other types are supported.
 The connector maps Trino types to the corresponding Kudu types following
 this table:
 
-```{eval-rst}
-.. list-table:: Trino type to Kudu type mapping
-  :widths: 30, 20, 50
-  :header-rows: 1
+:::{list-table} Trino type to Kudu type mapping
+:widths: 25, 25, 50
+:header-rows: 1
 
-  * - Trino type
-    - Kudu type
-    - Notes
-  * - ``BOOLEAN``
-    - ``BOOL``
-    -
-  * - ``TINYINT``
-    - ``INT8``
-    -
-  * - ``SMALLINT``
-    - ``INT16``
-    -
-  * - ``INTEGER``
-    - ``INT32``
-    -
-  * - ``BIGINT``
-    - ``INT64``
-    -
-  * - ``REAL``
-    - ``FLOAT``
-    -
-  * - ``DOUBLE``
-    - ``DOUBLE``
-    -
-  * - ``DECIMAL(p,s)``
-    - ``DECIMAL(p,s)``
-    - Only supported for Kudu server >= 1.7.0
-  * - ``VARCHAR``
-    - ``STRING``
-    - The optional maximum length is lost
-  * - ``VARBINARY``
-    - ``BINARY``
-    -
-  * - ``DATE``
-    - ``STRING``
-    -
-  * - ``TIMESTAMP(3)``
-    - ``UNIXTIME_MICROS``
-    - µs resolution in Kudu column is reduced to ms resolution
-```
+* - Trino type
+  - Kudu type
+  - Notes
+* - `BOOLEAN`
+  - `BOOL`
+  -
+* - `TINYINT`
+  - `INT8`
+  -
+* - `SMALLINT`
+  - `INT16`
+  -
+* - `INTEGER`
+  - `INT32`
+  -
+* - `BIGINT`
+  - `INT64`
+  -
+* - `REAL`
+  - `FLOAT`
+  -
+* - `DOUBLE`
+  - `DOUBLE`
+  -
+* - `DECIMAL(p,s)`
+  - `DECIMAL(p,s)`
+  - Only supported for Kudu server >= 1.7.0
+* - `VARCHAR`
+  - `STRING`
+  - The optional maximum length is lost
+* - `VARBINARY`
+  - `BINARY`
+  -
+* - `DATE`
+  - `DATE`
+  -
+* - `TIMESTAMP(3)`
+  - `UNIXTIME_MICROS`
+  - µs resolution in Kudu column is reduced to ms resolution
+:::
 
 No other types are supported.
 
 (kudu-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -299,7 +296,6 @@ statements, the connector supports the following features:
 - {doc}`/sql/drop-schema`, see also {ref}`kudu-drop-schema`
 
 (kudu-insert)=
-
 ### Inserting into tables
 
 `INSERT INTO ... values` and `INSERT INTO ... select` behave like
@@ -309,21 +305,18 @@ statements, the connector supports the following features:
 ```
 
 (kudu-create-schema)=
-
 ### Creating schemas
 
 `CREATE SCHEMA` is only allowed if schema emulation is enabled. See the
 {ref}`behavior-with-schema-emulation` section.
 
 (kudu-drop-schema)=
-
 ### Dropping schemas
 
 `DROP SCHEMA` is only allowed if schema emulation is enabled. See the
 {ref}`behavior-with-schema-emulation` section.
 
 (kudu-create-table)=
-
 ### Creating a table
 
 On creating a Kudu table, you need to provide the columns and their types, of
@@ -390,7 +383,6 @@ CREATE TABLE example_table (
 ```
 
 (kudu-alter-table)=
-
 ### Changing tables
 
 Adding a column to an existing table uses the SQL statement `ALTER TABLE ... ADD COLUMN ...`.
@@ -542,7 +534,6 @@ This means any attempt to add rows with `event_time` of year 2018 or greater fai
 The next section shows how to define a new range partition for an existing table.
 
 (managing-range-partitions)=
-
 #### Managing range partitions
 
 For existing tables, there are procedures to add and drop a range

@@ -75,6 +75,7 @@ public enum TestingConnectorBehavior
     SUPPORTS_DROP_SCHEMA_CASCADE(SUPPORTS_CREATE_SCHEMA),
 
     SUPPORTS_CREATE_TABLE,
+    SUPPORTS_CREATE_OR_REPLACE_TABLE(false),
     SUPPORTS_CREATE_TABLE_WITH_DATA(SUPPORTS_CREATE_TABLE),
     SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT(SUPPORTS_CREATE_TABLE),
     SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT(SUPPORTS_CREATE_TABLE),
@@ -84,12 +85,15 @@ public enum TestingConnectorBehavior
     SUPPORTS_ADD_COLUMN,
     SUPPORTS_ADD_COLUMN_WITH_COMMENT(SUPPORTS_ADD_COLUMN),
     SUPPORTS_ADD_FIELD(fallback -> fallback.test(SUPPORTS_ADD_COLUMN) && fallback.test(SUPPORTS_ROW_TYPE)),
+    SUPPORTS_ADD_FIELD_IN_ARRAY(SUPPORTS_ADD_FIELD),
     SUPPORTS_DROP_COLUMN(SUPPORTS_ADD_COLUMN),
     SUPPORTS_DROP_FIELD(and(SUPPORTS_DROP_COLUMN, SUPPORTS_ROW_TYPE)),
+    SUPPORTS_DROP_FIELD_IN_ARRAY(SUPPORTS_ADD_FIELD_IN_ARRAY),
     SUPPORTS_RENAME_COLUMN,
     SUPPORTS_RENAME_FIELD(fallback -> fallback.test(SUPPORTS_RENAME_COLUMN) && fallback.test(SUPPORTS_ROW_TYPE)),
     SUPPORTS_SET_COLUMN_TYPE,
     SUPPORTS_SET_FIELD_TYPE(fallback -> fallback.test(SUPPORTS_SET_COLUMN_TYPE) && fallback.test(SUPPORTS_ROW_TYPE)),
+    SUPPORTS_SET_FIELD_TYPE_IN_ARRAY(fallback -> fallback.test(SUPPORTS_SET_FIELD_TYPE) && fallback.test(SUPPORTS_ADD_FIELD_IN_ARRAY)),
 
     SUPPORTS_COMMENT_ON_TABLE,
     SUPPORTS_COMMENT_ON_COLUMN(SUPPORTS_COMMENT_ON_TABLE),
@@ -108,6 +112,9 @@ public enum TestingConnectorBehavior
 
     SUPPORTS_NOT_NULL_CONSTRAINT(SUPPORTS_CREATE_TABLE),
     SUPPORTS_ADD_COLUMN_NOT_NULL_CONSTRAINT(and(SUPPORTS_NOT_NULL_CONSTRAINT, SUPPORTS_ADD_COLUMN)),
+    SUPPORTS_DROP_NOT_NULL_CONSTRAINT(SUPPORTS_NOT_NULL_CONSTRAINT),
+
+    SUPPORTS_CREATE_FUNCTION(false),
 
     SUPPORTS_NEGATIVE_DATE,
 
@@ -137,6 +144,8 @@ public enum TestingConnectorBehavior
                         (name().equals("SUPPORTS_CANCELLATION") ||
                                 name().equals("SUPPORTS_DYNAMIC_FILTER_PUSHDOWN") ||
                                 name().equals("SUPPORTS_JOIN_PUSHDOWN") ||
+                                name().equals("SUPPORTS_CREATE_OR_REPLACE_TABLE") ||
+                                name().equals("SUPPORTS_CREATE_FUNCTION") ||
                                 name().equals("SUPPORTS_REPORTING_WRITTEN_BYTES") ||
                                 name().equals("SUPPORTS_MULTI_STATEMENT_WRITES")),
                 "Every behavior should be expected to be true by default. Having mixed defaults makes reasoning about tests harder. False default provided for %s",

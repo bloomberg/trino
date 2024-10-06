@@ -5,14 +5,14 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>429-SNAPSHOT</version>
+        <version>461-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-spi</artifactId>
+    <description>Trino - Service Provider Interface (SPI)</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <released-artifacts.dir>${project.build.directory}/released-artifacts</released-artifacts.dir>
         <trino.check.skip-revapi>${air.check.skip-basic}</trino.check.skip-revapi>
     </properties>
@@ -90,6 +90,12 @@
 
         <dependency>
             <groupId>io.airlift</groupId>
+            <artifactId>junit-extensions</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
             <artifactId>testing</artifactId>
             <scope>test</scope>
         </dependency>
@@ -115,6 +121,12 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -151,17 +163,6 @@
         </resources>
 
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <dependencies>
-                    <dependency>
-                        <groupId>org.junit.jupiter</groupId>
-                        <artifactId>junit-jupiter-engine</artifactId>
-                        <version>${dep.junit.version}</version>
-                    </dependency>
-                </dependencies>
-            </plugin>
             <plugin>
                 <groupId>org.revapi</groupId>
                 <artifactId>revapi-maven-plugin</artifactId>
@@ -213,67 +214,56 @@
                                 <!-- Any exclusions below can be deleted after each release -->
                                 <item>
                                     <ignore>true</ignore>
+                                    <code>java.annotation.attributeValueChanged</code>
+                                    <old>interface io.trino.spi.predicate.ValueSet</old>
+                                    <new>interface io.trino.spi.predicate.ValueSet</new>
+                                    <annotationType>com.fasterxml.jackson.annotation.JsonSubTypes</annotationType>
+                                    <attribute>value</attribute>
+                                    <oldValue>{@com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.EquatableValueSet.class, name = "equatable"), @com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.SortedRangeSet.class, name = "sortable"), @com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.AllOrNoneValueSet.class, name = "allOrNone")}</oldValue>
+                                    <newValue>{@com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.AllOrNoneValueSet.class, name = "allOrNone"), @com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.EquatableValueSet.class, name = "equatable"), @com.fasterxml.jackson.annotation.JsonSubTypes.Type(value = io.trino.spi.predicate.SortedRangeSet.class, name = "sortable")}</newValue>
+                                    <justification>cleanup</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
                                     <code>java.method.removed</code>
-                                    <old>method java.util.Optional&lt;io.trino.spi.type.Type&gt; io.trino.spi.connector.ConnectorMetadata::getSupportedType(io.trino.spi.connector.ConnectorSession, io.trino.spi.type.Type)</old>
+                                    <old>method long io.trino.spi.protocol.SpoolingContext::rowCount()</old>
+                                    <justification>Align better when naming in other places</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.connector.ConnectorAccessControl::checkCanExecuteFunction(io.trino.spi.connector.ConnectorSecurityContext, io.trino.spi.function.FunctionKind, io.trino.spi.connector.SchemaRoutineName)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>interface io.trino.spi.protocol.SpooledLocation</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.SystemAccessControl::checkCanExecuteFunction(io.trino.spi.security.SystemSecurityContext, io.trino.spi.function.FunctionKind, io.trino.spi.connector.CatalogSchemaRoutineName)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>interface io.trino.spi.protocol.SpooledSegmentHandle</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.SystemAccessControl::checkCanExecuteFunction(io.trino.spi.security.SystemSecurityContext, java.lang.String)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>class io.trino.spi.protocol.SpoolingContext</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.SystemAccessControl::checkCanGrantExecuteFunctionPrivilege(io.trino.spi.security.SystemSecurityContext, java.lang.String, io.trino.spi.security.TrinoPrincipal, boolean)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>interface io.trino.spi.protocol.SpoolingManager</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.SystemAccessControl::checkCanAccessCatalog(io.trino.spi.security.SystemSecurityContext, java.lang.String)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>interface io.trino.spi.protocol.SpoolingManagerContext</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                                 <item>
-                                    <code>java.method.parameterTypeChanged</code>
-                                    <old>parameter void io.trino.spi.security.AccessDeniedException::denyGrantExecuteFunctionPrivilege(java.lang.String, io.trino.spi.security.Identity, ===io.trino.spi.security.Identity===)</old>
-                                    <new>parameter void io.trino.spi.security.AccessDeniedException::denyGrantExecuteFunctionPrivilege(java.lang.String, io.trino.spi.security.Identity, ===io.trino.spi.security.TrinoPrincipal===)</new>
-                                    <parameterIndex>2</parameterIndex>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.AccessDeniedException::denyGrantExecuteFunctionPrivilege(java.lang.String, io.trino.spi.security.Identity, java.lang.String)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.numberOfParametersChanged</code>
-                                    <old>method void io.trino.spi.connector.ConnectorMaterializedViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;io.trino.spi.connector.CatalogSchemaTableName&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Map&lt;java.lang.String, java.lang.Object&gt;)</old>
-                                    <new>method void io.trino.spi.connector.ConnectorMaterializedViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;io.trino.spi.connector.CatalogSchemaTableName&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.CatalogSchemaName&gt;, java.util.Map&lt;java.lang.String, java.lang.Object&gt;)</new>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.connector.ConnectorMaterializedViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;io.trino.spi.connector.CatalogSchemaTableName&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorMaterializedViewDefinition.Column&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Map&lt;java.lang.String, java.lang.Object&gt;)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.numberOfParametersChanged</code>
-                                    <old>method void io.trino.spi.connector.ConnectorViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorViewDefinition.ViewColumn&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, boolean)</old>
-                                    <new>method void io.trino.spi.connector.ConnectorViewDefinition::&lt;init&gt;(java.lang.String, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.List&lt;io.trino.spi.connector.ConnectorViewDefinition.ViewColumn&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, boolean, java.util.List&lt;io.trino.spi.connector.CatalogSchemaName&gt;)</new>
-                                </item>
-                                <item>
-                                    <code>java.method.visibilityReduced</code>
-                                    <old>method void io.trino.spi.security.ViewExpression::&lt;init&gt;(java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.lang.String)</old>
-                                    <new>method void io.trino.spi.security.ViewExpression::&lt;init&gt;(java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.util.Optional&lt;java.lang.String&gt;, java.lang.String, java.util.List&lt;io.trino.spi.connector.CatalogSchemaName&gt;)</new>
-                                    <oldVisibility>public</oldVisibility>
-                                    <newVisibility>private</newVisibility>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.connector.ConnectorAccessControl::checkCanGrantExecuteFunctionPrivilege(io.trino.spi.connector.ConnectorSecurityContext, io.trino.spi.function.FunctionKind, io.trino.spi.connector.SchemaRoutineName, io.trino.spi.security.TrinoPrincipal, boolean)</old>
-                                </item>
-                                <item>
-                                    <code>java.method.removed</code>
-                                    <old>method void io.trino.spi.security.SystemAccessControl::checkCanGrantExecuteFunctionPrivilege(io.trino.spi.security.SystemSecurityContext, io.trino.spi.function.FunctionKind, io.trino.spi.connector.CatalogSchemaRoutineName, io.trino.spi.security.TrinoPrincipal, boolean)</old>
+                                    <ignore>true</ignore>
+                                    <code>java.class.removed</code>
+                                    <old>interface io.trino.spi.protocol.SpoolingManagerFactory</old>
+                                    <justification>Spooling SPI marked as experimental</justification>
                                 </item>
                             </differences>
                         </revapi.differences>

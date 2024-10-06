@@ -16,6 +16,7 @@ package io.trino.metadata;
 import io.trino.Session;
 import io.trino.operator.aggregation.TestingAggregationFunction;
 import io.trino.security.AllowAllAccessControl;
+import io.trino.spi.Plugin;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.OperatorType;
@@ -25,22 +26,24 @@ import io.trino.sql.PlannerContext;
 import io.trino.sql.analyzer.TypeSignatureProvider;
 import io.trino.sql.gen.ExpressionCompiler;
 import io.trino.sql.gen.PageFunctionCompiler;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.testing.LocalQueryRunner;
+import io.trino.sql.gen.columnar.ColumnarFilterCompiler;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.planner.TestingPlannerContext;
+import io.trino.testing.QueryRunner;
 import io.trino.transaction.TransactionManager;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static io.trino.SessionTestUtils.TEST_SESSION;
+import static io.trino.metadata.InternalFunctionBundle.extractFunctions;
 import static io.trino.sql.planner.TestingPlannerContext.plannerContextBuilder;
+import static io.trino.testing.TransactionBuilder.transaction;
 import static io.trino.transaction.InMemoryTransactionManager.createTestTransactionManager;
-import static io.trino.transaction.TransactionBuilder.transaction;
 import static java.util.Objects.requireNonNull;
 
 public class TestingFunctionResolution
@@ -64,9 +67,24 @@ public class TestingFunctionResolution
         metadata = plannerContext.getMetadata();
     }
 
-    public TestingFunctionResolution(LocalQueryRunner localQueryRunner)
+    public TestingFunctionResolution(Plugin plugin)
     {
-        this(localQueryRunner.getTransactionManager(), localQueryRunner.getPlannerContext());
+        transactionManager = createTestTransactionManager();
+
+        TestingPlannerContext.Builder builder = plannerContextBuilder()
+                .withTransactionManager(transactionManager)
+                .addFunctions(extractFunctions(plugin.getFunctions()));
+
+        plugin.getTypes().forEach(builder::addType);
+        plugin.getParametricTypes().forEach(builder::addParametricType);
+
+        plannerContext = builder.build();
+        metadata = plannerContext.getMetadata();
+    }
+
+    public TestingFunctionResolution(QueryRunner queryRunner)
+    {
+        this(queryRunner.getTransactionManager(), queryRunner.getPlannerContext());
     }
 
     public TestingFunctionResolution(TransactionManager transactionManager, PlannerContext plannerContext)
@@ -88,7 +106,7 @@ public class TestingFunctionResolution
 
     public ExpressionCompiler getExpressionCompiler()
     {
-        return new ExpressionCompiler(plannerContext.getFunctionManager(), getPageFunctionCompiler());
+        return new ExpressionCompiler(plannerContext.getFunctionManager(), getPageFunctionCompiler(), getColumnarFilterCompiler());
     }
 
     public PageFunctionCompiler getPageFunctionCompiler()
@@ -104,6 +122,16 @@ public class TestingFunctionResolution
     public Collection<FunctionMetadata> listGlobalFunctions()
     {
         return inTransaction(metadata::listGlobalFunctions);
+    }
+
+    public ColumnarFilterCompiler getColumnarFilterCompiler()
+    {
+        return getColumnarFilterCompiler(0);
+    }
+
+    public ColumnarFilterCompiler getColumnarFilterCompiler(int expressionCacheSize)
+    {
+        return new ColumnarFilterCompiler(plannerContext.getFunctionManager(), expressionCacheSize);
     }
 
     public ResolvedFunction resolveOperator(OperatorType operatorType, List<? extends Type> argumentTypes)
@@ -142,8 +170,8 @@ public class TestingFunctionResolution
         return inTransaction(session -> {
             ResolvedFunction resolvedFunction = metadata.resolveBuiltinFunction(name, parameterTypes);
             return new TestingAggregationFunction(
-                    resolvedFunction.getSignature(),
-                    resolvedFunction.getFunctionNullability(),
+                    resolvedFunction.signature(),
+                    resolvedFunction.functionNullability(),
                     plannerContext.getFunctionManager().getAggregationImplementation(resolvedFunction));
         });
     }
@@ -196,17 +224,10 @@ public class TestingFunctionResolution
             return this;
         }
 
-        public FunctionCall build()
+        public Call build()
         {
-            return new FunctionCall(
-                    Optional.empty(),
-                    resolveFunction(name, TypeSignatureProvider.fromTypeSignatures(argumentTypes)).toQualifiedName(),
-                    Optional.empty(),
-                    Optional.empty(),
-                    Optional.empty(),
-                    false,
-                    Optional.empty(),
-                    Optional.empty(),
+            return new Call(
+                    resolveFunction(name, TypeSignatureProvider.fromTypeSignatures(argumentTypes)),
                     argumentValues);
         }
     }

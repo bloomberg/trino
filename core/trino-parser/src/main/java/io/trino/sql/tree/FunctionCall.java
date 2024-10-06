@@ -34,6 +34,7 @@ public class FunctionCall
     private final Optional<ProcessingMode> processingMode;
     private final List<Expression> arguments;
 
+    @Deprecated
     public FunctionCall(QualifiedName name, List<Expression> arguments)
     {
         this(Optional.empty(), name, Optional.empty(), Optional.empty(), Optional.empty(), false, Optional.empty(), Optional.empty(), arguments);
@@ -58,7 +59,7 @@ public class FunctionCall
         super(location);
         requireNonNull(name, "name is null");
         requireNonNull(window, "window is null");
-        window.ifPresent(node -> checkArgument(node instanceof WindowReference || node instanceof WindowSpecification, "unexpected window: " + node.getClass().getSimpleName()));
+        window.ifPresent(node -> checkArgument(node instanceof WindowReference || node instanceof WindowSpecification, "unexpected window: %s", node.getClass().getSimpleName()));
         requireNonNull(filter, "filter is null");
         requireNonNull(orderBy, "orderBy is null");
         requireNonNull(nullTreatment, "nullTreatment is null");
@@ -146,7 +147,7 @@ public class FunctionCall
                 Objects.equals(window, o.window) &&
                 Objects.equals(filter, o.filter) &&
                 Objects.equals(orderBy, o.orderBy) &&
-                Objects.equals(distinct, o.distinct) &&
+                distinct == o.distinct &&
                 Objects.equals(nullTreatment, o.nullTreatment) &&
                 Objects.equals(processingMode, o.processingMode) &&
                 Objects.equals(arguments, o.arguments);

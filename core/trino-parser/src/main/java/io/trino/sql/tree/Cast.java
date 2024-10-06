@@ -27,34 +27,33 @@ public final class Cast
     private final Expression expression;
     private final DataType type;
     private final boolean safe;
-    private final boolean typeOnly;
 
+    @Deprecated
     public Cast(Expression expression, DataType type)
     {
-        this(Optional.empty(), expression, type, false, false);
+        this(Optional.empty(), expression, type, false);
     }
 
+    @Deprecated
     public Cast(Expression expression, DataType type, boolean safe)
     {
-        this(Optional.empty(), expression, type, safe, false);
-    }
-
-    public Cast(Expression expression, DataType type, boolean safe, boolean typeOnly)
-    {
-        this(Optional.empty(), expression, type, safe, typeOnly);
+        this(Optional.empty(), expression, type, safe);
     }
 
     public Cast(NodeLocation location, Expression expression, DataType type)
     {
-        this(Optional.of(location), expression, type, false, false);
+        this(location, expression, type, false);
     }
 
     public Cast(NodeLocation location, Expression expression, DataType type, boolean safe)
     {
-        this(Optional.of(location), expression, type, safe, false);
+        super(location);
+        this.expression = requireNonNull(expression, "expression is null");
+        this.type = requireNonNull(type, "type is null");
+        this.safe = safe;
     }
 
-    private Cast(Optional<NodeLocation> location, Expression expression, DataType type, boolean safe, boolean typeOnly)
+    private Cast(Optional<NodeLocation> location, Expression expression, DataType type, boolean safe)
     {
         super(location);
         requireNonNull(expression, "expression is null");
@@ -62,7 +61,6 @@ public final class Cast
         this.expression = expression;
         this.type = type;
         this.safe = safe;
-        this.typeOnly = typeOnly;
     }
 
     public Expression getExpression()
@@ -78,11 +76,6 @@ public final class Cast
     public boolean isSafe()
     {
         return safe;
-    }
-
-    public boolean isTypeOnly()
-    {
-        return typeOnly;
     }
 
     @Override
@@ -108,7 +101,6 @@ public final class Cast
         }
         Cast cast = (Cast) o;
         return safe == cast.safe &&
-                typeOnly == cast.typeOnly &&
                 expression.equals(cast.expression) &&
                 type.equals(cast.type);
     }
@@ -116,7 +108,7 @@ public final class Cast
     @Override
     public int hashCode()
     {
-        return Objects.hash(expression, type, safe, typeOnly);
+        return Objects.hash(expression, type, safe);
     }
 
     @Override
@@ -127,7 +119,6 @@ public final class Cast
         }
 
         Cast otherCast = (Cast) other;
-        return safe == otherCast.safe &&
-                typeOnly == otherCast.typeOnly;
+        return safe == otherCast.safe;
     }
 }

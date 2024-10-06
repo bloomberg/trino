@@ -23,6 +23,7 @@ import io.airlift.http.client.HttpUriBuilder;
 import io.airlift.http.client.Request;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
+import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.opentelemetry.api.trace.SpanBuilder;
@@ -33,6 +34,7 @@ import io.trino.execution.TaskInfo;
 import io.trino.execution.TaskState;
 import io.trino.execution.TaskStatus;
 import io.trino.execution.buffer.SpoolingOutputStats;
+import io.trino.operator.RetryPolicy;
 
 import java.net.URI;
 import java.util.Optional;
@@ -52,12 +54,15 @@ import static io.airlift.http.client.FullJsonResponseHandler.createFullJsonRespo
 import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
 import static io.airlift.http.client.Request.Builder.prepareGet;
 import static io.airlift.units.Duration.nanosSince;
+import static io.trino.operator.RetryPolicy.TASK;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public class TaskInfoFetcher
 {
     private static final Logger log = Logger.get(TaskInfoFetcher.class);
+
+    private static final SpoolingOutputStats.Snapshot ALREADY_RETRIEVED_MARKER = new SpoolingOutputStats.Snapshot(Slices.EMPTY_SLICE, 0);
 
     private final TaskId taskId;
     private final Consumer<Throwable> onFail;
@@ -80,6 +85,8 @@ public class TaskInfoFetcher
     private final Optional<DataSize> estimatedMemory;
 
     private final AtomicReference<SpoolingOutputStats.Snapshot> spoolingOutputStats = new AtomicReference<>();
+
+    private final RetryPolicy retryPolicy;
 
     @GuardedBy("this")
     private boolean running;
@@ -104,12 +111,13 @@ public class TaskInfoFetcher
             ScheduledExecutorService updateScheduledExecutor,
             ScheduledExecutorService errorScheduledExecutor,
             RemoteTaskStats stats,
-            Optional<DataSize> estimatedMemory)
+            Optional<DataSize> estimatedMemory,
+            RetryPolicy retryPolicy)
     {
         requireNonNull(initialTask, "initialTask is null");
         requireNonNull(errorScheduledExecutor, "errorScheduledExecutor is null");
 
-        this.taskId = initialTask.getTaskStatus().getTaskId();
+        this.taskId = initialTask.taskStatus().getTaskId();
         this.onFail = requireNonNull(onFail, "onFail is null");
         this.taskStatusFetcher = requireNonNull(taskStatusFetcher, "taskStatusFetcher is null");
         this.taskInfo = new StateMachine<>("task " + taskId, executor, initialTask);
@@ -118,7 +126,7 @@ public class TaskInfoFetcher
 
         this.updateIntervalMillis = updateInterval.toMillis();
         this.updateScheduledExecutor = requireNonNull(updateScheduledExecutor, "updateScheduledExecutor is null");
-        this.errorTracker = new RequestErrorTracker(taskId, initialTask.getTaskStatus().getSelf(), maxErrorDuration, errorScheduledExecutor, "getting info for task");
+        this.errorTracker = new RequestErrorTracker(taskId, initialTask.taskStatus().getSelf(), maxErrorDuration, errorScheduledExecutor, "getting info for task");
 
         this.summarizeTaskInfo = summarizeTaskInfo;
 
@@ -127,6 +135,7 @@ public class TaskInfoFetcher
         this.spanBuilderFactory = requireNonNull(spanBuilderFactory, "spanBuilderFactory is null");
         this.stats = requireNonNull(stats, "stats is null");
         this.estimatedMemory = requireNonNull(estimatedMemory, "estimatedMemory is null");
+        this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy is null");
     }
 
     public TaskInfo getTaskInfo()
@@ -174,15 +183,15 @@ public class TaskInfoFetcher
         fireOnceStateChangeListener.stateChanged(finalTaskInfo.get());
     }
 
-    public SpoolingOutputStats.Snapshot retrieveAndDropSpoolingOutputStats()
+    public Optional<SpoolingOutputStats.Snapshot> retrieveAndDropSpoolingOutputStats()
     {
         Optional<TaskInfo> finalTaskInfo = this.finalTaskInfo.get();
         checkState(finalTaskInfo.isPresent(), "finalTaskInfo must be present");
-        TaskState taskState = finalTaskInfo.get().getTaskStatus().getState();
+        TaskState taskState = finalTaskInfo.get().taskStatus().getState();
         checkState(taskState == TaskState.FINISHED, "task must be FINISHED, got: %s", taskState);
-        SpoolingOutputStats.Snapshot result = spoolingOutputStats.getAndSet(null);
-        checkState(result != null, "spooling output stats is not available");
-        return result;
+        SpoolingOutputStats.Snapshot result = spoolingOutputStats.getAndSet(ALREADY_RETRIEVED_MARKER);
+        checkState(result != ALREADY_RETRIEVED_MARKER, "spooling output stats were already retrieved");
+        return Optional.ofNullable(result);
     }
 
     private synchronized void scheduleUpdate()
@@ -208,7 +217,7 @@ public class TaskInfoFetcher
 
     private synchronized void sendNextRequest()
     {
-        TaskStatus taskStatus = getTaskInfo().getTaskStatus();
+        TaskStatus taskStatus = getTaskInfo().taskStatus();
 
         if (!running) {
             return;
@@ -248,26 +257,40 @@ public class TaskInfoFetcher
     synchronized void updateTaskInfo(TaskInfo newTaskInfo)
     {
         TaskStatus localTaskStatus = taskStatusFetcher.getTaskStatus();
-        TaskStatus newRemoteTaskStatus = newTaskInfo.getTaskStatus();
+        TaskStatus newRemoteTaskStatus = newTaskInfo.taskStatus();
+
+        if (!newRemoteTaskStatus.getTaskId().equals(taskId)) {
+            log.debug("Task ID mismatch on remote task status. Member task ID is %s, but remote task ID is %s. This will confuse finalTaskInfo listeners.", taskId, newRemoteTaskStatus.getTaskId());
+        }
 
         if (localTaskStatus.getState().isDone() && newRemoteTaskStatus.getState().isDone() && localTaskStatus.getState() != newRemoteTaskStatus.getState()) {
             // prefer local
             newTaskInfo = newTaskInfo.withTaskStatus(localTaskStatus);
+            if (!localTaskStatus.getTaskId().equals(taskId)) {
+                log.debug("Task ID mismatch on local task status. Member task ID is %s, but status-fetcher ID is %s. This will confuse finalTaskInfo listeners.", taskId, newRemoteTaskStatus.getTaskId());
+            }
         }
 
         if (estimatedMemory.isPresent()) {
             newTaskInfo = newTaskInfo.withEstimatedMemory(estimatedMemory.get());
         }
 
-        if (newTaskInfo.getTaskStatus().getState().isDone()) {
-            spoolingOutputStats.compareAndSet(null, newTaskInfo.getOutputBuffers().getSpoolingOutputStats().orElse(null));
+        boolean missingSpoolingOutputStats = false;
+        if (newTaskInfo.taskStatus().getState().isDone()) {
+            boolean wasSet = spoolingOutputStats.compareAndSet(null, newTaskInfo.outputBuffers().getSpoolingOutputStats().orElse(null));
+            if (newTaskInfo.taskStatus().getState() == TaskState.FINISHED && retryPolicy == TASK && wasSet && spoolingOutputStats.get() == null) {
+                missingSpoolingOutputStats = true;
+                if (log.isDebugEnabled()) {
+                    log.debug("Task %s was updated to null spoolingOutputStats. Future calls to retrieveAndDropSpoolingOutputStats will fail; taskInfo=%s", taskId, taskInfoCodec.toJson(newTaskInfo));
+                }
+            }
             newTaskInfo = newTaskInfo.pruneSpoolingOutputStats();
         }
 
         TaskInfo newValue = newTaskInfo;
         boolean updated = taskInfo.setIf(newValue, oldValue -> {
-            TaskStatus oldTaskStatus = oldValue.getTaskStatus();
-            TaskStatus newTaskStatus = newValue.getTaskStatus();
+            TaskStatus oldTaskStatus = oldValue.taskStatus();
+            TaskStatus newTaskStatus = newValue.taskStatus();
             if (oldTaskStatus.getState().isDone()) {
                 // never update if the task has reached a terminal state
                 return false;
@@ -276,9 +299,12 @@ public class TaskInfoFetcher
             return newTaskStatus.getVersion() >= oldTaskStatus.getVersion();
         });
 
-        if (updated && newValue.getTaskStatus().getState().isDone()) {
-            taskStatusFetcher.updateTaskStatus(newTaskInfo.getTaskStatus());
-            finalTaskInfo.compareAndSet(Optional.empty(), Optional.of(newValue));
+        if (updated && newValue.taskStatus().getState().isDone()) {
+            taskStatusFetcher.updateTaskStatus(newTaskInfo.taskStatus());
+            boolean finalTaskInfoUpdated = finalTaskInfo.compareAndSet(Optional.empty(), Optional.of(newValue));
+            if (missingSpoolingOutputStats && finalTaskInfoUpdated) {
+                log.debug("Updated finalTaskInfo for task %s to one with missing spoolingOutputStats", taskId);
+            }
             stop();
         }
     }
@@ -291,43 +317,58 @@ public class TaskInfoFetcher
         @Override
         public void success(TaskInfo newValue)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 lastUpdateNanos.set(System.nanoTime());
 
                 updateStats(requestStartNanos);
                 errorTracker.requestSucceeded();
                 updateTaskInfo(newValue);
             }
+            finally {
+                cleanupRequest();
+            }
         }
 
         @Override
         public void failed(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 lastUpdateNanos.set(System.nanoTime());
 
-                try {
-                    // if task not already done, record error
-                    if (!isDone(getTaskInfo())) {
-                        errorTracker.requestFailed(cause);
-                    }
+                // if task not already done, record error
+                if (!isDone(getTaskInfo())) {
+                    errorTracker.requestFailed(cause);
                 }
-                catch (Error e) {
-                    onFail.accept(e);
-                    throw e;
-                }
-                catch (RuntimeException e) {
-                    onFail.accept(e);
-                }
+            }
+            catch (Error e) {
+                onFail.accept(e);
+                throw e;
+            }
+            catch (RuntimeException e) {
+                onFail.accept(e);
+            }
+            finally {
+                cleanupRequest();
             }
         }
 
         @Override
         public void fatal(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("TaskInfoFetcher-%s", taskId)) {
                 onFail.accept(cause);
             }
+            finally {
+                cleanupRequest();
+            }
+        }
+    }
+
+    private synchronized void cleanupRequest()
+    {
+        if (future != null && future.isDone()) {
+            // remove outstanding reference to JSON response
+            future = null;
         }
     }
 
@@ -338,6 +379,6 @@ public class TaskInfoFetcher
 
     private static boolean isDone(TaskInfo taskInfo)
     {
-        return taskInfo.getTaskStatus().getState().isDone();
+        return taskInfo.taskStatus().getState().isDone();
     }
 }

@@ -60,8 +60,8 @@ public final class IcebergTypes
 
     /**
      * Convert value from Trino representation to Iceberg representation.
-     *
-     * @apiNote This accepts a Trino type because, currently, no two Iceberg types translate to one Trino type.
+     * <p>
+     * Note: This accepts a Trino type because, currently, no two Iceberg types translate to one Trino type.
      */
     public static Object convertTrinoValueToIceberg(io.trino.spi.type.Type type, Object trinoNativeValue)
     {
@@ -165,7 +165,7 @@ public final class IcebergTypes
         if (icebergType instanceof Types.StringType) {
             // Partition values are passed as String, but min/max values are passed as a CharBuffer
             if (value instanceof CharBuffer) {
-                value = new String(((CharBuffer) value).array());
+                value = ((CharBuffer) value).toString();
             }
             return utf8Slice(((String) value));
         }

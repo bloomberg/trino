@@ -30,10 +30,9 @@ public class TestLazyConnectionFactory
     public void testNoConnectionIsCreated()
             throws Exception
     {
-        ConnectionFactory failingConnectionFactory = session -> {
+        ConnectionFactory failingConnectionFactory = _ -> {
             throw new AssertionError("Expected no connection creation");
         };
-
         try (LazyConnectionFactory lazyConnectionFactory = new LazyConnectionFactory(failingConnectionFactory);
                 Connection ignored = lazyConnectionFactory.openConnection(SESSION)) {
             // no-op
@@ -44,14 +43,12 @@ public class TestLazyConnectionFactory
     public void testConnectionCannotBeReusedAfterClose()
             throws Exception
     {
-        BaseJdbcConfig config = new BaseJdbcConfig()
-                .setConnectionUrl(format("jdbc:h2:mem:test%s;DB_CLOSE_DELAY=-1", System.nanoTime() + ThreadLocalRandom.current().nextLong()));
-
-        try (DriverConnectionFactory h2ConnectionFactory = new DriverConnectionFactory(new Driver(), config, new EmptyCredentialProvider());
-                LazyConnectionFactory lazyConnectionFactory = new LazyConnectionFactory(h2ConnectionFactory)) {
+        String url = format("jdbc:h2:mem:test%s;DB_CLOSE_DELAY=-1", System.nanoTime() + ThreadLocalRandom.current().nextLong());
+        try (DriverConnectionFactory driverConnectionFactory = DriverConnectionFactory.builder(new Driver(), url, new EmptyCredentialProvider()).build();
+                LazyConnectionFactory lazyConnectionFactory = new LazyConnectionFactory(driverConnectionFactory)) {
             Connection connection = lazyConnectionFactory.openConnection(SESSION);
             connection.close();
-            assertThatThrownBy(() -> connection.createStatement())
+            assertThatThrownBy(connection::createStatement)
                     .hasMessage("Connection is already closed");
         }
     }

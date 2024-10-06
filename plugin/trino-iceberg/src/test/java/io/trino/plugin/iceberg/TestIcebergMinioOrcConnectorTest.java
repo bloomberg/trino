@@ -14,16 +14,15 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.io.Resources;
 import io.trino.Session;
 import io.trino.filesystem.Location;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.containers.Minio;
 import io.trino.testing.sql.TestTable;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
 
-import java.io.File;
-import java.io.OutputStream;
-import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,11 +37,12 @@ import static io.trino.testing.containers.Minio.MINIO_REGION;
 import static io.trino.testing.containers.Minio.MINIO_SECRET_KEY;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 /**
  * Iceberg connector test ORC and with S3-compatible storage (but without real metastore).
  */
+@Execution(SAME_THREAD)
 public class TestIcebergMinioOrcConnectorTest
         extends BaseIcebergConnectorTest
 {
@@ -72,7 +72,7 @@ public class TestIcebergMinioOrcConnectorTest
                                 .put("s3.endpoint", minio.getMinioAddress())
                                 .put("s3.path-style-access", "true")
                                 .put("s3.streaming.part-size", "5MB") // minimize memory usage
-                                .put("s3.max-connections", "2") // verify no leaks
+                                .put("s3.max-connections", "8") // verify no leaks
                                 .put("iceberg.register-table-procedure.enabled", "true")
                                 // Allows testing the sorting writer flushing to the file system with smaller tables
                                 .put("iceberg.writer-sort-buffer-size", "1MB")
@@ -105,6 +105,13 @@ public class TestIcebergMinioOrcConnectorTest
         return checkOrcFileSorting(fileSystem, Location.of(path), sortColumnName);
     }
 
+    @Override
+    protected boolean supportsPhysicalPushdown()
+    {
+        // TODO https://github.com/trinodb/trino/issues/17156
+        return false;
+    }
+
     @Test
     public void testTinyintType()
             throws Exception
@@ -125,9 +132,8 @@ public class TestIcebergMinioOrcConnectorTest
         checkArgument(expectedValue != 0);
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_read_as_integer", "(\"_col0\") AS VALUES 0, NULL")) {
             String orcFilePath = (String) computeScalar(format("SELECT DISTINCT file_path FROM \"%s$files\"", table.getName()));
-            try (OutputStream outputStream = fileSystem.newOutputFile(Location.of(orcFilePath)).createOrOverwrite()) {
-                Files.copy(new File(getResource(orcFileResourceName).toURI()).toPath(), outputStream);
-            }
+            byte[] orcFileData = Resources.toByteArray(getResource(orcFileResourceName));
+            fileSystem.newOutputFile(Location.of(orcFilePath)).createOrOverwrite(orcFileData);
             fileSystem.deleteFiles(List.of(Location.of(orcFilePath.replaceAll("/([^/]*)$", ".$1.crc"))));
 
             Session ignoreFileSizeFromMetadata = Session.builder(getSession())
@@ -157,16 +163,7 @@ public class TestIcebergMinioOrcConnectorTest
     }
 
     @Override
-    public void testDropAmbiguousRowFieldCaseSensitivity()
-    {
-        // TODO https://github.com/trinodb/trino/issues/16273 The connector can't read row types having ambiguous field names in ORC files. e.g. row(X int, x int)
-        assertThatThrownBy(super::testDropAmbiguousRowFieldCaseSensitivity)
-                .hasMessageContaining("Error opening Iceberg split")
-                .hasStackTraceContaining("Multiple entries with same key");
-    }
-
-    @Override
-    protected Optional<TimestampPrecisionTestSetup> filterTimestampPrecisionOnCreateTableAsSelectProvider(TimestampPrecisionTestSetup setup)
+    protected Optional<TypeCoercionTestSetup> filterTypeCoercionOnCreateTableAsSelectProvider(TypeCoercionTestSetup setup)
     {
         if (setup.sourceValueLiteral().equals("TIMESTAMP '1969-12-31 23:59:59.999999499999'")) {
             return Optional.of(setup.withNewValueLiteral("TIMESTAMP '1970-01-01 00:00:00.999999'"));

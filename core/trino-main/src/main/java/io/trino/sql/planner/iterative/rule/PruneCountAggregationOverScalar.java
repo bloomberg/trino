@@ -19,15 +19,16 @@ import io.trino.matching.Pattern;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.spi.function.FunctionId;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Row;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.ValuesNode;
-import io.trino.sql.tree.GenericLiteral;
-import io.trino.sql.tree.Row;
 
 import java.util.Map;
 
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.optimizations.QueryCardinalityUtil.isScalar;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
 import static java.util.Objects.requireNonNull;
@@ -59,18 +60,18 @@ public class PruneCountAggregationOverScalar
         if (!parent.hasDefaultOutput() || parent.getOutputSymbols().size() != 1) {
             return Result.empty();
         }
-        FunctionId countFunctionId = metadata.resolveBuiltinFunction("count", ImmutableList.of()).getFunctionId();
+        FunctionId countFunctionId = metadata.resolveBuiltinFunction("count", ImmutableList.of()).functionId();
         Map<Symbol, AggregationNode.Aggregation> assignments = parent.getAggregations();
         for (Map.Entry<Symbol, AggregationNode.Aggregation> entry : assignments.entrySet()) {
             AggregationNode.Aggregation aggregation = entry.getValue();
             requireNonNull(aggregation, "aggregation is null");
             ResolvedFunction resolvedFunction = aggregation.getResolvedFunction();
-            if (!countFunctionId.equals(resolvedFunction.getFunctionId())) {
+            if (!countFunctionId.equals(resolvedFunction.functionId())) {
                 return Result.empty();
             }
         }
         if (!assignments.isEmpty() && isScalar(parent.getSource(), context.getLookup())) {
-            return Result.ofPlanNode(new ValuesNode(parent.getId(), parent.getOutputSymbols(), ImmutableList.of(new Row(ImmutableList.of(new GenericLiteral("BIGINT", "1"))))));
+            return Result.ofPlanNode(new ValuesNode(parent.getId(), parent.getOutputSymbols(), ImmutableList.of(new Row(ImmutableList.of(new Constant(BIGINT, 1L))))));
         }
         return Result.empty();
     }

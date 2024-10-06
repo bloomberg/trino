@@ -20,19 +20,19 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.errorprone.annotations.FormatMethod;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceUtf8;
 import io.trino.filesystem.Location;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.SortingColumn;
+import io.trino.metastore.Table;
+import io.trino.metastore.type.StructTypeInfo;
 import io.trino.orc.OrcWriterOptions;
 import io.trino.plugin.hive.HiveColumnHandle;
 import io.trino.plugin.hive.HivePartitionKey;
 import io.trino.plugin.hive.HiveTimestampPrecision;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.aws.athena.PartitionProjectionService;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.SortingColumn;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.type.StructTypeInfo;
 import io.trino.spi.ErrorCodeSupplier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ColumnMetadata;
@@ -65,14 +65,21 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
+import java.util.Set;
 import java.util.function.Function;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.concat;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.hive.formats.HiveClassNames.HUDI_INPUT_FORMAT;
+import static io.trino.hive.formats.HiveClassNames.HUDI_PARQUET_INPUT_FORMAT;
+import static io.trino.hive.formats.HiveClassNames.HUDI_PARQUET_REALTIME_INPUT_FORMAT;
+import static io.trino.hive.formats.HiveClassNames.HUDI_REALTIME_INPUT_FORMAT;
 import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
+import static io.trino.metastore.HiveType.toHiveTypes;
+import static io.trino.metastore.SortingColumn.Order.ASCENDING;
+import static io.trino.metastore.SortingColumn.Order.DESCENDING;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.trino.plugin.hive.HiveColumnHandle.bucketColumnHandle;
@@ -91,19 +98,17 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_PARTITION_VALUE;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_UNSUPPORTED_FORMAT;
 import static io.trino.plugin.hive.HiveMetadata.ORC_BLOOM_FILTER_COLUMNS_KEY;
 import static io.trino.plugin.hive.HiveMetadata.ORC_BLOOM_FILTER_FPP_KEY;
+import static io.trino.plugin.hive.HiveMetadata.PARQUET_BLOOM_FILTER_COLUMNS_KEY;
 import static io.trino.plugin.hive.HiveMetadata.SKIP_FOOTER_COUNT_KEY;
 import static io.trino.plugin.hive.HiveMetadata.SKIP_HEADER_COUNT_KEY;
 import static io.trino.plugin.hive.HivePartitionKey.HIVE_DEFAULT_DYNAMIC_PARTITION;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.HiveTableProperties.ORC_BLOOM_FILTER_FPP;
-import static io.trino.plugin.hive.HiveType.toHiveTypes;
-import static io.trino.plugin.hive.metastore.SortingColumn.Order.ASCENDING;
-import static io.trino.plugin.hive.metastore.SortingColumn.Order.DESCENDING;
+import static io.trino.plugin.hive.projection.PartitionProjectionProperties.getPartitionProjectionTrinoColumnProperties;
 import static io.trino.plugin.hive.util.HiveBucketing.isSupportedBucketing;
-import static io.trino.plugin.hive.util.HiveClassNames.HUDI_INPUT_FORMAT;
-import static io.trino.plugin.hive.util.HiveClassNames.HUDI_PARQUET_INPUT_FORMAT;
-import static io.trino.plugin.hive.util.HiveClassNames.HUDI_PARQUET_REALTIME_INPUT_FORMAT;
-import static io.trino.plugin.hive.util.HiveClassNames.HUDI_REALTIME_INPUT_FORMAT;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getTypeSignature;
+import static io.trino.plugin.hive.util.HiveTypeUtil.typeSupported;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
 import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
@@ -134,7 +139,6 @@ import static java.lang.String.format;
 import static java.math.RoundingMode.UNNECESSARY;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
-import static java.util.Objects.requireNonNull;
 
 public final class HiveUtil
 {
@@ -184,9 +188,9 @@ public final class HiveUtil
     {
     }
 
-    public static Optional<String> getInputFormatName(Properties schema)
+    public static Optional<String> getInputFormatName(Map<String, String> schema)
     {
-        return Optional.ofNullable(schema.getProperty(FILE_INPUT_FORMAT));
+        return Optional.ofNullable(schema.get(FILE_INPUT_FORMAT));
     }
 
     private static long parseHiveDate(String value)
@@ -203,9 +207,9 @@ public final class HiveUtil
         return HIVE_TIMESTAMP_PARSER.parseMillis(value) * MICROSECONDS_PER_MILLISECOND;
     }
 
-    public static String getDeserializerClassName(Properties schema)
+    public static String getSerializationLibraryName(Map<String, String> schema)
     {
-        String name = schema.getProperty(SERIALIZATION_LIB);
+        String name = schema.get(SERIALIZATION_LIB);
         checkCondition(name != null, HIVE_INVALID_METADATA, "Table or partition is missing Hive deserializer property: %s", SERIALIZATION_LIB);
         return name;
     }
@@ -554,8 +558,8 @@ public final class HiveUtil
         for (Column field : table.getDataColumns()) {
             // ignore unsupported types rather than failing
             HiveType hiveType = field.getType();
-            if (hiveType.isSupportedType(table.getStorage().getStorageFormat())) {
-                columns.add(createBaseColumn(field.getName(), hiveColumnIndex, hiveType, hiveType.getType(typeManager, timestampPrecision), REGULAR, field.getComment()));
+            if (typeSupported(hiveType.getTypeInfo(), table.getStorage().getStorageFormat())) {
+                columns.add(createBaseColumn(field.getName(), hiveColumnIndex, hiveType, getType(hiveType, typeManager, timestampPrecision), REGULAR, field.getComment()));
             }
             hiveColumnIndex++;
         }
@@ -570,15 +574,16 @@ public final class HiveUtil
         List<Column> partitionKeys = table.getPartitionColumns();
         for (Column field : partitionKeys) {
             HiveType hiveType = field.getType();
-            if (!hiveType.isSupportedType(table.getStorage().getStorageFormat())) {
+            if (!typeSupported(hiveType.getTypeInfo(), table.getStorage().getStorageFormat())) {
                 throw new TrinoException(NOT_SUPPORTED, format("Unsupported Hive type %s found in partition keys of table %s.%s", hiveType, table.getDatabaseName(), table.getTableName()));
             }
-            columns.add(createBaseColumn(field.getName(), -1, hiveType, hiveType.getType(typeManager), PARTITION_KEY, field.getComment()));
+            columns.add(createBaseColumn(field.getName(), -1, hiveType, typeManager.getType(getTypeSignature(hiveType)), PARTITION_KEY, field.getComment()));
         }
 
         return columns.build();
     }
 
+    @FormatMethod
     public static void checkCondition(boolean condition, ErrorCodeSupplier errorCode, String formatString, Object... args)
     {
         if (!condition) {
@@ -592,29 +597,6 @@ public final class HiveUtil
         return partitionKey ? "partition key" : null;
     }
 
-    public static List<String> toPartitionValues(String partitionName)
-    {
-        // mimics Warehouse.makeValsFromName
-        ImmutableList.Builder<String> resultBuilder = ImmutableList.builder();
-        int start = 0;
-        while (true) {
-            while (start < partitionName.length() && partitionName.charAt(start) != '=') {
-                start++;
-            }
-            start++;
-            int end = start;
-            while (end < partitionName.length() && partitionName.charAt(end) != '/') {
-                end++;
-            }
-            if (start > partitionName.length()) {
-                break;
-            }
-            resultBuilder.add(unescapePathName(partitionName.substring(start, end)));
-            start = end + 1;
-        }
-        return resultBuilder.build();
-    }
-
     public static NullableValue getPrefilledColumnValue(
             HiveColumnHandle columnHandle,
             HivePartitionKey partitionKey,
@@ -626,7 +608,7 @@ public final class HiveUtil
     {
         String columnValue;
         if (partitionKey != null) {
-            columnValue = partitionKey.getValue();
+            columnValue = partitionKey.value();
         }
         else if (isPathColumnHandle(columnHandle)) {
             columnValue = path;
@@ -710,19 +692,19 @@ public final class HiveUtil
                 .collect(toImmutableList());
     }
 
-    public static int getHeaderCount(Properties schema)
+    public static int getHeaderCount(Map<String, String> schema)
     {
         return getPositiveIntegerValue(schema, SKIP_HEADER_COUNT_KEY, "0");
     }
 
-    public static int getFooterCount(Properties schema)
+    public static int getFooterCount(Map<String, String> schema)
     {
         return getPositiveIntegerValue(schema, SKIP_FOOTER_COUNT_KEY, "0");
     }
 
-    private static int getPositiveIntegerValue(Properties schema, String key, String defaultValue)
+    private static int getPositiveIntegerValue(Map<String, String> schema, String key, String defaultValue)
     {
-        String value = schema.getProperty(key, defaultValue);
+        String value = schema.getOrDefault(key, defaultValue);
         try {
             int intValue = parseInt(value);
             if (intValue < 0) {
@@ -735,30 +717,38 @@ public final class HiveUtil
         }
     }
 
-    public static List<String> getColumnNames(Properties schema)
+    public static List<String> getColumnNames(Map<String, String> schema)
     {
-        return COLUMN_NAMES_SPLITTER.splitToList(schema.getProperty(LIST_COLUMNS, ""));
+        return COLUMN_NAMES_SPLITTER.splitToList(schema.getOrDefault(LIST_COLUMNS, ""));
     }
 
-    public static List<HiveType> getColumnTypes(Properties schema)
+    public static List<HiveType> getColumnTypes(Map<String, String> schema)
     {
-        return toHiveTypes(schema.getProperty(LIST_COLUMN_TYPES, ""));
+        return toHiveTypes(schema.getOrDefault(LIST_COLUMN_TYPES, ""));
     }
 
-    public static OrcWriterOptions getOrcWriterOptions(Properties schema, OrcWriterOptions orcWriterOptions)
+    public static Set<String> getParquetBloomFilterColumns(Map<String, String> schema)
+    {
+        return ImmutableSet.copyOf(
+                Optional.ofNullable(schema.get(PARQUET_BLOOM_FILTER_COLUMNS_KEY))
+                        .map(COLUMN_NAMES_SPLITTER::splitToList)
+                        .orElse(ImmutableList.of()));
+    }
+
+    public static OrcWriterOptions getOrcWriterOptions(Map<String, String> schema, OrcWriterOptions orcWriterOptions)
     {
         if (schema.containsKey(ORC_BLOOM_FILTER_COLUMNS_KEY)) {
-            if (!schema.containsKey(ORC_BLOOM_FILTER_FPP_KEY)) {
-                throw new TrinoException(HIVE_INVALID_METADATA, "FPP for bloom filter is missing");
-            }
             try {
-                double fpp = parseDouble(schema.getProperty(ORC_BLOOM_FILTER_FPP_KEY));
+                // use default fpp DEFAULT_BLOOM_FILTER_FPP if fpp key does not exist in table metadata
+                double fpp = schema.containsKey(ORC_BLOOM_FILTER_FPP_KEY)
+                        ? parseDouble(schema.get(ORC_BLOOM_FILTER_FPP_KEY))
+                        : orcWriterOptions.getBloomFilterFpp();
                 return orcWriterOptions
-                        .withBloomFilterColumns(ImmutableSet.copyOf(COLUMN_NAMES_SPLITTER.splitToList(schema.getProperty(ORC_BLOOM_FILTER_COLUMNS_KEY))))
+                        .withBloomFilterColumns(ImmutableSet.copyOf(COLUMN_NAMES_SPLITTER.splitToList(schema.get(ORC_BLOOM_FILTER_COLUMNS_KEY))))
                         .withBloomFilterFpp(fpp);
             }
             catch (NumberFormatException e) {
-                throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, format("Invalid value for %s property: %s", ORC_BLOOM_FILTER_FPP, schema.getProperty(ORC_BLOOM_FILTER_FPP_KEY)));
+                throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, format("Invalid value for %s property: %s", ORC_BLOOM_FILTER_FPP, schema.get(ORC_BLOOM_FILTER_FPP_KEY)));
             }
         }
         return orcWriterOptions;
@@ -780,7 +770,7 @@ public final class HiveUtil
 
     public static String sortingColumnToString(SortingColumn column)
     {
-        return column.getColumnName() + ((column.getOrder() == DESCENDING) ? " DESC" : "");
+        return column.columnName() + ((column.order() == DESCENDING) ? " DESC" : "");
     }
 
     public static boolean isHiveSystemSchema(String schemaName)
@@ -819,10 +809,11 @@ public final class HiveUtil
 
     public static boolean isHudiTable(Table table)
     {
-        requireNonNull(table, "table is null");
-        @Nullable
-        String inputFormat = table.getStorage().getStorageFormat().getInputFormatNullable();
+        return isHudiTable(table.getStorage().getStorageFormat().getInputFormatNullable());
+    }
 
+    public static boolean isHudiTable(String inputFormat)
+    {
         return HUDI_PARQUET_INPUT_FORMAT.equals(inputFormat) ||
                 HUDI_PARQUET_REALTIME_INPUT_FORMAT.equals(inputFormat) ||
                 HUDI_INPUT_FORMAT.equals(inputFormat) ||
@@ -865,48 +856,8 @@ public final class HiveUtil
                 .setComment(handle.isHidden() ? Optional.empty() : columnComment.get(handle.getName()))
                 .setExtraInfo(Optional.ofNullable(columnExtraInfo(handle.isPartitionKey())))
                 .setHidden(handle.isHidden())
-                .setProperties(PartitionProjectionService.getPartitionProjectionTrinoColumnProperties(table, handle.getName()))
+                .setProperties(getPartitionProjectionTrinoColumnProperties(table, handle.getName()))
                 .build();
-    }
-
-    // copy of org.apache.hadoop.hive.common.FileUtils#unescapePathName
-    @SuppressWarnings("NumericCastThatLosesPrecision")
-    public static String unescapePathName(String path)
-    {
-        // fast path, no escaped characters and therefore no copying necessary
-        int escapedAtIndex = path.indexOf('%');
-        if (escapedAtIndex < 0 || escapedAtIndex + 2 >= path.length()) {
-            return path;
-        }
-
-        // slow path, unescape into a new string copy
-        StringBuilder sb = new StringBuilder();
-        int fromIndex = 0;
-        while (escapedAtIndex >= 0 && escapedAtIndex + 2 < path.length()) {
-            // preceding sequence without escaped characters
-            if (escapedAtIndex > fromIndex) {
-                sb.append(path, fromIndex, escapedAtIndex);
-            }
-            // try to parse the to digits after the percent sign as hex
-            try {
-                int code = HexFormat.fromHexDigits(path, escapedAtIndex + 1, escapedAtIndex + 3);
-                sb.append((char) code);
-                // advance past the percent sign and both hex digits
-                fromIndex = escapedAtIndex + 3;
-            }
-            catch (NumberFormatException e) {
-                // invalid escape sequence, only advance past the percent sign
-                sb.append('%');
-                fromIndex = escapedAtIndex + 1;
-            }
-            // find next escaped character
-            escapedAtIndex = path.indexOf('%', fromIndex);
-        }
-        // trailing sequence without escaped characters
-        if (fromIndex < path.length()) {
-            sb.append(path, fromIndex, path.length());
-        }
-        return sb.toString();
     }
 
     public static String escapeSchemaName(String schemaName)

@@ -70,7 +70,7 @@ public class TestIcebergInputInfo
     private void assertInputInfo(String tableName, boolean expectedPartition, String expectedFileFormat)
     {
         inTransaction(session -> {
-            Metadata metadata = getQueryRunner().getMetadata();
+            Metadata metadata = getQueryRunner().getPlannerContext().getMetadata();
             QualifiedObjectName qualifiedObjectName = new QualifiedObjectName(
                     session.getCatalog().orElse(ICEBERG_CATALOG),
                     session.getSchema().orElse("tpch"),
@@ -81,7 +81,7 @@ public class TestIcebergInputInfo
             assertThat(tableInfo).isPresent();
             IcebergInputInfo icebergInputInfo = (IcebergInputInfo) tableInfo.get();
             assertThat(icebergInputInfo).isEqualTo(new IcebergInputInfo(
-                    icebergInputInfo.getSnapshotId(),
+                    icebergInputInfo.snapshotId(),
                     Optional.of(expectedPartition),
                     expectedFileFormat));
         });

@@ -14,22 +14,30 @@
 package io.trino.plugin.redshift;
 
 import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
 import io.airlift.configuration.DefunctConfig;
+import jakarta.validation.constraints.Min;
 
-@DefunctConfig("redshift.disable-automatic-fetch-size")
+import java.util.Optional;
+
+@DefunctConfig({
+        "redshift.disable-automatic-fetch-size",
+        "redshift.use-legacy-type-mapping",
+})
 public class RedshiftConfig
 {
-    private boolean legacyTypeMapping;
+    private Integer fetchSize;
 
-    public boolean isLegacyTypeMapping()
+    public Optional<@Min(0) Integer> getFetchSize()
     {
-        return legacyTypeMapping;
+        return Optional.ofNullable(fetchSize);
     }
 
-    @Config("redshift.use-legacy-type-mapping")
-    public RedshiftConfig setLegacyTypeMapping(boolean legacyTypeMapping)
+    @Config("redshift.fetch-size")
+    @ConfigDescription("Redshift fetch size, trino specific heuristic is applied if empty")
+    public RedshiftConfig setFetchSize(Integer fetchSize)
     {
-        this.legacyTypeMapping = legacyTypeMapping;
+        this.fetchSize = fetchSize;
         return this;
     }
 }

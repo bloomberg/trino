@@ -30,9 +30,11 @@ public class TestJdbcMetadataConfig
         assertRecordedDefaults(recordDefaults(JdbcMetadataConfig.class)
                 .setComplexExpressionPushdownEnabled(true)
                 .setJoinPushdownEnabled(false)
+                .setComplexJoinPushdownEnabled(true)
                 .setAggregationPushdownEnabled(true)
                 .setTopNPushdownEnabled(true)
-                .setDomainCompactionThreshold(32));
+                .setBulkListColumns(false)
+                .setDomainCompactionThreshold(256));
     }
 
     @Test
@@ -41,7 +43,9 @@ public class TestJdbcMetadataConfig
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("complex-expression-pushdown.enabled", "false")
                 .put("join-pushdown.enabled", "true")
+                .put("join-pushdown.with-expressions", "false")
                 .put("aggregation-pushdown.enabled", "false")
+                .put("jdbc.bulk-list-columns.enabled", "true")
                 .put("domain-compaction-threshold", "42")
                 .put("topn-pushdown.enabled", "false")
                 .buildOrThrow();
@@ -49,8 +53,10 @@ public class TestJdbcMetadataConfig
         JdbcMetadataConfig expected = new JdbcMetadataConfig()
                 .setComplexExpressionPushdownEnabled(false)
                 .setJoinPushdownEnabled(true)
+                .setComplexJoinPushdownEnabled(false)
                 .setAggregationPushdownEnabled(false)
                 .setTopNPushdownEnabled(false)
+                .setBulkListColumns(true)
                 .setDomainCompactionThreshold(42);
 
         assertFullMapping(properties, expected);

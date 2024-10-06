@@ -38,8 +38,8 @@ public class OracleConfig
     private int connectionPoolMinSize = 1;
     private int connectionPoolMaxSize = 30;
     private Duration inactiveConnectionTimeout = new Duration(20, MINUTES);
+    private Integer fetchSize;
 
-    @NotNull
     public boolean isSynonymsEnabled()
     {
         return synonymsEnabled;
@@ -90,7 +90,6 @@ public class OracleConfig
         return this;
     }
 
-    @NotNull
     public boolean isConnectionPoolEnabled()
     {
         return connectionPoolEnabled;
@@ -140,6 +139,19 @@ public class OracleConfig
     public OracleConfig setInactiveConnectionTimeout(Duration inactiveConnectionTimeout)
     {
         this.inactiveConnectionTimeout = inactiveConnectionTimeout;
+        return this;
+    }
+
+    public Optional<@Min(0) Integer> getFetchSize()
+    {
+        return Optional.ofNullable(fetchSize);
+    }
+
+    @Config("oracle.fetch-size")
+    @ConfigDescription("Oracle fetch size, trino specific heuristic is applied if empty")
+    public OracleConfig setFetchSize(Integer fetchSize)
+    {
+        this.fetchSize = fetchSize;
         return this;
     }
 

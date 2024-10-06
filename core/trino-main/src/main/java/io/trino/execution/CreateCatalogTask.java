@@ -16,12 +16,12 @@ package io.trino.execution;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.connector.ConnectorName;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.CatalogManager;
-import io.trino.metadata.PropertyUtil;
 import io.trino.security.AccessControl;
 import io.trino.spi.TrinoException;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.ConnectorName;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.tree.CreateCatalog;
 import io.trino.sql.tree.Expression;
@@ -33,10 +33,13 @@ import java.util.Map;
 
 import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static io.trino.execution.ParameterExtractor.bindParameters;
+import static io.trino.metadata.PropertyUtil.evaluateProperty;
 import static io.trino.spi.StandardErrorCode.INVALID_CATALOG_PROPERTY;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.VarcharType.VARCHAR;
+import static io.trino.sql.analyzer.ExpressionTreeUtils.extractLocation;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 public class CreateCatalogTask
@@ -72,8 +75,8 @@ public class CreateCatalogTask
         }
 
         Session session = stateMachine.getSession();
-        String catalog = statement.getCatalogName().toString();
-        accessControl.checkCanCreateCatalog(session.toSecurityContext(), catalog);
+        CatalogName catalog = new CatalogName(statement.getCatalogName().getValue().toLowerCase(ENGLISH));
+        accessControl.checkCanCreateCatalog(session.toSecurityContext(), catalog.toString());
 
         Map<String, String> properties = new HashMap<>();
         for (Property property : statement.getProperties()) {
@@ -82,7 +85,8 @@ public class CreateCatalogTask
             }
             properties.put(
                     property.getName().getValue(),
-                    (String) PropertyUtil.evaluateProperty(
+                    (String) evaluateProperty(
+                            extractLocation(property),
                             property.getName().getValue(),
                             VARCHAR,
                             property.getNonDefaultValue(),

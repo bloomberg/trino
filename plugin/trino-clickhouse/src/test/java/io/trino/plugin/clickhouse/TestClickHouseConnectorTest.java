@@ -15,15 +15,17 @@ package io.trino.plugin.clickhouse;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.Session;
 import io.trino.plugin.jdbc.BaseJdbcConnectorTest;
 import io.trino.sql.planner.plan.AggregationNode;
+import io.trino.sql.planner.plan.FilterNode;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingConnectorBehavior;
 import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
-import org.testng.SkipException;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -35,7 +37,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 
-import static io.trino.plugin.clickhouse.ClickHouseQueryRunner.createClickHouseQueryRunner;
 import static io.trino.plugin.clickhouse.ClickHouseTableProperties.ENGINE_PROPERTY;
 import static io.trino.plugin.clickhouse.ClickHouseTableProperties.ORDER_BY_PROPERTY;
 import static io.trino.plugin.clickhouse.ClickHouseTableProperties.PARTITION_BY_PROPERTY;
@@ -43,16 +44,15 @@ import static io.trino.plugin.clickhouse.ClickHouseTableProperties.PRIMARY_KEY_P
 import static io.trino.plugin.clickhouse.ClickHouseTableProperties.SAMPLE_BY_PROPERTY;
 import static io.trino.plugin.clickhouse.TestingClickHouseServer.CLICKHOUSE_LATEST_IMAGE;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.DOMAIN_COMPACTION_THRESHOLD;
+import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
+import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertNull;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.Assumptions.abort;
 
 public class TestClickHouseConnectorTest
         extends BaseJdbcConnectorTest
@@ -63,23 +63,23 @@ public class TestClickHouseConnectorTest
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
         return switch (connectorBehavior) {
-            case SUPPORTS_TRUNCATE -> true;
-            case SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV,
-                    SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE,
-                    SUPPORTS_ARRAY,
-                    SUPPORTS_DELETE,
-                    SUPPORTS_NATIVE_QUERY,
-                    SUPPORTS_NEGATIVE_DATE,
-                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
-                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
-                    SUPPORTS_ROW_TYPE,
-                    SUPPORTS_SET_COLUMN_TYPE,
-                    SUPPORTS_TOPN_PUSHDOWN,
-                    SUPPORTS_UPDATE -> false;
+            case SUPPORTS_AGGREGATION_PUSHDOWN_COVARIANCE,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_COUNT_DISTINCT,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_CORRELATION,
+                 SUPPORTS_PREDICATE_EXPRESSION_PUSHDOWN_WITH_LIKE,
+                 SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                 SUPPORTS_TOPN_PUSHDOWN,
+                 SUPPORTS_TRUNCATE -> true;
+            case SUPPORTS_AGGREGATION_PUSHDOWN_REGRESSION,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_STDDEV,
+                 SUPPORTS_AGGREGATION_PUSHDOWN_VARIANCE,
+                 SUPPORTS_ARRAY,
+                 SUPPORTS_DELETE,
+                 SUPPORTS_DROP_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_NEGATIVE_DATE,
+                 SUPPORTS_ROW_TYPE,
+                 SUPPORTS_SET_COLUMN_TYPE,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -89,29 +89,36 @@ public class TestClickHouseConnectorTest
             throws Exception
     {
         this.clickhouseServer = closeAfterClass(new TestingClickHouseServer(CLICKHOUSE_LATEST_IMAGE));
-        return createClickHouseQueryRunner(
-                clickhouseServer,
-                ImmutableMap.of(),
-                ImmutableMap.of("clickhouse.map-string-as-varchar", "true"),
-                REQUIRED_TPCH_TABLES);
+        return ClickHouseQueryRunner.builder(clickhouseServer)
+                .addConnectorProperty("clickhouse.map-string-as-varchar", "true")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
+                .build();
     }
 
     @Test
     public void testSampleBySqlInjection()
     {
-        assertQueryFails("CREATE TABLE test (p1 int NOT NULL, p2 boolean NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['p1', 'p2'], primary_key = ARRAY['p1', 'p2'], sample_by = 'p2; drop table tpch.nation')", "(?s).*Missing columns: 'p2; drop table tpch.nation.*");
-        assertUpdate("CREATE TABLE test (p1 int NOT NULL, p2 boolean NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['p1', 'p2'], primary_key = ARRAY['p1', 'p2'], sample_by = 'p2')");
-        assertQueryFails("ALTER TABLE test SET PROPERTIES sample_by = 'p2; drop table tpch.nation'", "(?s).*Missing columns: 'p2; drop table tpch.nation.*");
-        assertUpdate("ALTER TABLE test SET PROPERTIES sample_by = 'p2'");
+        String tableName = "sql_injection_" + randomNameSuffix();
+        try {
+            assertQueryFails("CREATE TABLE " + tableName + " (p1 int NOT NULL, p2 boolean NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['p1', 'p2'], primary_key = ARRAY['p1', 'p2'], sample_by = 'p2; drop table tpch.nation')", "(?s).*Missing columns: 'p2; drop table tpch.nation.*");
+            assertUpdate("CREATE TABLE " + tableName + " (p1 int NOT NULL, p2 boolean NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['p1', 'p2'], primary_key = ARRAY['p1', 'p2'], sample_by = 'p2')");
+            assertQueryFails("ALTER TABLE " + tableName + " SET PROPERTIES sample_by = 'p2; drop table tpch.nation'", "(?s).*Missing columns: 'p2; drop table tpch.nation.*");
+            assertUpdate("ALTER TABLE " + tableName + " SET PROPERTIES sample_by = 'p2'");
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + tableName);
+        }
     }
 
+    @Test
     @Override
     public void testRenameColumn()
     {
         // ClickHouse need resets all data in a column for specified column which to be renamed
-        throw new SkipException("TODO: test not implemented yet");
+        abort("TODO: test not implemented yet");
     }
 
+    @Test
     @Override
     public void testRenameColumnWithComment()
     {
@@ -132,10 +139,11 @@ public class TestClickHouseConnectorTest
         // Override because default storage engine doesn't support renaming columns
         try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_column_", "(a_varchar varchar NOT NULL) WITH (engine = 'mergetree', order_by = ARRAY['a_varchar'])")) {
             assertUpdate("ALTER TABLE " + table.getName() + " ADD COLUMN b_varchar varchar COMMENT " + varcharLiteral(comment));
-            assertEquals(getColumnComment(table.getName(), "b_varchar"), comment);
+            assertThat(getColumnComment(table.getName(), "b_varchar")).isEqualTo(comment);
         }
     }
 
+    @Test
     @Override
     public void testDropAndAddColumnWithSameName()
     {
@@ -154,18 +162,11 @@ public class TestClickHouseConnectorTest
         return format("CREATE TABLE %s(%s varchar(50), value varchar(50) NOT NULL) WITH (engine = 'MergeTree', order_by = ARRAY['value'])", tableName, columnNameInSql);
     }
 
+    @Test
+    @Disabled
     @Override
-    public void testRenameColumnName(String columnName)
+    public void testRenameColumnName()
     {
-        // TODO: Enable this test
-        if (columnName.equals("a.dot")) {
-            assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                    .hasMessageContaining("Cannot rename column from nested struct to normal column");
-            throw new SkipException("TODO");
-        }
-        assertThatThrownBy(() -> super.testRenameColumnName(columnName))
-                .hasMessageContaining("is not supported by storage Log");
-        throw new SkipException("TODO");
     }
 
     @Override
@@ -178,6 +179,7 @@ public class TestClickHouseConnectorTest
         return Optional.of(columnName);
     }
 
+    @Test
     @Override
     public void testDropColumn()
     {
@@ -197,10 +199,10 @@ public class TestClickHouseConnectorTest
 
         assertUpdate("DROP TABLE " + tableName);
 
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " DROP COLUMN notExistColumn");
         assertUpdate("ALTER TABLE IF EXISTS " + tableName + " DROP COLUMN IF EXISTS notExistColumn");
-        assertFalse(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
     }
 
     @Override
@@ -215,6 +217,7 @@ public class TestClickHouseConnectorTest
         return "(x VARCHAR NOT NULL) WITH (engine = 'MergeTree', order_by = ARRAY['x'])";
     }
 
+    @Test
     @Override // Overridden because the default storage type doesn't support adding columns
     public void testAddNotNullColumnToEmptyTable()
     {
@@ -222,7 +225,7 @@ public class TestClickHouseConnectorTest
             String tableName = table.getName();
 
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_varchar varchar NOT NULL");
-            assertFalse(columnIsNullable(tableName, "b_varchar"));
+            assertThat(columnIsNullable(tableName, "b_varchar")).isFalse();
             assertUpdate("INSERT INTO " + tableName + " VALUES ('a', 'b')", 1);
             assertThat(query("TABLE " + tableName))
                     .skippingTypesCheck()
@@ -230,6 +233,7 @@ public class TestClickHouseConnectorTest
         }
     }
 
+    @Test
     @Override // Overridden because (a) the default storage type doesn't support adding columns and (b) ClickHouse has implicit default value for new NON NULL column
     public void testAddNotNullColumn()
     {
@@ -237,13 +241,13 @@ public class TestClickHouseConnectorTest
             String tableName = table.getName();
 
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_varchar varchar NOT NULL");
-            assertFalse(columnIsNullable(tableName, "b_varchar"));
+            assertThat(columnIsNullable(tableName, "b_varchar")).isFalse();
 
             assertUpdate("INSERT INTO " + tableName + " VALUES ('a', 'b')", 1);
 
             // ClickHouse set an empty character as the default value
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN c_varchar varchar NOT NULL");
-            assertFalse(columnIsNullable(tableName, "c_varchar"));
+            assertThat(columnIsNullable(tableName, "c_varchar")).isFalse();
             assertQuery("SELECT c_varchar FROM " + tableName, "VALUES ''");
         }
     }
@@ -260,22 +264,24 @@ public class TestClickHouseConnectorTest
             assertThat(getColumnComment(tableName, "b_varchar")).isEqualTo("test new column comment");
 
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN empty_comment varchar COMMENT ''");
-            assertNull(getColumnComment(tableName, "empty_comment"));
+            assertThat(getColumnComment(tableName, "empty_comment")).isNull();
         }
     }
 
+    @Test
     @Override
     public void testAlterTableAddLongColumnName()
     {
         // TODO: Find the maximum column name length in ClickHouse and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
+    @Test
     @Override
     public void testAlterTableRenameColumnToLongName()
     {
         // TODO: Find the maximum column name length in ClickHouse and enable this test.
-        throw new SkipException("TODO");
+        abort("TODO");
     }
 
     @Test
@@ -328,6 +334,7 @@ public class TestClickHouseConnectorTest
                         "col_required2 Int64) ENGINE=Log");
     }
 
+    @Test
     @Override
     public void testCharVarcharComparison()
     {
@@ -337,27 +344,29 @@ public class TestClickHouseConnectorTest
                 .hasMessageContaining("Expected rows");
 
         // TODO run the test with clickhouse.map-string-as-varchar
-        throw new SkipException("");
+        abort("");
     }
 
     @Test
     public void testDifferentEngine()
     {
-        String tableName = "test_add_column_" + randomNameSuffix();
+        String tableName = "test_different_engine_" + randomNameSuffix();
         // MergeTree
         assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['id'])");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertUpdate("DROP TABLE " + tableName);
         assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'mergetree', order_by = ARRAY['id'])");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertUpdate("DROP TABLE " + tableName);
         // MergeTree without order by
-        assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree')", "The property of order_by is required for table engine MergeTree\\(\\)");
+        assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree')");
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
+        assertUpdate("DROP TABLE " + tableName);
 
         // MergeTree with optional
         assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR, logdate DATE NOT NULL) WITH " +
                 "(engine = 'MergeTree', order_by = ARRAY['id'], partition_by = ARRAY['logdate'])");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertUpdate("DROP TABLE " + tableName);
 
         //Log families
@@ -370,16 +379,16 @@ public class TestClickHouseConnectorTest
 
         //NOT support engine
         assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'bad_engine')",
-                "Unable to set catalog 'clickhouse' table property 'engine' to.*");
+                ".* Unable to set catalog 'clickhouse' table property 'engine' to.*");
     }
 
     @Test
     public void testTableProperty()
     {
-        String tableName = "test_add_column_" + randomNameSuffix();
+        String tableName = "test_table_property_" + randomNameSuffix();
         // no table property, it should create a table with default Log engine table
         assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR)");
-        assertTrue(getQueryRunner().tableExists(getSession(), tableName));
+        assertThat(getQueryRunner().tableExists(getSession(), tableName)).isTrue();
         assertUpdate("DROP TABLE " + tableName);
 
         // one required property
@@ -440,7 +449,7 @@ public class TestClickHouseConnectorTest
         assertUpdate("DROP TABLE " + tableName);
 
         // the column refers by order by must be not null
-        assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['id', 'x'])", ".* Sorting key cannot contain nullable columns.*\\n.*");
+        assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['id', 'x'])", ".*Sorting key contains nullable columns, but merge tree setting `allow_nullable_key` is disabled.*\\n.*");
 
         assertUpdate("CREATE TABLE " + tableName + " (id int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['id'], primary_key = ARRAY['id'])");
         assertThat((String) computeScalar("SHOW CREATE TABLE " + tableName))
@@ -506,15 +515,15 @@ public class TestClickHouseConnectorTest
 
         // Primary key must be a prefix of the sorting key,
         assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL, x boolean NOT NULL, y boolean NOT NULL) WITH (engine = 'MergeTree', order_by = ARRAY['id'], sample_by = ARRAY['x', 'y'])",
-                "Invalid value for catalog 'clickhouse' table property 'sample_by': .*");
+                ".* Invalid value for catalog 'clickhouse' table property 'sample_by': .*");
 
         // wrong property type
         assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL) WITH (engine = 'MergeTree', order_by = 'id')",
-                "Invalid value for catalog 'clickhouse' table property 'order_by': .*");
+                ".* Invalid value for catalog 'clickhouse' table property 'order_by': .*");
         assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL) WITH (engine = 'MergeTree', order_by = ARRAY['id'], primary_key = 'id')",
-                "Invalid value for catalog 'clickhouse' table property 'primary_key': .*");
+                ".* Invalid value for catalog 'clickhouse' table property 'primary_key': .*");
         assertQueryFails("CREATE TABLE " + tableName + " (id int NOT NULL) WITH (engine = 'MergeTree', order_by = ARRAY['id'], primary_key = ARRAY['id'], partition_by = 'id')",
-                "Invalid value for catalog 'clickhouse' table property 'partition_by': .*");
+                ".* Invalid value for catalog 'clickhouse' table property 'partition_by': .*");
     }
 
     @Test
@@ -553,7 +562,7 @@ public class TestClickHouseConnectorTest
                 "(p1 int NOT NULL, p2 int NOT NULL, x VARCHAR) WITH (engine = 'MergeTree', order_by = ARRAY['p1', 'p2'], primary_key = ARRAY['p1', 'p2'])")) {
             assertQueryFails(
                     "ALTER TABLE " + table.getName() + " SET PROPERTIES invalid_property = 'p2'",
-                    "Catalog 'clickhouse' table property 'invalid_property' does not exist");
+                    "line 1:66: Catalog 'clickhouse' table property 'invalid_property' does not exist");
         }
     }
 
@@ -602,6 +611,7 @@ public class TestClickHouseConnectorTest
     }
 
     // TODO: Remove override once decimal predicate pushdown is implemented (https://github.com/trinodb/trino/issues/7100)
+    @Test
     @Override
     public void testNumericAggregationPushdown()
     {
@@ -684,12 +694,13 @@ public class TestClickHouseConnectorTest
         return "Date must be between 1970-01-01 and 2149-06-06 in ClickHouse: " + date;
     }
 
+    @Test
     @Override
     public void testCharTrailingSpace()
     {
         assertThatThrownBy(super::testCharTrailingSpace)
                 .hasMessageStartingWith("Failed to execute statement: CREATE TABLE tpch.char_trailing_space");
-        throw new SkipException("Implement test for ClickHouse");
+        abort("Implement test for ClickHouse");
     }
 
     @Override
@@ -699,6 +710,7 @@ public class TestClickHouseConnectorTest
         return new TestTable(onRemoteDatabase(), "tpch.simple_table", "(col BIGINT) Engine=Log", ImmutableList.of("1", "2"));
     }
 
+    @Test
     @Override
     public void testCreateTableWithLongTableName()
     {
@@ -707,17 +719,18 @@ public class TestClickHouseConnectorTest
         String validTableName = baseTableName + "z".repeat(maxTableNameLength().orElseThrow() - baseTableName.length());
 
         assertUpdate("CREATE TABLE " + validTableName + " (a bigint)");
-        assertTrue(getQueryRunner().tableExists(getSession(), validTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isTrue();
         assertThatThrownBy(() -> assertUpdate("DROP TABLE " + validTableName))
                 .hasMessageMatching("(?s).*(Bad path syntax|File name too long).*");
 
         String invalidTableName = baseTableName + "z".repeat(maxTableNameLength().orElseThrow() - baseTableName.length() + 1);
-        assertThatThrownBy(() -> query("CREATE TABLE " + invalidTableName + " (a bigint)"))
-                .hasMessageMatching("(?s).*(Cannot open file|File name too long).*");
+        assertThat(query("CREATE TABLE " + invalidTableName + " (a bigint)"))
+                .failure().hasMessageMatching("(?s).*(Cannot open file|File name too long).*");
         // ClickHouse lefts a table even if the above statement failed
-        assertTrue(getQueryRunner().tableExists(getSession(), validTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTableName)).isTrue();
     }
 
+    @Test
     @Override
     public void testRenameSchemaToLongName()
     {
@@ -755,6 +768,7 @@ public class TestClickHouseConnectorTest
         assertThat(e).hasMessageContaining("File name too long");
     }
 
+    @Test
     @Override
     public void testRenameTableToLongTableName()
     {
@@ -767,7 +781,7 @@ public class TestClickHouseConnectorTest
         String validTargetTableName = baseTableName + "z".repeat(255 - ".sql".length() - baseTableName.length());
 
         assertUpdate("ALTER TABLE " + sourceTableName + " RENAME TO " + validTargetTableName);
-        assertTrue(getQueryRunner().tableExists(getSession(), validTargetTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), validTargetTableName)).isTrue();
         assertQuery("SELECT x FROM " + validTargetTableName, "VALUES 123");
         assertThatThrownBy(() -> assertUpdate("DROP TABLE " + validTargetTableName))
                 .hasMessageMatching("(?s).*(Bad path syntax|File name too long).*");
@@ -776,7 +790,24 @@ public class TestClickHouseConnectorTest
         String invalidTargetTableName = validTargetTableName + "z";
         assertThatThrownBy(() -> assertUpdate("ALTER TABLE " + sourceTableName + " RENAME TO " + invalidTargetTableName))
                 .hasMessageMatching("(?s).*(Cannot rename|File name too long).*");
-        assertFalse(getQueryRunner().tableExists(getSession(), invalidTargetTableName));
+        assertThat(getQueryRunner().tableExists(getSession(), invalidTargetTableName)).isFalse();
+    }
+
+    @Test
+    @Override // Override because the failure message differs
+    public void testNativeQueryIncorrectSyntax()
+    {
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'some wrong syntax'))"))
+                .failure().hasMessage("Query not supported: ResultSetMetaData not available for query: some wrong syntax");
+    }
+
+    @Test
+    @Override // Override because the failure message differs
+    public void testNativeQueryInsertStatementTableDoesNotExist()
+    {
+        assertThat(getQueryRunner().tableExists(getSession(), "non_existent_table")).isFalse();
+        assertThat(query("SELECT * FROM TABLE(system.query(query => 'INSERT INTO non_existent_table VALUES (1)'))"))
+                .failure().hasMessage("Query not supported: ResultSetMetaData not available for query: INSERT INTO non_existent_table VALUES (1)");
     }
 
     @Test
@@ -787,6 +818,306 @@ public class TestClickHouseConnectorTest
         assertQuery(
                 "SHOW SESSION LIKE '" + propertyName + "'",
                 "VALUES('" + propertyName + "','1000', '1000', 'integer', 'Maximum ranges to allow in a tuple domain without simplifying it')");
+    }
+
+    @Test
+    public void testFloatPredicatePushdown()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_float_predicate_pushdown",
+                """
+                        (
+                        c_real real,
+                        c_real_neg_infinity real,
+                        c_real_pos_infinity real,
+                        c_real_nan real,
+                        c_double double,
+                        c_double_neg_infinity double,
+                        c_double_pos_infinity double,
+                        c_double_nan double)""",
+                List.of("3.14, -infinity(), +infinity(), nan(), 3.14, -infinity(), +infinity(), nan()"))) {
+            assertThat(query("SELECT c_real FROM %s WHERE c_real = real '3.14'".formatted(table.getName())))
+                    // because of https://github.com/trinodb/trino/issues/9998
+                    .isNotFullyPushedDown(FilterNode.class);
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_real_neg_infinity = -infinity()".formatted(table.getName())))
+                    // because of https://github.com/trinodb/trino/issues/9998
+                    .isNotFullyPushedDown(FilterNode.class);
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_real_pos_infinity = +infinity()".formatted(table.getName())))
+                    // because of https://github.com/trinodb/trino/issues/9998
+                    .isNotFullyPushedDown(FilterNode.class);
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_real_nan = nan()".formatted(table.getName())))
+                    .isReplacedWithEmptyValues();
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_double = double '3.14'".formatted(table.getName())))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_double_neg_infinity = -infinity()".formatted(table.getName())))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_double_pos_infinity = +infinity()".formatted(table.getName())))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT c_real FROM %s WHERE c_double_nan = nan()".formatted(table.getName())))
+                    .isReplacedWithEmptyValues();
+        }
+    }
+
+    @Test
+    public void testOrPredicatePushdown()
+    {
+        assertThat(query("SELECT * FROM nation WHERE name = 'ALGERIA' OR comment = 'comment'")).isFullyPushedDown();
+    }
+
+    @Test
+    public void testTextualPredicatePushdown()
+    {
+        Session smallDomainCompactionThreshold = Session.builder(getSession())
+                .setCatalogSessionProperty("clickhouse", "domain_compaction_threshold", "1")
+                .build();
+
+        // varchar equality
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name = 'ROMANIA'"))
+                .matches("VALUES (BIGINT '3', BIGINT '19', CAST('ROMANIA' AS varchar))")
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name = 'ROMANIA' OR comment = 'P'"))
+                .isFullyPushedDown();
+
+        // varchar range
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name < 'POLAND'"))
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name < 'POLAND' OR comment < 'P'"))
+                .isFullyPushedDown();
+
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name <= 'POLAND'"))
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name <= 'POLAND' OR comment <= 'P'"))
+                .isFullyPushedDown();
+
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name > 'POLAND'"))
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name > 'POLAND' OR comment > 'P'"))
+                .isFullyPushedDown();
+
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name >= 'POLAND'"))
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name >= 'POLAND' OR comment >= 'P'"))
+                .isFullyPushedDown();
+
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name BETWEEN 'POLAND' AND 'RPA'"))
+                .matches("VALUES (BIGINT '3', BIGINT '19', CAST('ROMANIA' AS varchar))")
+                .isFullyPushedDown();
+
+        // varchar IN without domain compaction
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name IN ('POLAND', 'ROMANIA', 'VIETNAM')"))
+                .matches("VALUES " +
+                        "(BIGINT '3', BIGINT '19', CAST('ROMANIA' AS varchar)), " +
+                        "(BIGINT '2', BIGINT '21', CAST('VIETNAM' AS varchar))")
+                .isFullyPushedDown();
+
+        // varchar IN with small compaction threshold
+        assertThat(query(
+                Session.builder(getSession())
+                        .setCatalogSessionProperty("clickhouse", "domain_compaction_threshold", "1")
+                        .build(),
+                "SELECT regionkey, nationkey, name FROM nation WHERE name IN ('POLAND', 'ROMANIA', 'VIETNAM')"))
+                .matches("VALUES " +
+                        "(BIGINT '3', BIGINT '19', CAST('ROMANIA' AS varchar)), " +
+                        "(BIGINT '2', BIGINT '21', CAST('VIETNAM' AS varchar))")
+                // Filter node is retained as constraint is pushed into connector is simplified, and
+                // The compacted domain is a range predicate which can give wrong results
+                // so has to be filtered by trino too to ensure correct predicate.
+                .isNotFullyPushedDown(FilterNode.class);
+
+        // varchar different case
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name = 'romania'"))
+                .returnsEmptyResult()
+                .isFullyPushedDown();
+        assertThat(query("SELECT regionkey, nationkey, name FROM nation WHERE name = 'romania' OR comment = 'P'"))
+                .returnsEmptyResult()
+                .isFullyPushedDown();
+
+        Session convertToVarchar = Session.builder(getSession())
+                .setCatalogSessionProperty("clickhouse", UNSUPPORTED_TYPE_HANDLING, CONVERT_TO_VARCHAR.name())
+                .build();
+        String withConnectorExpression = " OR some_column = 'x'";
+        try (TestTable table = new TestTable(
+                onRemoteDatabase(),
+                "tpch.test_textual_predicate_pushdown",
+                """
+                        (
+                        unsupported_1 Point,
+                        unsupported_2 Point,
+                        some_column String,
+                        a_string String,
+                        a_string_alias Text,
+                        a_fixed_string FixedString(1),
+                        a_nullable_string Nullable(String),
+                        a_nullable_string_alias Nullable(Text),
+                        a_nullable_fixed_string Nullable(FixedString(1)),
+                        a_lowcardinality_nullable_string LowCardinality(Nullable(String)),
+                        a_lowcardinality_nullable_fixed_string LowCardinality(Nullable(FixedString(1))),
+                        a_enum_1 Enum('hello', 'world', 'a', 'b', 'c', '%', '_'),
+                        a_enum_2 Enum('hello', 'world', 'a', 'b', 'c', '%', '_'))
+                        ENGINE=Log""",
+                List.of(
+                        "(10, 10), (10, 10), 'z', '\\\\', '\\\\', '\\\\', '\\\\', '\\\\', '\\\\', '\\\\', '\\\\', 'hello', 'world'",
+                        "(10, 10), (10, 10), 'z', '_', '_', '_', '_', '_', '_', '_', '_', '_', '_'",
+                        "(10, 10), (10, 10), 'z', '%', '%', '%', '%', '%', '%', '%', '%', '%', '%'",
+                        "(10, 10), (10, 10), 'z', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a'",
+                        "(10, 10), (10, 10), 'z', 'b', 'b', 'b', 'b', 'b', 'b', 'b', 'b', 'b', 'b'",
+                        "(10, 10), (10, 10), 'z', 'c', 'c', 'c', 'c', 'c', 'c', 'c', 'c', 'c', 'c'"))) {
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string_alias = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string_alias = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_fixed_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_fixed_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_string_alias = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_string_alias = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_fixed_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_nullable_fixed_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_lowcardinality_nullable_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_lowcardinality_nullable_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_lowcardinality_nullable_fixed_string = 'b'")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_lowcardinality_nullable_fixed_string = 'b'" + withConnectorExpression)).isFullyPushedDown();
+
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = a_string_alias")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = a_string_alias" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = a_enum_1")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string = a_enum_1" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE a_string = unsupported_1")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE a_string = unsupported_1" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = 'hello'")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = 'hello'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = 'not_a_value'")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = 'not_a_value'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            // pushdown of a condition, both sides of the same native type, which is mapped to varchar,
+            // not allowed because some operations (e.g. inequalities) may not be allowed in the native system on an unknown native types
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = a_enum_2")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 = a_enum_2" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+
+            // pushdown of a condition, both sides of the same native type, which is mapped to varchar,
+            // not allowed because some operations (e.g. inequalities) may not be allowed in the native system on an unknown native types
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 = unsupported_2")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 = unsupported_2" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string IN ('a', 'b')")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string IN ('a', 'b')" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 IN ('a', 'b')")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 IN ('a', 'b')" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 IN ('a', 'b')")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 IN ('a', 'b')" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string IN (a_string_alias, 'b')")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string IN (a_string_alias, 'b')" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(smallDomainCompactionThreshold, "SELECT some_column FROM " + table.getName() + " WHERE a_string IN ('a', 'b')")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(smallDomainCompactionThreshold, "SELECT some_column FROM " + table.getName() + " WHERE a_string IN ('a', 'b')" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string NOT IN ('a', 'b')")).isFullyPushedDown();
+            assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string NOT IN ('a', 'b')" + withConnectorExpression)).isFullyPushedDown();
+            assertThat(query(smallDomainCompactionThreshold, "SELECT some_column FROM " + table.getName() + " WHERE a_string NOT IN ('a', 'b')")).isNotFullyPushedDown(FilterNode.class);
+            assertThat(query(smallDomainCompactionThreshold, "SELECT some_column FROM " + table.getName() + " WHERE a_string NOT IN ('a', 'b')" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+
+            assertLike(true, table, withConnectorExpression, convertToVarchar);
+            assertLike(false, table, withConnectorExpression, convertToVarchar);
+        }
+    }
+
+    private void assertLike(boolean isPositive, TestTable table, String withConnectorExpression, Session convertToVarchar)
+    {
+        String like = isPositive ? "LIKE" : "NOT LIKE";
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " NULL")).returnsEmptyResult();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " 'b'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " 'b'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " 'b%'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " 'b%'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%b'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%b'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%b%'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%b%'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 " + like + " '%b%'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_enum_1 " + like + " '%b%'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 " + like + " '%b%'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE unsupported_1 " + like + " '%b%'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " a_string_alias")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " a_string_alias" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " a_enum_1")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " a_enum_1" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " unsupported_1")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query(convertToVarchar, "SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " unsupported_1" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        // metacharacters
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '_'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '_'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '__'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '__'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%'" + withConnectorExpression)).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%%'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%%'" + withConnectorExpression)).isFullyPushedDown();
+        // escape
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\b'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\b'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\_'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\_'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\__'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\__'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%%'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%%'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\\\\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\\\\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\' ESCAPE '\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\\\' ESCAPE '\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%' ESCAPE '\\'")).isFullyPushedDown();
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '\\%' ESCAPE '\\'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%$_%' ESCAPE '$'")).isNotFullyPushedDown(FilterNode.class);
+        assertThat(query("SELECT some_column FROM " + table.getName() + " WHERE a_string " + like + " '%$_%' ESCAPE '$'" + withConnectorExpression)).isNotFullyPushedDown(FilterNode.class);
+    }
+
+    @Test
+    @Override // Override because ClickHouse doesn't follow SQL standard syntax
+    public void testExecuteProcedure()
+    {
+        String tableName = "test_execute" + randomNameSuffix();
+        String schemaTableName = getSession().getSchema().orElseThrow() + "." + tableName;
+
+        assertUpdate("CREATE TABLE " + schemaTableName + "(id int NOT NULL, data int) WITH (engine = 'MergeTree', order_by = ARRAY['id'])");
+        try {
+            assertUpdate("CALL system.execute('INSERT INTO " + schemaTableName + " VALUES (1, 10)')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 10)");
+
+            assertUpdate("CALL system.execute('ALTER TABLE " + schemaTableName + " UPDATE data = 100 WHERE true')");
+            assertQuery("SELECT * FROM " + schemaTableName, "VALUES (1, 100)");
+
+            assertUpdate("CALL system.execute('ALTER TABLE " + schemaTableName + " DELETE WHERE true')");
+            assertQueryReturnsEmptyResult("SELECT * FROM " + schemaTableName);
+
+            assertUpdate("CALL system.execute('DROP TABLE " + schemaTableName + "')");
+            assertThat(getQueryRunner().tableExists(getSession(), tableName)).isFalse();
+        }
+        finally {
+            assertUpdate("DROP TABLE IF EXISTS " + schemaTableName);
+        }
+    }
+
+    @Test
+    @Override // Override because ClickHouse allows SELECT query in update procedure
+    public void testExecuteProcedureWithInvalidQuery()
+    {
+        assertUpdate("CALL system.execute('SELECT 1')");
+        assertQueryFails("CALL system.execute('invalid')", "(?s)Failed to execute query.*");
     }
 
     @Override

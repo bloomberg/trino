@@ -13,15 +13,13 @@
  */
 package io.trino.operator.aggregation.multimapagg;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.MapBlockBuilder;
-import io.trino.spi.block.SingleMapBlock;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.GroupedAccumulatorState;
 import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
-
-import static java.lang.Math.toIntExact;
 
 public final class GroupedMultimapAggregationState
         extends AbstractMultimapAggregationState
@@ -34,7 +32,7 @@ public final class GroupedMultimapAggregationState
             MethodHandle keyReadFlat,
             MethodHandle keyWriteFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle keyHashBlock,
             Type valueType,
             MethodHandle valueReadFlat,
@@ -45,7 +43,7 @@ public final class GroupedMultimapAggregationState
                 keyReadFlat,
                 keyWriteFlat,
                 hashFlat,
-                distinctFlatBlock,
+                identicalFlatBlock,
                 keyHashBlock,
                 valueType,
                 valueReadFlat,
@@ -54,19 +52,19 @@ public final class GroupedMultimapAggregationState
     }
 
     @Override
-    public void setGroupId(long groupId)
+    public void setGroupId(int groupId)
     {
-        this.groupId = toIntExact(groupId);
+        this.groupId = groupId;
     }
 
     @Override
-    public void ensureCapacity(long size)
+    public void ensureCapacity(int size)
     {
-        setMaxGroupId(toIntExact(size));
+        setMaxGroupId(size);
     }
 
     @Override
-    public void add(Block keyBlock, int keyPosition, Block valueBlock, int valuePosition)
+    public void add(ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition)
     {
         add(groupId, keyBlock, keyPosition, valueBlock, valuePosition);
     }
@@ -74,7 +72,7 @@ public final class GroupedMultimapAggregationState
     @Override
     public void merge(MultimapAggregationState other)
     {
-        SingleMapBlock serializedState = ((SingleMultimapAggregationState) other).removeTempSerializedState();
+        SqlMap serializedState = ((SingleMultimapAggregationState) other).removeTempSerializedState();
         deserialize(groupId, serializedState);
     }
 

@@ -15,7 +15,6 @@ package io.trino.sql.gen;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
 import com.google.common.primitives.Primitives;
 import io.airlift.bytecode.BytecodeBlock;
 import io.airlift.bytecode.BytecodeNode;
@@ -164,8 +163,8 @@ public final class BytecodeUtils
     {
         return generateInvocation(
                 scope,
-                resolvedFunction.getSignature().getName().getFunctionName(),
-                resolvedFunction.getFunctionNullability(),
+                resolvedFunction.signature().getName().getFunctionName(),
+                resolvedFunction.functionNullability(),
                 invocationConvention -> functionManager.getScalarFunctionImplementation(resolvedFunction, invocationConvention),
                 arguments,
                 binder);
@@ -212,9 +211,9 @@ public final class BytecodeUtils
     {
         return generateFullInvocation(
                 scope,
-                resolvedFunction.getSignature().getName().getFunctionName(),
-                resolvedFunction.getFunctionNullability(),
-                resolvedFunction.getSignature().getArgumentTypes().stream()
+                resolvedFunction.signature().getName().getFunctionName(),
+                resolvedFunction.functionNullability(),
+                resolvedFunction.signature().getArgumentTypes().stream()
                         .map(FunctionType.class::isInstance)
                         .collect(toImmutableList()),
                 invocationConvention -> functionManager.getScalarFunctionImplementation(resolvedFunction, invocationConvention),
@@ -295,7 +294,7 @@ public final class BytecodeUtils
                     case NEVER_NULL:
                         block.append(arguments.get(realParameterIndex));
                         checkArgument(!Primitives.isWrapperType(type), "Non-nullable argument must not be primitive wrapper type");
-                        block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, Lists.reverse(stackTypes)));
+                        block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, stackTypes.reversed()));
                         break;
                     case NULL_FLAG:
                         block.append(arguments.get(realParameterIndex));
@@ -315,7 +314,7 @@ public final class BytecodeUtils
                         stackTypes.add(int.class);
                         if (!functionNullability.isArgumentNullable(realParameterIndex)) {
                             block.append(scope.getVariable("wasNull").set(inputReferenceNode.blockAndPositionIsNull()));
-                            block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, Lists.reverse(stackTypes)));
+                            block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, stackTypes.reversed()));
                         }
                         currentParameterIndex++;
                         break;
@@ -325,7 +324,7 @@ public final class BytecodeUtils
                             block.append(arguments.get(realParameterIndex));
                             block.invokeVirtual(InOut.class, "isNull", boolean.class);
                             block.putVariable(scope.getVariable("wasNull"));
-                            block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, Lists.reverse(stackTypes)));
+                            block.append(ifWasNullPopAndGoto(scope, end, unboxedReturnType, stackTypes.reversed()));
                         }
                         currentParameterIndex++;
                         break;
@@ -471,9 +470,9 @@ public final class BytecodeUtils
         // use temp variables to re-shuffle the stack to the right shape before Type.writeXXX is called
         // Unfortunately, because of the assumptions made by try_cast, we can't get around it yet.
         // TODO: clean up once try_cast is fixed
-        Variable tempValue = scope.createTempVariable(valueJavaType);
-        Variable tempOutput = scope.createTempVariable(BlockBuilder.class);
-        return new BytecodeBlock()
+        Variable tempValue = scope.getOrCreateTempVariable(valueJavaType);
+        Variable tempOutput = scope.getOrCreateTempVariable(BlockBuilder.class);
+        BytecodeBlock block = new BytecodeBlock()
                 .comment("if (wasNull)")
                 .append(new IfStatement()
                         .condition(wasNullVariable)
@@ -490,5 +489,8 @@ public final class BytecodeUtils
                                 .getVariable(tempOutput)
                                 .getVariable(tempValue)
                                 .invokeInterface(Type.class, methodName, void.class, BlockBuilder.class, valueJavaType)));
+        scope.releaseTempVariableForReuse(tempOutput);
+        scope.releaseTempVariableForReuse(tempValue);
+        return block;
     }
 }

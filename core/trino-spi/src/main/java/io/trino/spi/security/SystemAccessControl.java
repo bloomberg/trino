@@ -13,9 +13,13 @@
  */
 package io.trino.spi.security;
 
+import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.function.SchemaFunctionName;
@@ -35,6 +39,7 @@ import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
 import static io.trino.spi.security.AccessDeniedException.denyCommentView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateCatalog;
+import static io.trino.spi.security.AccessDeniedException.denyCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyCreateMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateRole;
 import static io.trino.spi.security.AccessDeniedException.denyCreateSchema;
@@ -42,10 +47,12 @@ import static io.trino.spi.security.AccessDeniedException.denyCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyCreateView;
 import static io.trino.spi.security.AccessDeniedException.denyCreateViewWithSelect;
 import static io.trino.spi.security.AccessDeniedException.denyDeleteTable;
+import static io.trino.spi.security.AccessDeniedException.denyDenyEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenySchemaPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDenyTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyDropCatalog;
 import static io.trino.spi.security.AccessDeniedException.denyDropColumn;
+import static io.trino.spi.security.AccessDeniedException.denyDropFunction;
 import static io.trino.spi.security.AccessDeniedException.denyDropMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyDropRole;
 import static io.trino.spi.security.AccessDeniedException.denyDropSchema;
@@ -54,6 +61,7 @@ import static io.trino.spi.security.AccessDeniedException.denyDropView;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteProcedure;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteQuery;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteTableProcedure;
+import static io.trino.spi.security.AccessDeniedException.denyGrantEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
 import static io.trino.spi.security.AccessDeniedException.denyGrantSchemaPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
@@ -66,6 +74,7 @@ import static io.trino.spi.security.AccessDeniedException.denyRenameColumn;
 import static io.trino.spi.security.AccessDeniedException.denyRenameMaterializedView;
 import static io.trino.spi.security.AccessDeniedException.denyRenameSchema;
 import static io.trino.spi.security.AccessDeniedException.denyRenameTable;
+import static io.trino.spi.security.AccessDeniedException.denyRevokeEntityPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeRoles;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeSchemaPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
@@ -79,6 +88,7 @@ import static io.trino.spi.security.AccessDeniedException.denySetTableProperties
 import static io.trino.spi.security.AccessDeniedException.denySetUser;
 import static io.trino.spi.security.AccessDeniedException.denySetViewAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denyShowColumns;
+import static io.trino.spi.security.AccessDeniedException.denyShowCreateFunction;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateSchema;
 import static io.trino.spi.security.AccessDeniedException.denyShowCreateTable;
 import static io.trino.spi.security.AccessDeniedException.denyShowCurrentRoles;
@@ -121,10 +131,22 @@ public interface SystemAccessControl
      * Checks if identity can execute a query.
      *
      * @throws AccessDeniedException if not allowed
+     * @deprecated use {@link #checkCanExecuteQuery(Identity, QueryId)}
      */
+    @Deprecated
     default void checkCanExecuteQuery(Identity identity)
     {
         denyExecuteQuery();
+    }
+
+    /**
+     * Checks if identity can execute a query.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanExecuteQuery(Identity identity, QueryId queryId)
+    {
+        checkCanExecuteQuery(identity);
     }
 
     /**
@@ -185,10 +207,22 @@ public interface SystemAccessControl
      * Check if identity is allowed to set the specified system property.
      *
      * @throws AccessDeniedException if not allowed
+     * @deprecated use {@link #checkCanSetSystemSessionProperty(Identity, QueryId, String)}
      */
+    @Deprecated
     default void checkCanSetSystemSessionProperty(Identity identity, String propertyName)
     {
         denySetSystemSessionProperty(propertyName);
+    }
+
+    /**
+     * Check if identity is allowed to set the specified system property.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName)
+    {
+        checkCanSetSystemSessionProperty(identity, propertyName);
     }
 
     /**
@@ -708,6 +742,36 @@ public interface SystemAccessControl
     }
 
     /**
+     * Check if identity is allowed to grant the specified privilege to the grantee on the specified entity.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanGrantEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee, boolean grantOption)
+    {
+        denyGrantEntityPrivilege(privilege.toString(), entity);
+    }
+
+    /**
+     * Check if identity is allowed to deny the specified privilege to the grantee on the specified entity.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanDenyEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal grantee)
+    {
+        denyDenyEntityPrivilege(privilege.toString(), entity);
+    }
+
+    /**
+     * Check if identity is allowed to revoke the specified privilege on the specified entity from the revokee.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanRevokeEntityPrivilege(SystemSecurityContext context, EntityPrivilege privilege, EntityKindAndName entity, TrinoPrincipal revokee, boolean grantOption)
+    {
+        denyRevokeEntityPrivilege(privilege.toString(), entity);
+    }
+
+    /**
      * Check if identity is allowed to show roles.
      *
      * @throws AccessDeniedException if not allowed
@@ -836,6 +900,36 @@ public interface SystemAccessControl
     }
 
     /**
+     * Check if identity is allowed to create the specified function in the catalog.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanCreateFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        denyCreateFunction(functionName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to drop the specified function in the catalog.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanDropFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        denyDropFunction(functionName.toString());
+    }
+
+    /**
+     * Check if identity is allowed to execute SHOW CREATE FUNCTION.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    default void checkCanShowCreateFunction(SystemSecurityContext systemSecurityContext, CatalogSchemaRoutineName functionName)
+    {
+        denyShowCreateFunction(functionName.toString());
+    }
+
+    /**
      * Get row filters associated with the given table and identity.
      * <p>
      * Each filter must be a scalar SQL expression of boolean type over the columns in the table.
@@ -854,10 +948,28 @@ public interface SystemAccessControl
      * must be written in terms of columns in the table.
      *
      * @return the mask if present, or empty if not applicable
+     * @deprecated use {@link #getColumnMasks(SystemSecurityContext, CatalogSchemaTableName, List)}
      */
+    @Deprecated
     default Optional<ViewExpression> getColumnMask(SystemSecurityContext context, CatalogSchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    /**
+     * Bulk method for getting column masks for a subset of columns in a table.
+     * <p>
+     * Each mask must be a scalar SQL expression of a type coercible to the type of the column being masked. The expression
+     * must be written in terms of columns in the table.
+     *
+     * @return a mapping from columns to masks. The keys of the return Map are a subset of {@code columns}.
+     */
+    default Map<ColumnSchema, ViewExpression> getColumnMasks(SystemSecurityContext context, CatalogSchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return columns.stream()
+                .map(column -> Map.entry(column, getColumnMask(context, tableName, column.getName(), column.getType())))
+                .filter(entry -> entry.getValue().isPresent())
+                .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().get()));
     }
 
     /**
@@ -867,4 +979,6 @@ public interface SystemAccessControl
     {
         return emptySet();
     }
+
+    default void shutdown() {}
 }

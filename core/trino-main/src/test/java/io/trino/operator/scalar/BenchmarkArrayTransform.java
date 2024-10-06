@@ -25,6 +25,7 @@ import io.trino.spi.block.Block;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.Type;
 import io.trino.sql.gen.ExpressionCompiler;
+import io.trino.sql.planner.Symbol;
 import io.trino.sql.relational.CallExpression;
 import io.trino.sql.relational.ConstantExpression;
 import io.trino.sql.relational.InputReferenceExpression;
@@ -52,6 +53,7 @@ import java.util.stream.Collectors;
 
 import static com.google.common.base.Verify.verify;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static io.trino.operator.scalar.ArrayTransformFunction.ARRAY_TRANSFORM_NAME;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -107,12 +109,11 @@ public class BenchmarkArrayTransform
                 Type elementType = TYPES.get(i);
                 ArrayType arrayType = new ArrayType(elementType);
                 projectionsBuilder.add(new CallExpression(
-                        functionResolution.resolveFunction("transform", fromTypes(arrayType, new FunctionType(ImmutableList.of(BIGINT), BOOLEAN))),
+                        functionResolution.resolveFunction(ARRAY_TRANSFORM_NAME, fromTypes(arrayType, new FunctionType(ImmutableList.of(BIGINT), BOOLEAN))),
                         ImmutableList.of(
                                 new InputReferenceExpression(0, arrayType),
                                 new LambdaDefinitionExpression(
-                                        ImmutableList.of(BIGINT),
-                                        ImmutableList.of("x"),
+                                        ImmutableList.of(new Symbol(BIGINT, "x")),
                                         new CallExpression(
                                                 functionResolution.resolveOperator(LESS_THAN, ImmutableList.of(BIGINT, BIGINT)),
                                                 ImmutableList.of(new ConstantExpression(0L, BIGINT), new VariableReferenceExpression("x", BIGINT)))))));
@@ -121,7 +122,7 @@ public class BenchmarkArrayTransform
 
             ImmutableList<RowExpression> projections = projectionsBuilder.build();
             pageProcessor = compiler.compilePageProcessor(Optional.empty(), projections).get();
-            pageBuilder = new PageBuilder(projections.stream().map(RowExpression::getType).collect(Collectors.toList()));
+            pageBuilder = new PageBuilder(projections.stream().map(RowExpression::type).collect(Collectors.toList()));
             page = new Page(blocks);
         }
 

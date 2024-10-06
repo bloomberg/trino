@@ -38,8 +38,8 @@ import static io.trino.cli.TestQueryRunner.createQueryRunner;
 import static io.trino.cli.TestQueryRunner.createResults;
 import static io.trino.cli.TestQueryRunner.createTrinoUri;
 import static io.trino.cli.TestQueryRunner.nullPrintStream;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
-import static org.testng.Assert.assertEquals;
 
 @TestInstance(PER_METHOD)
 public class TestInsecureQueryRunner
@@ -78,10 +78,10 @@ public class TestInsecureQueryRunner
         QueryRunner queryRunner = createQueryRunner(createTrinoUri(server, true), createClientSession(server));
 
         try (Query query = queryRunner.startQuery("query with insecure mode")) {
-            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false);
+            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false, false);
         }
 
-        assertEquals(server.takeRequest().getPath(), "/v1/statement");
+        assertThat(server.takeRequest().getPath()).isEqualTo("/v1/statement");
     }
 
     private SSLContext buildTestSslContext()

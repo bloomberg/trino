@@ -14,7 +14,6 @@
 package io.trino.plugin.ignite;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -28,17 +27,14 @@ import io.trino.testing.sql.JdbcSqlExecutor;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TrinoSqlExecutor;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.ignite.IgniteQueryRunner.createIgniteQueryRunner;
-import static io.trino.plugin.ignite.IgniteQueryRunner.createSession;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -70,14 +66,10 @@ public class TestIgniteTypeMapping
             throws Exception
     {
         this.igniteServer = closeAfterClass(TestingIgniteServer.getInstance()).get();
-        return createIgniteQueryRunner(
-                igniteServer,
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableList.of());
+        return IgniteQueryRunner.builder(igniteServer).build();
     }
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
@@ -236,7 +228,7 @@ public class TestIgniteTypeMapping
                 .addRoundTrip("double", "+infinity()", DOUBLE, "+infinity()")
                 .addRoundTrip("double", "-infinity()", DOUBLE, "-infinity()")
                 .execute(getQueryRunner(), trinoCreateAsSelect("trino_test_double"))
-                .execute(getQueryRunner(), trinoCreateAndInsert(createSession(), "trino_test_double"));
+                .execute(getQueryRunner(), trinoCreateAndInsert("trino_test_double"));
     }
 
     @Test
@@ -289,8 +281,18 @@ public class TestIgniteTypeMapping
                 .addRoundTrip(inputType, "X'000000000000'", VARBINARY, "X'000000000000'");
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testDate(ZoneId sessionZone)
+    @Test
+    public void testDate()
+    {
+        testDate(UTC);
+        testDate(jvmZone);
+        // using two non-JVM zones so that we don't need to worry what Ignite system zone is
+        testDate(vilnius);
+        testDate(kathmandu);
+        testDate(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testDate(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -314,8 +316,18 @@ public class TestIgniteTypeMapping
                 .execute(getQueryRunner(), session, igniteCreateAndInsert("test_date"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testUnsupportedDateRange(ZoneId sessionZone)
+    @Test
+    public void testUnsupportedDateRange()
+    {
+        testUnsupportedDateRange(UTC);
+        testUnsupportedDateRange(jvmZone);
+        // using two non-JVM zones so that we don't need to worry what Ignite system zone is
+        testUnsupportedDateRange(vilnius);
+        testUnsupportedDateRange(kathmandu);
+        testUnsupportedDateRange(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testUnsupportedDateRange(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -404,22 +416,9 @@ public class TestIgniteTypeMapping
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_unbounded_varchar"));
     }
 
-    @DataProvider
-    public Object[][] sessionZonesDataProvider()
-    {
-        return new Object[][] {
-                {UTC},
-                {jvmZone},
-                // using two non-JVM zones so that we don't need to worry what Ignite system zone is
-                {vilnius},
-                {kathmandu},
-                {TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId()},
-        };
-    }
-
     private DataSetup trinoCreateAndInsert(String tableNamePrefix)
     {
-        return trinoCreateAndInsert(createSession(), tableNamePrefix);
+        return trinoCreateAndInsert(getSession(), tableNamePrefix);
     }
 
     private DataSetup trinoCreateAndInsert(Session session, String tableNamePrefix)

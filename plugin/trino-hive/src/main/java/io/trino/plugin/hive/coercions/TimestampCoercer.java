@@ -18,6 +18,7 @@ import io.airlift.slice.Slices;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.type.DateType;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.VarcharType;
@@ -94,6 +95,27 @@ public final class TimestampCoercer
         }
     }
 
+    public static class LongTimestampToDateCoercer
+            extends TypeCoercer<TimestampType, DateType>
+    {
+        public LongTimestampToDateCoercer(TimestampType fromType, DateType toType)
+        {
+            super(fromType, toType);
+        }
+
+        @Override
+        protected void applyCoercedValue(BlockBuilder blockBuilder, Block block, int position)
+        {
+            LongTimestamp timestamp = (LongTimestamp) fromType.getObject(block, position);
+
+            long epochSecond = floorDiv(timestamp.getEpochMicros(), MICROSECONDS_PER_SECOND);
+            if (epochSecond < START_OF_MODERN_ERA_SECONDS) {
+                throw new TrinoException(HIVE_INVALID_TIMESTAMP_COERCION, "Coercion on historical dates is not supported");
+            }
+            toType.writeLong(blockBuilder, floorDiv(epochSecond, SECONDS_PER_DAY));
+        }
+    }
+
     public static class VarcharToShortTimestampCoercer
             extends TypeCoercer<VarcharType, TimestampType>
     {
@@ -117,7 +139,7 @@ public final class TimestampCoercer
                 long epochMicros = epochSecond * MICROSECONDS_PER_SECOND + roundDiv(roundedNanos, NANOSECONDS_PER_MICROSECOND);
                 toType.writeLong(blockBuilder, epochMicros);
             }
-            catch (DateTimeParseException ignored) {
+            catch (DateTimeParseException _) {
                 // Hive treats invalid String as null instead of propagating exception
                 // In case of bigger tables with all values being invalid, log output will be huge so avoiding log here.
                 blockBuilder.appendNull();
@@ -148,7 +170,7 @@ public final class TimestampCoercer
                 int picosOfMicro = (dateTime.getNano() % NANOSECONDS_PER_MICROSECOND) * PICOSECONDS_PER_NANOSECOND;
                 toType.writeObject(blockBuilder, new LongTimestamp(epochMicros, picosOfMicro));
             }
-            catch (DateTimeParseException ignored) {
+            catch (DateTimeParseException _) {
                 // Hive treats invalid String as null instead of propagating exception
                 // In case of bigger tables with all values being invalid, log output will be huge so avoiding log here.
                 blockBuilder.appendNull();

@@ -16,6 +16,8 @@ package io.trino.plugin.hive.metastore.thrift;
 import com.google.common.net.HostAndPort;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.ConfigSecuritySensitive;
+import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
 import io.airlift.configuration.validation.FileExists;
 import io.airlift.units.Duration;
@@ -26,11 +28,14 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 import java.io.File;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
+@DefunctConfig("hive.metastore.thrift.batch-fetch.enabled")
 public class ThriftMetastoreConfig
 {
-    private Duration metastoreTimeout = new Duration(10, TimeUnit.SECONDS);
+    private Duration connectTimeout = new Duration(10, TimeUnit.SECONDS);
+    private Duration readTimeout = new Duration(10, TimeUnit.SECONDS);
     private HostAndPort socksProxy;
     private int maxRetries = RetryDriver.DEFAULT_MAX_ATTEMPTS - 1;
     private double backoffScaleFactor = RetryDriver.DEFAULT_SCALE_FACTOR;
@@ -43,6 +48,7 @@ public class ThriftMetastoreConfig
     private long delegationTokenCacheMaximumSize = 1000;
     private boolean deleteFilesOnDrop;
     private Duration maxWaitForTransactionLock = new Duration(10, TimeUnit.MINUTES);
+    private String catalogName;
 
     private boolean tlsEnabled;
     private File keystorePath;
@@ -51,18 +57,34 @@ public class ThriftMetastoreConfig
     private String trustStorePassword;
     private boolean assumeCanonicalPartitionKeys;
     private int writeStatisticsThreads = 20;
-    private boolean batchMetadataFetchEnabled = true;
 
     @NotNull
-    public Duration getMetastoreTimeout()
+    public Duration getConnectTimeout()
     {
-        return metastoreTimeout;
+        return connectTimeout;
     }
 
-    @Config("hive.metastore-timeout")
-    public ThriftMetastoreConfig setMetastoreTimeout(Duration metastoreTimeout)
+    @Config("hive.metastore.thrift.client.connect-timeout")
+    @LegacyConfig("hive.metastore-timeout")
+    @ConfigDescription("Socket connect timeout for metastore client")
+    public ThriftMetastoreConfig setConnectTimeout(Duration connectTimeout)
     {
-        this.metastoreTimeout = metastoreTimeout;
+        this.connectTimeout = connectTimeout;
+        return this;
+    }
+
+    @NotNull
+    public Duration getReadTimeout()
+    {
+        return readTimeout;
+    }
+
+    @Config("hive.metastore.thrift.client.read-timeout")
+    @LegacyConfig("hive.metastore-timeout")
+    @ConfigDescription("Socket read timeout for metastore client")
+    public ThriftMetastoreConfig setReadTimeout(Duration readTimeout)
+    {
+        this.readTimeout = readTimeout;
         return this;
     }
 
@@ -187,7 +209,6 @@ public class ThriftMetastoreConfig
         return this;
     }
 
-    @NotNull
     @Min(0)
     public long getDelegationTokenCacheMaximumSize()
     {
@@ -262,6 +283,7 @@ public class ThriftMetastoreConfig
 
     @Config("hive.metastore.thrift.client.ssl.key-password")
     @ConfigDescription("Password for the key store")
+    @ConfigSecuritySensitive
     public ThriftMetastoreConfig setKeystorePassword(String keystorePassword)
     {
         this.keystorePassword = keystorePassword;
@@ -289,6 +311,7 @@ public class ThriftMetastoreConfig
 
     @Config("hive.metastore.thrift.client.ssl.trust-certificate-password")
     @ConfigDescription("Password for the trust store")
+    @ConfigSecuritySensitive
     public ThriftMetastoreConfig setTruststorePassword(String trustStorePassword)
     {
         this.trustStorePassword = trustStorePassword;
@@ -327,16 +350,16 @@ public class ThriftMetastoreConfig
         return this;
     }
 
-    public boolean isBatchMetadataFetchEnabled()
+    public Optional<String> getCatalogName()
     {
-        return batchMetadataFetchEnabled;
+        return Optional.ofNullable(catalogName);
     }
 
-    @Config("hive.metastore.thrift.batch-fetch.enabled")
-    @ConfigDescription("Enables fetching tables and views from all schemas in a single request")
-    public ThriftMetastoreConfig setBatchMetadataFetchEnabled(boolean batchMetadataFetchEnabled)
+    @Config("hive.metastore.thrift.catalog-name")
+    @ConfigDescription("Hive metastore thrift catalog name")
+    public ThriftMetastoreConfig setCatalogName(String catalogName)
     {
-        this.batchMetadataFetchEnabled = batchMetadataFetchEnabled;
+        this.catalogName = catalogName;
         return this;
     }
 }

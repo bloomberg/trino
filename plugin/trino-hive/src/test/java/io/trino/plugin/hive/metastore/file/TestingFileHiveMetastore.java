@@ -13,12 +13,15 @@
  */
 package io.trino.plugin.hive.metastore.file;
 
+import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.filesystem.local.LocalFileSystemFactory;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.metastore.HiveMetastoreConfig;
 
 import java.io.File;
 
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
+import static com.google.common.base.Verify.verify;
 
 public final class TestingFileHiveMetastore
 {
@@ -26,12 +29,20 @@ public final class TestingFileHiveMetastore
 
     public static FileHiveMetastore createTestingFileHiveMetastore(File catalogDirectory)
     {
+        verify(catalogDirectory.mkdirs());
+        return createTestingFileHiveMetastore(
+                new LocalFileSystemFactory(catalogDirectory.toPath()),
+                Location.of("local:///"));
+    }
+
+    public static FileHiveMetastore createTestingFileHiveMetastore(TrinoFileSystemFactory fileSystemFactory, Location catalogDirectory)
+    {
         return new FileHiveMetastore(
                 new NodeVersion("testversion"),
-                HDFS_FILE_SYSTEM_FACTORY,
+                fileSystemFactory,
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 new FileHiveMetastoreConfig()
-                        .setCatalogDirectory(catalogDirectory.toURI().toString())
+                        .setCatalogDirectory(catalogDirectory.toString())
                         .setMetastoreUser("test"));
     }
 }

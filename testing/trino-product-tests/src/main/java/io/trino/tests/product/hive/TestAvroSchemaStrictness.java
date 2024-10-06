@@ -24,7 +24,6 @@ import java.nio.file.Path;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.query.QueryExecutor.param;
-import static io.trino.tests.product.TestGroups.AVRO;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static java.nio.file.Files.newInputStream;
@@ -42,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestAvroSchemaStrictness
         extends ProductTest
 {
-    private static final Path ILLEGAL_UNION_DEFAULT_SCHEMA = Path.of("/docker/presto-product-tests/avro/invalid_default.avsc");
+    private static final Path ILLEGAL_UNION_DEFAULT_SCHEMA = Path.of("/docker/trino-product-tests/avro/invalid_default.avsc");
     /**
      *  The data in the avro data file was generated from the following JSON data using avro-tools.
      *  <pre>
@@ -55,12 +54,12 @@ public class TestAvroSchemaStrictness
      *  java.jar avro-tools-1.8.2.jar fromjson --schema-file "$SCHEMA_FILE" data.json > invalid_default.avro
      *  }</pre>
      */
-    private static final Path ILLEGAL_UNION_DEFAULT_DATA = Path.of("/docker/presto-product-tests/avro/invalid_default.avro");
+    private static final Path ILLEGAL_UNION_DEFAULT_DATA = Path.of("/docker/trino-product-tests/avro/invalid_default.avro");
 
     @Inject
     private HdfsClient hdfsClient;
 
-    @Test(groups = AVRO)
+    @Test
     public void testInvalidUnionDefaults()
             throws IOException
     {

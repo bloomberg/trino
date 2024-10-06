@@ -17,7 +17,9 @@ import io.trino.annotation.UsedByGeneratedCode;
 import io.trino.metadata.SqlScalarFunction;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
+import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.BufferedMapValueBuilder;
+import io.trino.spi.block.SqlMap;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.Signature;
@@ -27,7 +29,7 @@ import io.trino.spi.type.TypeSignature;
 import io.trino.sql.gen.VarArgsToArrayAdapterGenerator.MethodHandleAndConstructor;
 import io.trino.type.BlockTypeOperators;
 import io.trino.type.BlockTypeOperators.BlockPositionHashCode;
-import io.trino.type.BlockTypeOperators.BlockPositionIsDistinctFrom;
+import io.trino.type.BlockTypeOperators.BlockPositionIsIdentical;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -54,10 +56,10 @@ public final class MapConcatFunction
             MapConcatFunction.class,
             "mapConcat",
             MapType.class,
-            BlockPositionIsDistinctFrom.class,
+            BlockPositionIsIdentical.class,
             BlockPositionHashCode.class,
             Object.class,
-            Block[].class);
+            SqlMap[].class);
 
     private final BlockTypeOperators blockTypeOperators;
 
@@ -85,14 +87,14 @@ public final class MapConcatFunction
 
         MapType mapType = (MapType) boundSignature.getReturnType();
         Type keyType = mapType.getKeyType();
-        BlockPositionIsDistinctFrom keysDistinctOperator = blockTypeOperators.getDistinctFromOperator(keyType);
+        BlockPositionIsIdentical keysIdenticalOperator = blockTypeOperators.getIdenticalOperator(keyType);
         BlockPositionHashCode keyHashCode = blockTypeOperators.getHashCodeOperator(keyType);
 
         MethodHandleAndConstructor methodHandleAndConstructor = generateVarArgsToArrayAdapter(
-                Block.class,
-                Block.class,
+                SqlMap.class,
+                SqlMap.class,
                 boundSignature.getArity(),
-                MethodHandles.insertArguments(METHOD_HANDLE, 0, mapType, keysDistinctOperator, keyHashCode),
+                MethodHandles.insertArguments(METHOD_HANDLE, 0, mapType, keysIdenticalOperator, keyHashCode),
                 USER_STATE_FACTORY.bindTo(mapType));
 
         return new ChoicesSpecializedSqlScalarFunction(
@@ -110,14 +112,15 @@ public final class MapConcatFunction
     }
 
     @UsedByGeneratedCode
-    public static Block mapConcat(MapType mapType, BlockPositionIsDistinctFrom keysDistinctOperator, BlockPositionHashCode keyHashCode, Object state, Block[] maps)
+    public static SqlMap mapConcat(MapType mapType, BlockPositionIsIdentical keysIdenticalOperator, BlockPositionHashCode keyHashCode, Object state, SqlMap[] maps)
     {
         int maxEntries = 0;
         int lastMapIndex = maps.length - 1;
         int firstMapIndex = lastMapIndex;
         for (int i = 0; i < maps.length; i++) {
-            maxEntries += maps[i].getPositionCount() / 2;
-            if (maps[i].getPositionCount() > 0) {
+            int size = maps[i].getSize();
+            if (size > 0) {
+                maxEntries += size;
                 lastMapIndex = i;
                 firstMapIndex = min(firstMapIndex, i);
             }
@@ -132,33 +135,47 @@ public final class MapConcatFunction
 
         Type keyType = mapType.getKeyType();
         Type valueType = mapType.getValueType();
-        BlockSet set = new BlockSet(keyType, keysDistinctOperator, keyHashCode, maxEntries);
+        BlockSet set = new BlockSet(keyType, keysIdenticalOperator, keyHashCode, maxEntries);
         return mapValueBuilder.build(maxEntries, (keyBuilder, valueBuilder) -> {
             // the last map
-            Block map = maps[last];
-            for (int i = 0; i < map.getPositionCount(); i += 2) {
-                set.add(map, i);
-                keyType.appendTo(map, i, keyBuilder);
-                valueType.appendTo(map, i + 1, valueBuilder);
+            SqlMap map = maps[last];
+            int rawOffset = map.getRawOffset();
+            Block rawKeyBlock = map.getRawKeyBlock();
+            Block rawValueBlock = map.getRawValueBlock();
+            for (int i = 0; i < map.getSize(); i++) {
+                set.add(rawKeyBlock, rawOffset + i);
+                writeEntry(keyType, valueType, keyBuilder, valueBuilder, rawKeyBlock, rawValueBlock, rawOffset + i);
             }
+
             // the map between the last and the first
             for (int idx = last - 1; idx > first; idx--) {
                 map = maps[idx];
-                for (int i = 0; i < map.getPositionCount(); i += 2) {
-                    if (set.add(map, i)) {
-                        keyType.appendTo(map, i, keyBuilder);
-                        valueType.appendTo(map, i + 1, valueBuilder);
+                rawOffset = map.getRawOffset();
+                rawKeyBlock = map.getRawKeyBlock();
+                rawValueBlock = map.getRawValueBlock();
+                for (int i = 0; i < map.getSize(); i++) {
+                    if (set.add(rawKeyBlock, rawOffset + i)) {
+                        writeEntry(keyType, valueType, keyBuilder, valueBuilder, rawKeyBlock, rawValueBlock, rawOffset + i);
                     }
                 }
             }
+
             // the first map
             map = maps[first];
-            for (int i = 0; i < map.getPositionCount(); i += 2) {
-                if (!set.contains(map, i)) {
-                    keyType.appendTo(map, i, keyBuilder);
-                    valueType.appendTo(map, i + 1, valueBuilder);
+            rawOffset = map.getRawOffset();
+            rawKeyBlock = map.getRawKeyBlock();
+            rawValueBlock = map.getRawValueBlock();
+            for (int i = 0; i < map.getSize(); i++) {
+                if (!set.contains(rawKeyBlock, rawOffset + i)) {
+                    writeEntry(keyType, valueType, keyBuilder, valueBuilder, rawKeyBlock, rawValueBlock, rawOffset + i);
                 }
             }
         });
+    }
+
+    private static void writeEntry(Type keyType, Type valueType, BlockBuilder keyBuilder, BlockBuilder valueBuilder, Block rawKeyBlock, Block rawValueBlock, int rawIndex)
+    {
+        keyType.appendTo(rawKeyBlock, rawIndex, keyBuilder);
+        valueType.appendTo(rawValueBlock, rawIndex, valueBuilder);
     }
 }

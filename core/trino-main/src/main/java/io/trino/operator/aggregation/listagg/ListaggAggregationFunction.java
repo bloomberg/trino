@@ -14,8 +14,8 @@
 package io.trino.operator.aggregation.listagg;
 
 import io.airlift.slice.Slice;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.block.VariableWidthBlockBuilder;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
@@ -36,12 +36,12 @@ public final class ListaggAggregationFunction
     @InputFunction
     public static void input(
             @AggregationState ListaggAggregationState state,
-            @BlockPosition @SqlType("VARCHAR") Block value,
+            @BlockPosition @SqlType("VARCHAR") ValueBlock value,
+            @BlockIndex int position,
             @SqlType("VARCHAR") Slice separator,
             @SqlType("BOOLEAN") boolean overflowError,
             @SqlType("VARCHAR") Slice overflowFiller,
-            @SqlType("BOOLEAN") boolean showOverflowEntryCount,
-            @BlockIndex int position)
+            @SqlType("BOOLEAN") boolean showOverflowEntryCount)
     {
         state.initialize(separator, overflowError, overflowFiller, showOverflowEntryCount);
         state.add(value, position);

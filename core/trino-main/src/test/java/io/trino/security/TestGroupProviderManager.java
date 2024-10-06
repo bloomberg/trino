@@ -13,7 +13,9 @@
  */
 package io.trino.security;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.testing.TempFile;
 import io.trino.spi.security.GroupProvider;
 import io.trino.spi.security.GroupProviderFactory;
@@ -24,7 +26,7 @@ import java.nio.file.Files;
 import java.util.Map;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestGroupProviderManager
 {
@@ -50,11 +52,11 @@ public class TestGroupProviderManager
     {
         try (TempFile tempFile = new TempFile()) {
             Files.write(tempFile.path(), "group-provider.name=testGroupProvider".getBytes(UTF_8));
-            GroupProviderManager groupProviderManager = new GroupProviderManager();
+            GroupProviderManager groupProviderManager = new GroupProviderManager(new SecretsResolver(ImmutableMap.of()));
             groupProviderManager.addGroupProviderFactory(TEST_GROUP_PROVIDER_FACTORY);
             groupProviderManager.loadConfiguredGroupProvider(tempFile.file());
-            assertEquals(groupProviderManager.getGroups("alice"), ImmutableSet.of("test", "alice"));
-            assertEquals(groupProviderManager.getGroups("bob"), ImmutableSet.of("test", "bob"));
+            assertThat(groupProviderManager.getGroups("alice")).isEqualTo(ImmutableSet.of("test", "alice"));
+            assertThat(groupProviderManager.getGroups("bob")).isEqualTo(ImmutableSet.of("test", "bob"));
         }
     }
 }

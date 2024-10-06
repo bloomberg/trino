@@ -14,19 +14,20 @@
 package io.trino.plugin.hive.acid;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.plugin.hive.HiveType;
-import io.trino.plugin.hive.HiveTypeName;
+import com.google.common.collect.ImmutableMap;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.HiveTypeName;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.RowType.Field;
 import io.trino.spi.type.Type;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.trino.plugin.hive.HiveType.HIVE_INT;
-import static io.trino.plugin.hive.HiveType.HIVE_LONG;
+import static io.trino.metastore.HiveType.HIVE_INT;
+import static io.trino.metastore.HiveType.HIVE_LONG;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMNS;
 import static io.trino.plugin.hive.util.SerdeConstants.LIST_COLUMN_TYPES;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -61,17 +62,17 @@ public final class AcidSchema
 
     private AcidSchema() {}
 
-    public static Properties createAcidSchema(HiveType rowType)
+    public static Map<String, String> createAcidSchema(HiveType rowType)
     {
-        Properties hiveAcidSchema = new Properties();
-        hiveAcidSchema.setProperty(LIST_COLUMNS, String.join(",", ACID_COLUMN_NAMES));
-        // We must supply an accurate row type, because Apache ORC code we don't control has a consistency
-        // check that the layout of this "row" must agree with the layout of an inserted row.
-        hiveAcidSchema.setProperty(LIST_COLUMN_TYPES, createAcidColumnHiveTypes(rowType).stream()
-                .map(HiveType::getHiveTypeName)
-                .map(HiveTypeName::toString)
-                .collect(joining(":")));
-        return hiveAcidSchema;
+        return ImmutableMap.<String, String>builder()
+                .put(LIST_COLUMNS, String.join(",", ACID_COLUMN_NAMES))
+                // We must supply an accurate row type, because Apache ORC code we don't control has a consistency
+                // check that the layout of this "row" must agree with the layout of an inserted row.
+                .put(LIST_COLUMN_TYPES, createAcidColumnHiveTypes(rowType).stream()
+                        .map(HiveType::getHiveTypeName)
+                        .map(HiveTypeName::toString)
+                        .collect(joining(":")))
+                .buildOrThrow();
     }
 
     public static Type createRowType(List<String> names, List<Type> types)
@@ -91,7 +92,7 @@ public final class AcidSchema
         return ImmutableList.of(HIVE_INT, HIVE_LONG, HIVE_INT, HIVE_LONG, HIVE_LONG, rowType);
     }
 
-    public static List<Type> createAcidColumnPrestoTypes(Type rowType)
+    public static List<Type> createAcidColumnTrinoTypes(Type rowType)
     {
         return ImmutableList.of(INTEGER, BIGINT, INTEGER, BIGINT, BIGINT, rowType);
     }

@@ -58,12 +58,12 @@ public class TestFunctionsInViewsWithFileBasedSystemAccessControl
             throws Exception
     {
         String securityConfigFile = new File(getResource("file-based-system-functions-access.json").toURI()).getPath();
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
+        QueryRunner queryRunner = DistributedQueryRunner.builder(testSessionBuilder()
                         .setCatalog(Optional.empty())
                         .setSchema(Optional.empty())
                         .setPath(SqlPath.buildPath("mock.function", Optional.empty()))
                         .build())
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .setSystemAccessControl("file", Map.of(SECURITY_CONFIG_FILE, securityConfigFile))
                 .build();
         queryRunner.installPlugin(new BlackHolePlugin());

@@ -27,6 +27,7 @@ import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AssignUniqueId;
 import io.trino.sql.planner.plan.CorrelatedJoinNode;
 import io.trino.sql.planner.plan.JoinNode;
+import io.trino.sql.planner.plan.JoinType;
 import io.trino.sql.planner.plan.Patterns;
 import io.trino.sql.planner.plan.PlanNode;
 
@@ -35,15 +36,15 @@ import java.util.Optional;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.matching.Pattern.nonEmpty;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.planner.iterative.rule.Util.restrictOutputs;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
-import static io.trino.sql.planner.plan.CorrelatedJoinNode.Type.LEFT;
+import static io.trino.sql.planner.plan.JoinType.LEFT;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.filter;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.subquery;
 import static io.trino.sql.planner.plan.Patterns.CorrelatedJoin.type;
 import static io.trino.sql.planner.plan.Patterns.aggregation;
 import static io.trino.sql.planner.plan.Patterns.correlatedJoin;
-import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -51,21 +52,21 @@ import static java.util.Objects.requireNonNull;
  * It is similar to TransformCorrelatedDistinctAggregationWithProjection rule, but does not support projection over aggregation in the subquery
  * <p>
  * Transforms:
- * <pre>
+ * <pre>{@code
  * - CorrelatedJoin LEFT (correlation: [c], filter: true, output: a, b)
  *      - Input (a, c)
  *      - Aggregation "distinct operator" group by [b]
  *           - Source (b) with correlated filter (b > c)
- * </pre>
+ * }</pre>
  * Into:
- * <pre>
+ * <pre>{@code
  * - Project (a <- a, b <- b)
  *      - Aggregation "distinct operator" group by [a, c, unique, b]
  *           - LEFT join (filter: b > c)
  *                - UniqueId (unique)
  *                     - Input (a, c)
  *                - Source (b) decorrelated
- * </pre>
+ * }</pre>
  */
 public class TransformCorrelatedDistinctAggregationWithoutProjection
         implements Rule<CorrelatedJoinNode>
@@ -75,7 +76,7 @@ public class TransformCorrelatedDistinctAggregationWithoutProjection
     private static final Pattern<CorrelatedJoinNode> PATTERN = correlatedJoin()
             .with(type().equalTo(LEFT))
             .with(nonEmpty(Patterns.CorrelatedJoin.correlation()))
-            .with(filter().equalTo(TRUE_LITERAL))
+            .with(filter().equalTo(TRUE))
             .with(subquery().matching(aggregation()
                     .matching(AggregationDecorrelation::isDistinctOperator)
                     .capturedAs(AGGREGATION)));
@@ -113,7 +114,7 @@ public class TransformCorrelatedDistinctAggregationWithoutProjection
 
         JoinNode join = new JoinNode(
                 context.getIdAllocator().getNextId(),
-                JoinNode.Type.LEFT,
+                JoinType.LEFT,
                 inputWithUniqueId,
                 source,
                 ImmutableList.of(),

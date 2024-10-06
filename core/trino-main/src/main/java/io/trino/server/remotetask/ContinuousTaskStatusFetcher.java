@@ -171,50 +171,59 @@ class ContinuousTaskStatusFetcher
         @Override
         public void success(TaskStatus value)
         {
-            try (SetThreadName ignored = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
                 updateStats(requestStartNanos);
-                try {
-                    updateTaskStatus(value);
-                    errorTracker.requestSucceeded();
-                }
-                finally {
-                    scheduleNextRequest();
-                }
+                updateTaskStatus(value);
+                errorTracker.requestSucceeded();
+            }
+            finally {
+                cleanupRequest();
+                scheduleNextRequest();
             }
         }
 
         @Override
         public void failed(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
                 updateStats(requestStartNanos);
-                try {
-                    // if task not already done, record error
-                    TaskStatus taskStatus = getTaskStatus();
-                    if (!taskStatus.getState().isDone()) {
-                        errorTracker.requestFailed(cause);
-                    }
+                // if task not already done, record error
+                TaskStatus taskStatus = getTaskStatus();
+                if (!taskStatus.getState().isDone()) {
+                    errorTracker.requestFailed(cause);
                 }
-                catch (Error e) {
-                    onFail.accept(e);
-                    throw e;
-                }
-                catch (RuntimeException e) {
-                    onFail.accept(e);
-                }
-                finally {
-                    scheduleNextRequest();
-                }
+            }
+            catch (Error e) {
+                onFail.accept(e);
+                throw e;
+            }
+            catch (RuntimeException e) {
+                onFail.accept(e);
+            }
+            finally {
+                cleanupRequest();
+                scheduleNextRequest();
             }
         }
 
         @Override
         public void fatal(Throwable cause)
         {
-            try (SetThreadName ignored = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
+            try (SetThreadName _ = new SetThreadName("ContinuousTaskStatusFetcher-%s", taskId)) {
                 updateStats(requestStartNanos);
                 onFail.accept(cause);
             }
+            finally {
+                cleanupRequest();
+            }
+        }
+    }
+
+    private synchronized void cleanupRequest()
+    {
+        if (future != null && future.isDone()) {
+            // remove outstanding reference to JSON response
+            future = null;
         }
     }
 
@@ -233,11 +242,8 @@ class ContinuousTaskStatusFetcher
                 // never update if the task has reached a terminal state
                 return false;
             }
-            if (newValue.getVersion() < oldValue.getVersion()) {
-                // don't update to an older version (same version is ok)
-                return false;
-            }
-            return true;
+            // don't update to an older version (same version is ok)
+            return newValue.getVersion() >= oldValue.getVersion();
         });
 
         if (taskMismatch.get()) {

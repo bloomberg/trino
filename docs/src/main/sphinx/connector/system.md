@@ -51,45 +51,42 @@ The table properties table contains the list of available properties
 that can be set when creating a new table.
 
 (system-metadata-materialized-views)=
-
 ### `metadata.materialized_views`
 
 The materialized views table contains the following information about all
 {ref}`materialized views <sql-materialized-view-management>`:
 
-```{eval-rst}
-.. list-table:: Metadata for materialized views
-  :widths: 30, 70
-  :header-rows: 1
+:::{list-table} Metadata for materialized views
+:widths: 30, 70
+:header-rows: 1
 
-  * - Column
-    - Description
-  * - ``catalog_name``
-    - Name of the catalog containing the materialized view.
-  * - ``schema_name``
-    - Name of the schema in ``catalog_name`` containing the materialized view.
-  * - ``name``
-    - Name of the materialized view.
-  * - ``storage_catalog``
-    - Name of the catalog used for the storage table backing the materialized
-      view.
-  * - ``storage_schema``
-    - Name of the schema in ``storage_catalog`` used for the storage table
-      backing the materialized view.
-  * - ``storage_table``
-    - Name of the storage table backing the materialized view.
-  * - ``freshness``
-    - Freshness of data in the storage table. Queries on the
-      materialized view access the storage table if not ``STALE``, otherwise
-      the ``definition`` is used to access the underlying data in the source
-      tables.
-  * - ``owner``
-    - Username of the creator and owner of the materialized view.
-  * - ``comment``
-    - User supplied text about the materialized view.
-  * - ``definition``
-    - SQL query that defines the data provided by the materialized view.
-```
+* - Column
+  - Description
+* - `catalog_name`
+  - Name of the catalog containing the materialized view.
+* - `schema_name`
+  - Name of the schema in `catalog_name` containing the materialized view.
+* - `name`
+  - Name of the materialized view.
+* - `storage_catalog`
+  - Name of the catalog used for the storage table backing the materialized
+    view.
+* - `storage_schema`
+  - Name of the schema in `storage_catalog` used for the storage table backing
+    the materialized view.
+* - `storage_table`
+  - Name of the storage table backing the materialized view.
+* - `freshness`
+  - Freshness of data in the storage table. Queries on the materialized view
+    access the storage table if not `STALE`, otherwise the `definition` is used
+    to access the underlying data in the source tables.
+* - `last_fresh_time`
+  - Date and time of the last refresh of the materialized view.
+* - `comment`
+  - User supplied text about the materialized view.
+* - `definition`
+  - SQL query that defines the data provided by the materialized view.
+:::
 
 ### `metadata.materialized_view_properties`
 
@@ -106,7 +103,6 @@ The nodes table contains the list of visible nodes in the Trino
 cluster along with their status.
 
 (optimizer-rule-stats)=
-
 ### `runtime.optimizer_rule_stats`
 
 The `optimizer_rule_stats` table contains the statistics for optimizer
@@ -139,22 +135,20 @@ idle time, initialization parameters, and accessed catalogs.
 
 ## System connector procedures
 
-```{eval-rst}
-.. function:: runtime.kill_query(query_id, message)
+:::{function} runtime.kill_query(query_id, message)
 
-    Kill the query identified by ``query_id``. The query failure message
-    includes the specified ``message``. ``message`` is optional.
-```
+Kill the query identified by `query_id`. The query failure message includes the
+specified `message`. `message` is optional.
+
+:::
 
 (system-type-mapping)=
-
 ## Type mapping
 
 Trino supports all data types used within the System schemas so no mapping
 is required.
 
 (system-sql-support)=
-
 ## SQL support
 
 The connector provides {ref}`globally available <sql-globally-available>` and

@@ -13,10 +13,9 @@
  */
 package io.trino.operator.aggregation.arrayagg;
 
-import com.google.common.primitives.Ints;
 import io.trino.operator.aggregation.state.AbstractGroupedAccumulatorState;
-import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
@@ -25,7 +24,7 @@ import java.util.Arrays;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
-import static java.lang.Math.toIntExact;
+import static java.lang.Math.clamp;
 
 public final class GroupArrayAggregationState
         extends AbstractGroupedAccumulatorState
@@ -55,12 +54,12 @@ public final class GroupArrayAggregationState
     }
 
     @Override
-    public void ensureCapacity(long maxGroupId)
+    public void ensureCapacity(int maxGroupId)
     {
         checkArgument(maxGroupId + 1 < MAX_ARRAY_SIZE, "Maximum array size exceeded");
-        int requiredSize = toIntExact(maxGroupId + 1);
+        int requiredSize = maxGroupId + 1;
         if (requiredSize > groupHeadPositions.length) {
-            int newSize = Ints.constrainToRange(requiredSize * 2, 1024, MAX_ARRAY_SIZE);
+            int newSize = clamp(requiredSize * 2L, 1024, MAX_ARRAY_SIZE);
             int oldSize = groupHeadPositions.length;
 
             groupHeadPositions = Arrays.copyOf(groupHeadPositions, newSize);
@@ -72,15 +71,7 @@ public final class GroupArrayAggregationState
     }
 
     @Override
-    public void addAll(Block block)
-    {
-        for (int position = 0; position < block.getPositionCount(); position++) {
-            add(block, position);
-        }
-    }
-
-    @Override
-    public void add(Block block, int position)
+    public void add(ValueBlock block, int position)
     {
         int groupId = (int) getGroupId();
         long index = arrayBuilder.size();

@@ -13,38 +13,49 @@
  */
 package io.trino.plugin.hive.metastore.glue;
 
-import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.handlers.RequestHandler2;
-import com.amazonaws.services.glue.AWSGlueAsync;
-import com.amazonaws.services.glue.model.Table;
 import com.google.inject.Binder;
 import com.google.inject.Key;
-import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
-import com.google.inject.TypeLiteral;
-import com.google.inject.multibindings.Multibinder;
-import com.google.inject.multibindings.ProvidesIntoSet;
-import io.airlift.concurrent.BoundedExecutor;
+import com.google.inject.multibindings.ProvidesIntoOptional;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
+import io.airlift.units.Duration;
 import io.opentelemetry.api.OpenTelemetry;
-import io.opentelemetry.instrumentation.awssdk.v1_11.AwsSdkTelemetry;
+import io.opentelemetry.instrumentation.awssdk.v2_2.AwsSdkTelemetry;
 import io.trino.plugin.hive.AllowHiveTableRename;
-import io.trino.plugin.hive.HiveConfig;
+import io.trino.plugin.hive.HideDeltaLakeTables;
 import io.trino.plugin.hive.metastore.HiveMetastoreFactory;
 import io.trino.plugin.hive.metastore.RawHiveMetastoreFactory;
+import io.trino.plugin.hive.metastore.cache.CachingHiveMetastoreConfig;
+import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.awssdk.http.apache.ProxyConfiguration;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
+import software.amazon.awssdk.retries.api.BackoffStrategy;
+import software.amazon.awssdk.services.glue.GlueClient;
+import software.amazon.awssdk.services.glue.GlueClientBuilder;
+import software.amazon.awssdk.services.glue.model.ConcurrentModificationException;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.StsClientBuilder;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.auth.StsWebIdentityTokenFileCredentialsProvider;
 
-import java.util.concurrent.Executor;
-import java.util.function.Predicate;
+import java.net.URI;
+import java.util.EnumSet;
+import java.util.Optional;
+import java.util.Set;
 
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static com.google.inject.multibindings.Multibinder.newSetBinder;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.configuration.ConditionalModule.conditionalModule;
+import static com.google.inject.multibindings.ProvidesIntoOptional.Type.DEFAULT;
 import static io.airlift.configuration.ConfigBinder.configBinder;
-import static java.util.concurrent.Executors.newCachedThreadPool;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class GlueMetastoreModule
@@ -53,88 +64,148 @@ public class GlueMetastoreModule
     @Override
     protected void setup(Binder binder)
     {
-        GlueHiveMetastoreConfig glueConfig = buildConfigObject(GlueHiveMetastoreConfig.class);
-        Multibinder<RequestHandler2> requestHandlers = newSetBinder(binder, RequestHandler2.class, ForGlueHiveMetastore.class);
-        glueConfig.getCatalogId().ifPresent(catalogId -> requestHandlers.addBinding().toInstance(new GlueCatalogIdRequestHandler(catalogId)));
-        glueConfig.getGlueProxyApiId().ifPresent(glueProxyApiId -> requestHandlers.addBinding()
-                .toInstance(new ProxyApiRequestHandler(glueProxyApiId)));
-        configBinder(binder).bindConfig(HiveConfig.class);
-        binder.bind(AWSCredentialsProvider.class).toProvider(GlueCredentialsProvider.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfig(GlueHiveMetastoreConfig.class);
 
-        newOptionalBinder(binder, Key.get(new TypeLiteral<Predicate<Table>>() {}, ForGlueHiveMetastore.class))
-                .setDefault().toProvider(DefaultGlueMetastoreTableFilterProvider.class).in(Scopes.SINGLETON);
-
+        binder.bind(GlueHiveMetastoreFactory.class).in(Scopes.SINGLETON);
         binder.bind(GlueHiveMetastore.class).in(Scopes.SINGLETON);
+        binder.bind(GlueContext.class).in(Scopes.SINGLETON);
+        newExporter(binder).export(GlueHiveMetastore.class).withGeneratedName();
         newOptionalBinder(binder, Key.get(HiveMetastoreFactory.class, RawHiveMetastoreFactory.class))
                 .setDefault()
                 .to(GlueHiveMetastoreFactory.class)
                 .in(Scopes.SINGLETON);
-
-        // export under the old name, for backwards compatibility
-        binder.bind(GlueHiveMetastoreFactory.class).in(Scopes.SINGLETON);
-        binder.bind(Key.get(GlueMetastoreStats.class, ForGlueHiveMetastore.class)).toInstance(new GlueMetastoreStats());
-        binder.bind(AWSGlueAsync.class).toProvider(HiveGlueClientProvider.class).in(Scopes.SINGLETON);
-        newExporter(binder).export(GlueHiveMetastoreFactory.class).as(generator -> generator.generatedNameOf(GlueHiveMetastore.class));
-
         binder.bind(Key.get(boolean.class, AllowHiveTableRename.class)).toInstance(false);
 
-        install(conditionalModule(
-                HiveConfig.class,
-                HiveConfig::isTableStatisticsEnabled,
-                getGlueStatisticsModule(DefaultGlueColumnStatisticsProviderFactory.class),
-                getGlueStatisticsModule(DisabledGlueColumnStatisticsProviderFactory.class)));
+        closingBinder(binder).registerCloseable(GlueClient.class);
     }
 
-    private Module getGlueStatisticsModule(Class<? extends GlueColumnStatisticsProviderFactory> statisticsPrividerFactoryClass)
-    {
-        return internalBinder -> newOptionalBinder(internalBinder, GlueColumnStatisticsProviderFactory.class)
-                .setDefault()
-                .to(statisticsPrividerFactoryClass)
-                .in(Scopes.SINGLETON);
-    }
-
-    @ProvidesIntoSet
+    @ProvidesIntoOptional(DEFAULT)
     @Singleton
-    @ForGlueHiveMetastore
-    public RequestHandler2 createRequestHandler(OpenTelemetry openTelemetry)
+    public static Set<GlueHiveMetastore.TableKind> getTableKinds(@HideDeltaLakeTables boolean hideDeltaLakeTables)
     {
-        return AwsSdkTelemetry.builder(openTelemetry)
-                .setCaptureExperimentalSpanAttributes(true)
-                .build()
-                .newRequestHandler();
-    }
-
-    @Provides
-    @Singleton
-    @ForGlueHiveMetastore
-    public Executor createExecutor(GlueHiveMetastoreConfig hiveConfig)
-    {
-        return createExecutor("hive-glue-partitions-%s", hiveConfig.getGetPartitionThreads());
-    }
-
-    @Provides
-    @Singleton
-    @ForGlueColumnStatisticsRead
-    public Executor createStatisticsReadExecutor(GlueHiveMetastoreConfig hiveConfig)
-    {
-        return createExecutor("hive-glue-statistics-read-%s", hiveConfig.getReadStatisticsThreads());
-    }
-
-    @Provides
-    @Singleton
-    @ForGlueColumnStatisticsWrite
-    public Executor createStatisticsWriteExecutor(GlueHiveMetastoreConfig hiveConfig)
-    {
-        return createExecutor("hive-glue-statistics-write-%s", hiveConfig.getWriteStatisticsThreads());
-    }
-
-    private Executor createExecutor(String nameTemplate, int threads)
-    {
-        if (threads == 1) {
-            return directExecutor();
+        if (hideDeltaLakeTables) {
+            return EnumSet.complementOf(EnumSet.of(GlueHiveMetastore.TableKind.DELTA));
         }
-        return new BoundedExecutor(
-                newCachedThreadPool(daemonThreadsNamed(nameTemplate)),
-                threads);
+        return EnumSet.allOf(GlueHiveMetastore.TableKind.class);
+    }
+
+    @Provides
+    @Singleton
+    public static GlueCache createGlueCache(CachingHiveMetastoreConfig config, CatalogName catalogName, NodeManager nodeManager)
+    {
+        Duration metadataCacheTtl = config.getMetastoreCacheTtl();
+        Duration statsCacheTtl = config.getStatsCacheTtl();
+
+        // Disable caching on workers, because there currently is no way to invalidate such a cache.
+        // Note: while we could skip CachingHiveMetastoreModule altogether on workers, we retain it so that catalog
+        // configuration can remain identical for all nodes, making cluster configuration easier.
+        boolean enabled = nodeManager.getCurrentNode().isCoordinator() &&
+                          (metadataCacheTtl.toMillis() > 0 || statsCacheTtl.toMillis() > 0);
+
+        checkState(config.isPartitionCacheEnabled(), "Disabling partitions cache is not supported with Glue v2");
+        checkState(config.isCacheMissing(), "Disabling cache missing is not supported with Glue v2");
+        checkState(config.isCacheMissingPartitions(), "Disabling cache missing partitions is not supported with Glue v2");
+        checkState(config.isCacheMissingStats(), "Disabling cache missing stats is not supported with Glue v2");
+
+        if (enabled) {
+            return new InMemoryGlueCache(
+                    catalogName,
+                    metadataCacheTtl,
+                    statsCacheTtl,
+                    config.getMetastoreRefreshInterval(),
+                    config.getMaxMetastoreRefreshThreads(),
+                    config.getMetastoreCacheMaximumSize());
+        }
+        return GlueCache.NOOP;
+    }
+
+    @Provides
+    @Singleton
+    public static GlueClient createGlueClient(GlueHiveMetastoreConfig config, OpenTelemetry openTelemetry)
+    {
+        GlueClientBuilder glue = GlueClient.builder();
+
+        glue.overrideConfiguration(builder -> builder
+                .addExecutionInterceptor(AwsSdkTelemetry.builder(openTelemetry)
+                        .setCaptureExperimentalSpanAttributes(true)
+                        .setRecordIndividualHttpError(true)
+                        .build().newExecutionInterceptor())
+                .retryStrategy(retryBuilder -> retryBuilder
+                        .retryOnException(throwable -> throwable instanceof ConcurrentModificationException)
+                        .backoffStrategy(BackoffStrategy.exponentialDelay(
+                                java.time.Duration.ofMillis(20),
+                                java.time.Duration.ofMillis(1500)))
+                        .maxAttempts(config.getMaxGlueErrorRetries())));
+
+        Optional<StaticCredentialsProvider> staticCredentialsProvider = getStaticCredentialsProvider(config);
+
+        if (config.isUseWebIdentityTokenCredentialsProvider()) {
+            glue.credentialsProvider(StsWebIdentityTokenFileCredentialsProvider.builder()
+                    .stsClient(getStsClient(config, staticCredentialsProvider))
+                    .asyncCredentialUpdateEnabled(true)
+                    .build());
+        }
+        else if (config.getIamRole().isPresent()) {
+            glue.credentialsProvider(StsAssumeRoleCredentialsProvider.builder()
+                    .refreshRequest(request -> request
+                            .roleArn(config.getIamRole().get())
+                            .roleSessionName("trino-session")
+                            .externalId(config.getExternalId().orElse(null)))
+                    .stsClient(getStsClient(config, staticCredentialsProvider))
+                    .asyncCredentialUpdateEnabled(true)
+                    .build());
+        }
+        else {
+            staticCredentialsProvider.ifPresent(glue::credentialsProvider);
+        }
+
+        ApacheHttpClient.Builder httpClient = ApacheHttpClient.builder()
+                .maxConnections(config.getMaxGlueConnections());
+
+        if (config.getGlueEndpointUrl().isPresent()) {
+            checkArgument(config.getGlueRegion().isPresent(), "Glue region must be set when Glue endpoint URL is set");
+            glue.region(Region.of(config.getGlueRegion().get()));
+            httpClient.proxyConfiguration(ProxyConfiguration.builder()
+                    .endpoint(URI.create(config.getGlueEndpointUrl().get()))
+                    .build());
+        }
+        else if (config.getGlueRegion().isPresent()) {
+            glue.region(Region.of(config.getGlueRegion().get()));
+        }
+        else if (config.getPinGlueClientToCurrentRegion()) {
+            glue.region(DefaultAwsRegionProviderChain.builder().build().getRegion());
+        }
+
+        glue.httpClientBuilder(httpClient);
+
+        return glue.build();
+    }
+
+    private static Optional<StaticCredentialsProvider> getStaticCredentialsProvider(GlueHiveMetastoreConfig config)
+    {
+        if (config.getAwsAccessKey().isPresent() && config.getAwsSecretKey().isPresent()) {
+            return Optional.of(StaticCredentialsProvider.create(
+                    AwsBasicCredentials.create(config.getAwsAccessKey().get(), config.getAwsSecretKey().get())));
+        }
+        return Optional.empty();
+    }
+
+    private static StsClient getStsClient(GlueHiveMetastoreConfig config, Optional<StaticCredentialsProvider> staticCredentialsProvider)
+    {
+        StsClientBuilder sts = StsClient.builder();
+        staticCredentialsProvider.ifPresent(sts::credentialsProvider);
+
+        if (config.getGlueStsEndpointUrl().isPresent() && config.getGlueStsRegion().isPresent()) {
+            sts.endpointOverride(URI.create(config.getGlueStsEndpointUrl().get()))
+                    .region(Region.of(config.getGlueStsRegion().get()));
+        }
+        else if (config.getGlueStsRegion().isPresent()) {
+            sts.region(Region.of(config.getGlueStsRegion().get()));
+        }
+        else if (config.getPinGlueClientToCurrentRegion()) {
+            sts.region(DefaultAwsRegionProviderChain.builder().build().getRegion());
+        }
+
+        return sts.build();
     }
 }

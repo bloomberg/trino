@@ -66,9 +66,9 @@ import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.openjdk.jmh.annotations.Mode.AverageTime;
 import static org.openjdk.jmh.annotations.Scope.Thread;
-import static org.testng.Assert.assertEquals;
 
 @State(Thread)
 @OutputTimeUnit(MILLISECONDS)
@@ -79,7 +79,6 @@ import static org.testng.Assert.assertEquals;
 public class BenchmarkHashAndStreamingAggregationOperators
 {
     private static final TypeOperators TYPE_OPERATORS = new TypeOperators();
-    private static final JoinCompiler JOIN_COMPILER = new JoinCompiler(TYPE_OPERATORS);
 
     private static final TestingFunctionResolution FUNCTION_RESOLUTION = new TestingFunctionResolution();
     private static final TestingAggregationFunction LONG_SUM = FUNCTION_RESOLUTION.getAggregateFunction("sum", fromTypes(BIGINT));
@@ -232,7 +231,7 @@ public class BenchmarkHashAndStreamingAggregationOperators
                     ImmutableList.of(
                             COUNT.createAggregatorFactory(SINGLE, ImmutableList.of(0), OptionalInt.empty()),
                             LONG_SUM.createAggregatorFactory(SINGLE, ImmutableList.of(sumChannel), OptionalInt.empty())),
-                    JOIN_COMPILER);
+                    new JoinCompiler(TYPE_OPERATORS));
         }
 
         private OperatorFactory createHashAggregationOperatorFactory(
@@ -262,7 +261,7 @@ public class BenchmarkHashAndStreamingAggregationOperators
                     succinctBytes(8),
                     succinctBytes(Integer.MAX_VALUE),
                     spillerFactory,
-                    JOIN_COMPILER,
+                    new FlatHashStrategyCompiler(TYPE_OPERATORS),
                     TYPE_OPERATORS,
                     Optional.empty());
         }
@@ -359,13 +358,13 @@ public class BenchmarkHashAndStreamingAggregationOperators
         context.groupByTypes = groupByTypes;
         context.setup();
 
-        assertEquals(TOTAL_PAGES, context.getPages().size());
+        assertThat(TOTAL_PAGES).isEqualTo(context.getPages().size());
         for (int i = 0; i < TOTAL_PAGES; i++) {
-            assertEquals(ROWS_PER_PAGE, context.getPages().get(i).getPositionCount());
+            assertThat(ROWS_PER_PAGE).isEqualTo(context.getPages().get(i).getPositionCount());
         }
 
         List<Page> outputPages = benchmark(context);
-        assertEquals(TOTAL_PAGES * ROWS_PER_PAGE / rowsPerGroup, outputPages.stream().mapToInt(Page::getPositionCount).sum());
+        assertThat(TOTAL_PAGES * ROWS_PER_PAGE / rowsPerGroup).isEqualTo(outputPages.stream().mapToInt(Page::getPositionCount).sum());
 
         context.cleanup();
     }

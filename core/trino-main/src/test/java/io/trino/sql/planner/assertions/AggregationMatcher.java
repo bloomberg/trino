@@ -16,6 +16,7 @@ package io.trino.sql.planner.assertions;
 import io.trino.Session;
 import io.trino.cost.StatsProvider;
 import io.trino.metadata.Metadata;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Step;
@@ -85,7 +86,10 @@ public class AggregationMatcher
                 .collect(toImmutableSet());
 
         Set<Symbol> expectedMasks = masks.stream()
-                .map(name -> new Symbol(symbolAliases.get(name).getName()))
+                .map(name -> {
+                    Reference reference = symbolAliases.get(name);
+                    return new Symbol(reference.type(), reference.name());
+                })
                 .collect(toImmutableSet());
 
         if (!actualMasks.equals(expectedMasks)) {
@@ -115,7 +119,10 @@ public class AggregationMatcher
 
         List<Symbol> expectedSymbols = expectedAliases
                 .stream()
-                .map(alias -> new Symbol(symbolAliases.get(alias).getName()))
+                .map(alias -> {
+                    Reference reference = symbolAliases.get(alias);
+                    return new Symbol(reference.type(), reference.name());
+                })
                 .collect(toImmutableList());
         for (Symbol symbol : expectedSymbols) {
             if (!actualSymbols.contains(symbol)) {

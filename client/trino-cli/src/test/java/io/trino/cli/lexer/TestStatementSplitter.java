@@ -20,9 +20,6 @@ import org.junit.jupiter.api.Test;
 import static io.trino.cli.lexer.StatementSplitter.isEmptyStatement;
 import static io.trino.cli.lexer.StatementSplitter.squeezeStatement;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestStatementSplitter
 {
@@ -86,7 +83,7 @@ public class TestStatementSplitter
         assertThat(splitter.getCompleteStatements()).containsExactly(
                 new Statement("select * from  foo", "//"),
                 new Statement("select * from t", ";"));
-        assertEquals("select * from", splitter.getPartialStatement());
+        assertThat(splitter.getPartialStatement()).isEqualTo("select * from");
     }
 
     @Test
@@ -285,52 +282,197 @@ public class TestStatementSplitter
     }
 
     @Test
+    public void testSplitterSimpleInlineFunction()
+    {
+        String function = "WITH FUNCTION abc() RETURNS int RETURN 42 SELECT abc() FROM t";
+        String sql = function + "; SELECT 456;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 456"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterSimpleInlineFunctionWithIncompleteSelect()
+    {
+        String function = "WITH FUNCTION abc() RETURNS int RETURN 42 SELECT abc(), FROM t";
+        String sql = function + "; SELECT 456;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 456"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterSimpleInlineFunctionWithComments()
+    {
+        String function = "/* start */ WITH FUNCTION abc() RETURNS int /* middle */ RETURN 42 SELECT abc() FROM t /* end */";
+        String sql = function + "; SELECT 456;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 456"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterCreateFunction()
+    {
+        String function = "CREATE FUNCTION fib(n int) RETURNS int BEGIN IF false THEN RETURN 0; END IF; RETURN 1; END";
+        String sql = function + "; SELECT 123;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 123"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterCreateFunctionInvalidThen()
+    {
+        String function = "CREATE FUNCTION fib(n int) RETURNS int BEGIN IF false THEN oops; END IF; RETURN 1; END";
+        String sql = function + "; SELECT 123;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 123"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterCreateFunctionInvalidReturn()
+    {
+        String function = "CREATE FUNCTION fib(n int) RETURNS int BEGIN IF false THEN oops; END IF; RETURN 1 xxx; END";
+        String sql = function + "; SELECT 123;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 123"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterCreateFunctionInvalidBegin()
+    {
+        String function = "CREATE FUNCTION fib(n int) RETURNS int BEGIN xxx IF false THEN oops; END IF; RETURN 1; END";
+        String sql = function + "; SELECT 123;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement("CREATE FUNCTION fib(n int) RETURNS int BEGIN xxx IF false THEN oops; END IF"),
+                statement("RETURN 1"),
+                statement("END"),
+                statement("SELECT 123"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterCreateFunctionInvalidDelimitedThen()
+    {
+        String function = "CREATE FUNCTION fib(n int) RETURNS int BEGIN IF false THEN; oops; END IF; RETURN 1; END";
+        String sql = function + "; SELECT 123;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 123"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterComplexCreateFunction()
+    {
+        String function = "" +
+                "CREATE FUNCTION fib(n bigint)\n" +
+                "RETURNS bigint\n" +
+                "BEGIN\n" +
+                "  DECLARE a bigint DEFAULT 1;\n" +
+                "  DECLARE b bigint DEFAULT 1;\n" +
+                "  DECLARE c bigint;\n" +
+                "  IF n <= 2 THEN\n" +
+                "    RETURN 1;\n" +
+                "  END IF;\n" +
+                "  WHILE n > 2 DO\n" +
+                "    SET n = n - 1;\n" +
+                "    SET c = a + b;\n" +
+                "    SET a = b;\n" +
+                "    SET b = c;\n" +
+                "  END WHILE;\n" +
+                "  RETURN c;\n" +
+                "END";
+        String sql = function + ";\nSELECT 123;\nSELECT 456;\n";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement(function),
+                statement("SELECT 123"),
+                statement("SELECT 456"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
+    public void testSplitterMultipleFunctions()
+    {
+        String function1 = "CREATE FUNCTION f1() RETURNS int BEGIN IF false THEN RETURN 0; END IF; RETURN 1; END";
+        String function2 = "CREATE FUNCTION f2() RETURNS int BEGIN IF false THEN RETURN 0; END IF; RETURN 1; END";
+        String sql = "SELECT 11;" + function1 + ";" + function2 + ";SELECT 22;" + function2 + ";SELECT 33;";
+        StatementSplitter splitter = new StatementSplitter(sql);
+        assertThat(splitter.getCompleteStatements()).containsExactly(
+                statement("SELECT 11"),
+                statement(function1),
+                statement(function2),
+                statement("SELECT 22"),
+                statement(function2),
+                statement("SELECT 33"));
+        assertThat(splitter.getPartialStatement()).isEmpty();
+    }
+
+    @Test
     public void testIsEmptyStatement()
     {
-        assertTrue(isEmptyStatement(""));
-        assertTrue(isEmptyStatement(" "));
-        assertTrue(isEmptyStatement("\t\n "));
-        assertTrue(isEmptyStatement("--foo\n  --what"));
-        assertTrue(isEmptyStatement("/* oops */"));
-        assertFalse(isEmptyStatement("x"));
-        assertFalse(isEmptyStatement("select"));
-        assertFalse(isEmptyStatement("123"));
-        assertFalse(isEmptyStatement("z#oops"));
+        assertThat(isEmptyStatement("")).isTrue();
+        assertThat(isEmptyStatement(" ")).isTrue();
+        assertThat(isEmptyStatement("\t\n ")).isTrue();
+        assertThat(isEmptyStatement("--foo\n  --what")).isTrue();
+        assertThat(isEmptyStatement("/* oops */")).isTrue();
+        assertThat(isEmptyStatement("x")).isFalse();
+        assertThat(isEmptyStatement("select")).isFalse();
+        assertThat(isEmptyStatement("123")).isFalse();
+        assertThat(isEmptyStatement("z#oops")).isFalse();
     }
 
     @Test
     public void testSqueezeStatement()
     {
         String sql = "select   *  from\n foo\n  order by x ; ";
-        assertEquals("select * from foo order by x ;", squeezeStatement(sql));
+        assertThat(squeezeStatement(sql)).isEqualTo("select * from foo order by x ;");
     }
 
     @Test
     public void testSqueezeStatementWithIncompleteQuotedString()
     {
         String sql = "select   *  from\n foo\n  where x = 'oops";
-        assertEquals("select * from foo where x = 'oops", squeezeStatement(sql));
+        assertThat(squeezeStatement(sql)).isEqualTo("select * from foo where x = 'oops");
     }
 
     @Test
     public void testSqueezeStatementWithBackquote()
     {
         String sql = "select  `  f``o  o`` `   from dual";
-        assertEquals("select `  f``o  o`` ` from dual", squeezeStatement(sql));
+        assertThat(squeezeStatement(sql)).isEqualTo("select `  f``o  o`` ` from dual");
     }
 
     @Test
     public void testSqueezeStatementAlternateDelimiter()
     {
         String sql = "select   *  from\n foo\n  order by x // ";
-        assertEquals("select * from foo order by x //", squeezeStatement(sql));
+        assertThat(squeezeStatement(sql)).isEqualTo("select * from foo order by x //");
     }
 
     @Test
     public void testSqueezeStatementError()
     {
         String sql = "select   *  from z#oops";
-        assertEquals("select * from z#oops", squeezeStatement(sql));
+        assertThat(squeezeStatement(sql)).isEqualTo("select * from z#oops");
     }
 
     private static Statement statement(String value)

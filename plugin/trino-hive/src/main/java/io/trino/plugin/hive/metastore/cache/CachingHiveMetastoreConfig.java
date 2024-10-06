@@ -20,21 +20,29 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.Optional;
-import java.util.concurrent.TimeUnit;
+
+import static com.google.common.base.MoreObjects.firstNonNull;
+import static com.google.common.collect.Comparators.max;
+import static java.util.concurrent.TimeUnit.MINUTES;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 public class CachingHiveMetastoreConfig
 {
-    private Duration metastoreCacheTtl = new Duration(0, TimeUnit.SECONDS);
     // Use 5 mins for stats cache TTL by default. 5 mins will be sufficient to help
     // significantly when there is high number of concurrent queries.
     // 5 mins will also prevent stats from being stalled for a long time since
     // time window where table data can be altered is limited.
-    private Duration statsCacheTtl = new Duration(5, TimeUnit.MINUTES);
+    public static final Duration DEFAULT_STATS_CACHE_TTL = new Duration(5, MINUTES);
+
+    private Duration metastoreCacheTtl = new Duration(0, SECONDS);
+    private Optional<Duration> statsCacheTtl = Optional.empty();
     private Optional<Duration> metastoreRefreshInterval = Optional.empty();
-    private long metastoreCacheMaximumSize = 10000;
+    private long metastoreCacheMaximumSize = 20000;
     private int maxMetastoreRefreshThreads = 10;
-    private boolean cacheMissing = true;
     private boolean partitionCacheEnabled = true;
+    private boolean cacheMissing = true;
+    private Boolean cacheMissingPartitions;
+    private Boolean cacheMissingStats;
 
     @NotNull
     public Duration getMetastoreCacheTtl()
@@ -52,13 +60,13 @@ public class CachingHiveMetastoreConfig
     @NotNull
     public Duration getStatsCacheTtl()
     {
-        return statsCacheTtl;
+        return statsCacheTtl.orElseGet(() -> max(metastoreCacheTtl, DEFAULT_STATS_CACHE_TTL));
     }
 
     @Config("hive.metastore-stats-cache-ttl")
     public CachingHiveMetastoreConfig setStatsCacheTtl(Duration statsCacheTtl)
     {
-        this.statsCacheTtl = statsCacheTtl;
+        this.statsCacheTtl = Optional.of(statsCacheTtl);
         return this;
     }
 
@@ -101,6 +109,18 @@ public class CachingHiveMetastoreConfig
         return this;
     }
 
+    public boolean isPartitionCacheEnabled()
+    {
+        return partitionCacheEnabled;
+    }
+
+    @Config("hive.metastore-cache.cache-partitions")
+    public CachingHiveMetastoreConfig setPartitionCacheEnabled(boolean enabled)
+    {
+        this.partitionCacheEnabled = enabled;
+        return this;
+    }
+
     public boolean isCacheMissing()
     {
         return cacheMissing;
@@ -113,15 +133,27 @@ public class CachingHiveMetastoreConfig
         return this;
     }
 
-    public boolean isPartitionCacheEnabled()
+    public boolean isCacheMissingPartitions()
     {
-        return partitionCacheEnabled;
+        return firstNonNull(cacheMissingPartitions, cacheMissing);
     }
 
-    @Config("hive.metastore-cache.cache-partitions")
-    public CachingHiveMetastoreConfig setPartitionCacheEnabled(boolean enabled)
+    @Config("hive.metastore-cache.cache-missing-partitions")
+    public CachingHiveMetastoreConfig setCacheMissingPartitions(boolean cacheMissingPartitions)
     {
-        this.partitionCacheEnabled = enabled;
+        this.cacheMissingPartitions = cacheMissingPartitions;
+        return this;
+    }
+
+    public boolean isCacheMissingStats()
+    {
+        return firstNonNull(cacheMissingStats, cacheMissing);
+    }
+
+    @Config("hive.metastore-cache.cache-missing-stats")
+    public CachingHiveMetastoreConfig setCacheMissingStats(boolean cacheMissingStats)
+    {
+        this.cacheMissingStats = cacheMissingStats;
         return this;
     }
 }

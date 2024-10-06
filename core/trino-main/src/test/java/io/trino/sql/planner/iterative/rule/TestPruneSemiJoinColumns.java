@@ -15,6 +15,7 @@ package io.trino.sql.planner.iterative.rule;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.iterative.rule.test.PlanBuilder;
@@ -27,6 +28,8 @@ import java.util.Optional;
 import java.util.function.Predicate;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.semiJoin;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.strictProject;
@@ -39,10 +42,10 @@ public class TestPruneSemiJoinColumns
     public void testSemiJoinNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.getName().equals("leftValue")))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.name().equals("leftValue")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("leftValue", expression("leftValue")),
+                                ImmutableMap.of("leftValue", expression(new Reference(BIGINT, "leftValue"))),
                                 values("leftKey", "leftKeyHash", "leftValue")));
     }
 
@@ -58,7 +61,7 @@ public class TestPruneSemiJoinColumns
     public void testKeysNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> (symbol.getName().equals("leftValue") || symbol.getName().equals("match"))))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> (symbol.name().equals("leftValue") || symbol.name().equals("match"))))
                 .doesNotFire();
     }
 
@@ -66,15 +69,15 @@ public class TestPruneSemiJoinColumns
     public void testValueNotNeeded()
     {
         tester().assertThat(new PruneSemiJoinColumns())
-                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.getName().equals("match")))
+                .on(p -> buildProjectedSemiJoin(p, symbol -> symbol.name().equals("match")))
                 .matches(
                         strictProject(
-                                ImmutableMap.of("match", expression("match")),
+                                ImmutableMap.of("match", expression(new Reference(BOOLEAN, "match"))),
                                 semiJoin("leftKey", "rightKey", "match",
                                         strictProject(
                                                 ImmutableMap.of(
-                                                        "leftKey", expression("leftKey"),
-                                                        "leftKeyHash", expression("leftKeyHash")),
+                                                        "leftKey", expression(new Reference(BIGINT, "leftKey")),
+                                                        "leftKeyHash", expression(new Reference(BIGINT, "leftKeyHash"))),
                                                 values("leftKey", "leftKeyHash", "leftValue")),
                                         values("rightKey"))));
     }

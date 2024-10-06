@@ -52,7 +52,6 @@ import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static org.apache.hadoop.fs.FileSystem.getFileSystemClass;
-import static org.apache.hadoop.security.UserGroupInformationShim.getSubject;
 
 public class TrinoFileSystemCache
         implements FileSystemCache
@@ -61,7 +60,7 @@ public class TrinoFileSystemCache
 
     public static final String CACHE_KEY = "fs.cache.credentials";
 
-    public static final TrinoFileSystemCache INSTANCE = new TrinoFileSystemCache();
+    static final TrinoFileSystemCache INSTANCE = new TrinoFileSystemCache();
 
     private final AtomicLong unique = new AtomicLong();
 
@@ -103,6 +102,11 @@ public class TrinoFileSystemCache
     int getCacheSize()
     {
         return cache.size();
+    }
+
+    TrinoFileSystemCacheStats getStats()
+    {
+        return stats;
     }
 
     private FileSystem getInternal(URI uri, Configuration conf, long unique)
@@ -249,7 +253,7 @@ public class TrinoFileSystemCache
         AuthenticationMethod authenticationMethod = userGroupInformation.getAuthenticationMethod();
         return switch (authenticationMethod) {
             case SIMPLE -> ImmutableSet.of();
-            case KERBEROS -> ImmutableSet.copyOf(getSubject(userGroupInformation).getPrivateCredentials());
+            case KERBEROS -> ImmutableSet.copyOf(userGroupInformation.getSubject().getPrivateCredentials());
             case PROXY -> getPrivateCredentials(userGroupInformation.getRealUser());
             default -> throw new IllegalArgumentException("Unsupported authentication method: " + authenticationMethod);
         };
@@ -261,7 +265,6 @@ public class TrinoFileSystemCache
         return "hdfs".equals(scheme) || "viewfs".equals(scheme);
     }
 
-    @SuppressWarnings("unused")
     private record FileSystemKey(String scheme, String authority, long unique, String realUser, String proxyUser)
     {
         private FileSystemKey
@@ -465,10 +468,5 @@ public class TrinoFileSystemCache
         {
             return delegate.next();
         }
-    }
-
-    public TrinoFileSystemCacheStats getFileSystemCacheStats()
-    {
-        return stats;
     }
 }

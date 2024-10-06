@@ -30,13 +30,12 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import io.trino.testng.services.ManageTestResources;
-import io.trino.testng.services.ReportOrphanedExecutors;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.time.Duration;
 import java.util.Optional;
@@ -54,13 +53,13 @@ import static java.util.concurrent.Executors.newCachedThreadPool;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
 
 @TestInstance(PER_CLASS)
+@Execution(SAME_THREAD)
 public class TestRefreshMaterializedView
         extends AbstractTestQueryFramework
 {
-    @ManageTestResources.Suppress(because = "Not a TestNG test class")
-    @ReportOrphanedExecutors.Suppress(because = "Not a TestNG test class")
     private final ListeningExecutorService executorService = listeningDecorator(newCachedThreadPool());
     private SettableFuture<Void> startRefreshMaterializedView;
     private SettableFuture<Void> finishRefreshMaterializedView;
@@ -87,7 +86,7 @@ public class TestRefreshMaterializedView
                 .setCatalog("mock")
                 .setSchema("default")
                 .build();
-        DistributedQueryRunner queryRunner = DistributedQueryRunner.builder(session)
+        QueryRunner queryRunner = DistributedQueryRunner.builder(session)
                 .build();
         queryRunner.installPlugin(
                 new MockConnectorPlugin(
@@ -102,20 +101,19 @@ public class TestRefreshMaterializedView
                                                 Optional.of(new CatalogSchemaTableName("mock", "default", "test_storage")),
                                                 Optional.of("mock"),
                                                 Optional.of("default"),
-                                                ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("nationkey", BIGINT.getTypeId())),
+                                                ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("nationkey", BIGINT.getTypeId(), Optional.empty())),
                                                 Optional.of(Duration.ZERO),
                                                 Optional.empty(),
                                                 Optional.of("alice"),
-                                                ImmutableList.of(),
-                                                ImmutableMap.of())))
+                                                ImmutableList.of())))
                                 .withDelegateMaterializedViewRefreshToConnector((connectorSession, schemaTableName) -> true)
-                                .withRefreshMaterializedView(((connectorSession, schemaTableName) -> {
+                                .withRefreshMaterializedView((connectorSession, schemaTableName) -> {
                                     startRefreshMaterializedView.set(null);
                                     SettableFuture<Void> refreshMaterializedView = SettableFuture.create();
                                     finishRefreshMaterializedView.addListener(() -> refreshMaterializedView.set(null), directExecutor());
                                     addExceptionCallback(refreshMaterializedView, () -> refreshInterrupted.set(null));
                                     return toCompletableFuture(refreshMaterializedView);
-                                }))
+                                })
                                 .build()));
         queryRunner.createCatalog("mock", "mock");
         return queryRunner;

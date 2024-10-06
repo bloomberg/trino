@@ -18,6 +18,7 @@ import com.google.errorprone.annotations.ThreadSafe;
 import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.connector.CatalogFactory;
+import io.trino.connector.CatalogStoreManager;
 import io.trino.eventlistener.EventListenerManager;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.resourcegroups.ResourceGroupManager;
@@ -29,16 +30,18 @@ import io.trino.metadata.InternalFunctionBundle.InternalFunctionBundleBuilder;
 import io.trino.metadata.TypeRegistry;
 import io.trino.security.AccessControlManager;
 import io.trino.security.GroupProviderManager;
+import io.trino.server.protocol.spooling.SpoolingManagerRegistry;
 import io.trino.server.security.CertificateAuthenticatorManager;
 import io.trino.server.security.HeaderAuthenticatorManager;
 import io.trino.server.security.PasswordAuthenticatorManager;
 import io.trino.spi.Plugin;
 import io.trino.spi.block.BlockEncoding;
+import io.trino.spi.catalog.CatalogStoreFactory;
 import io.trino.spi.classloader.ThreadContextClassLoader;
-import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.eventlistener.EventListenerFactory;
 import io.trino.spi.exchange.ExchangeManagerFactory;
+import io.trino.spi.protocol.SpoolingManagerFactory;
 import io.trino.spi.resourcegroups.ResourceGroupConfigurationManagerFactory;
 import io.trino.spi.security.CertificateAuthenticatorFactory;
 import io.trino.spi.security.GroupProviderFactory;
@@ -55,7 +58,6 @@ import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -78,6 +80,7 @@ public class PluginManager
     private static final Logger log = Logger.get(PluginManager.class);
 
     private final PluginsProvider pluginsProvider;
+    private final Optional<CatalogStoreManager> catalogStoreManager;
     private final CatalogFactory connectorFactory;
     private final GlobalFunctionCatalog globalFunctionCatalog;
     private final ResourceGroupManager<?> resourceGroupManager;
@@ -88,6 +91,7 @@ public class PluginManager
     private final EventListenerManager eventListenerManager;
     private final GroupProviderManager groupProviderManager;
     private final ExchangeManagerRegistry exchangeManagerRegistry;
+    private final SpoolingManagerRegistry spoolingManagerRegistry;
     private final SessionPropertyDefaults sessionPropertyDefaults;
     private final TypeRegistry typeRegistry;
     private final BlockEncodingManager blockEncodingManager;
@@ -97,6 +101,7 @@ public class PluginManager
     @Inject
     public PluginManager(
             PluginsProvider pluginsProvider,
+            Optional<CatalogStoreManager> catalogStoreManager,
             CatalogFactory connectorFactory,
             GlobalFunctionCatalog globalFunctionCatalog,
             ResourceGroupManager<?> resourceGroupManager,
@@ -110,9 +115,11 @@ public class PluginManager
             TypeRegistry typeRegistry,
             BlockEncodingManager blockEncodingManager,
             HandleResolver handleResolver,
-            ExchangeManagerRegistry exchangeManagerRegistry)
+            ExchangeManagerRegistry exchangeManagerRegistry,
+            SpoolingManagerRegistry spoolingManagerRegistry)
     {
         this.pluginsProvider = requireNonNull(pluginsProvider, "pluginsProvider is null");
+        this.catalogStoreManager = requireNonNull(catalogStoreManager, "catalogStoreManager is null");
         this.connectorFactory = requireNonNull(connectorFactory, "connectorFactory is null");
         this.globalFunctionCatalog = requireNonNull(globalFunctionCatalog, "globalFunctionCatalog is null");
         this.resourceGroupManager = requireNonNull(resourceGroupManager, "resourceGroupManager is null");
@@ -127,6 +134,7 @@ public class PluginManager
         this.blockEncodingManager = requireNonNull(blockEncodingManager, "blockEncodingManager is null");
         this.handleResolver = requireNonNull(handleResolver, "handleResolver is null");
         this.exchangeManagerRegistry = requireNonNull(exchangeManagerRegistry, "exchangeManagerRegistry is null");
+        this.spoolingManagerRegistry = requireNonNull(spoolingManagerRegistry, "spoolingManagerRegistry is null");
     }
 
     @Override
@@ -153,34 +161,41 @@ public class PluginManager
         }
 
         handleResolver.registerClassLoader(pluginClassLoader);
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(pluginClassLoader)) {
-            loadPlugin(pluginClassLoader);
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(pluginClassLoader)) {
+            loadPlugin(plugin, pluginClassLoader);
         }
 
         log.info("-- Finished loading plugin %s --", plugin);
     }
 
-    private void loadPlugin(PluginClassLoader pluginClassLoader)
+    private void loadPlugin(String pluginPath, PluginClassLoader pluginClassLoader)
     {
         ServiceLoader<Plugin> serviceLoader = ServiceLoader.load(Plugin.class, pluginClassLoader);
         List<Plugin> plugins = ImmutableList.copyOf(serviceLoader);
-        checkState(!plugins.isEmpty(), "No service providers of type %s in the classpath: %s", Plugin.class.getName(), asList(pluginClassLoader.getURLs()));
+        checkState(!plugins.isEmpty(), "%s - No service providers of type %s in the classpath: %s", pluginPath, Plugin.class.getName(), asList(pluginClassLoader.getURLs()));
 
         for (Plugin plugin : plugins) {
             log.info("Installing %s", plugin.getClass().getName());
-            installPlugin(plugin, pluginClassLoader::duplicate);
+            installPlugin(plugin);
         }
     }
 
     @Override
-    public void installPlugin(Plugin plugin, Function<CatalogHandle, ClassLoader> duplicatePluginClassLoaderFactory)
+    public void installPlugin(Plugin plugin)
     {
-        installPluginInternal(plugin, duplicatePluginClassLoaderFactory);
+        installPluginInternal(plugin);
         typeRegistry.verifyTypes();
     }
 
-    private void installPluginInternal(Plugin plugin, Function<CatalogHandle, ClassLoader> duplicatePluginClassLoaderFactory)
+    private void installPluginInternal(Plugin plugin)
     {
+        catalogStoreManager.ifPresent(catalogStoreManager -> {
+            for (CatalogStoreFactory catalogStoreFactory : plugin.getCatalogStoreFactories()) {
+                log.info("Registering catalog store %s", catalogStoreFactory.getName());
+                catalogStoreManager.addCatalogStoreFactory(catalogStoreFactory);
+            }
+        });
+
         for (BlockEncoding blockEncoding : plugin.getBlockEncodings()) {
             log.info("Registering block encoding %s", blockEncoding.getName());
             blockEncodingManager.addBlockEncoding(blockEncoding);
@@ -198,7 +213,7 @@ public class PluginManager
 
         for (ConnectorFactory connectorFactory : plugin.getConnectorFactories()) {
             log.info("Registering connector %s", connectorFactory.getName());
-            this.connectorFactory.addConnectorFactory(connectorFactory, duplicatePluginClassLoaderFactory);
+            this.connectorFactory.addConnectorFactory(connectorFactory);
         }
 
         Set<Class<?>> functions = plugin.getFunctions();
@@ -256,6 +271,11 @@ public class PluginManager
         for (ExchangeManagerFactory exchangeManagerFactory : plugin.getExchangeManagerFactories()) {
             log.info("Registering exchange manager %s", exchangeManagerFactory.getName());
             exchangeManagerRegistry.addExchangeManagerFactory(exchangeManagerFactory);
+        }
+
+        for (SpoolingManagerFactory spoolingManagerFactory : plugin.getSpoolingManagerFactories()) {
+            log.info("Registering spooling manager %s", spoolingManagerFactory.getName());
+            spoolingManagerRegistry.addSpoolingManagerFactory(spoolingManagerFactory);
         }
     }
 

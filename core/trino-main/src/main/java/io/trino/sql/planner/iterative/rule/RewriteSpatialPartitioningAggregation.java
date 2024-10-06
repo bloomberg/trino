@@ -22,6 +22,9 @@ import io.trino.operator.RetryPolicy;
 import io.trino.spi.function.CatalogSchemaFunctionName;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.PlannerContext;
+import io.trino.sql.ir.Call;
+import io.trino.sql.ir.Constant;
+import io.trino.sql.ir.Expression;
 import io.trino.sql.planner.BuiltinFunctionCallBuilder;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.Rule;
@@ -29,9 +32,6 @@ import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.ProjectNode;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.FunctionCall;
-import io.trino.sql.tree.LongLiteral;
 
 import java.util.Map;
 import java.util.Optional;
@@ -79,7 +79,7 @@ public class RewriteSpatialPartitioningAggregation
     private static boolean hasSpatialPartitioningAggregation(AggregationNode aggregationNode)
     {
         return aggregationNode.getAggregations().values().stream()
-                .anyMatch(aggregation -> aggregation.getResolvedFunction().getSignature().getName().equals(NAME) && aggregation.getArguments().size() == 1);
+                .anyMatch(aggregation -> aggregation.getResolvedFunction().signature().getName().equals(NAME) && aggregation.getArguments().size() == 1);
     }
 
     @Override
@@ -99,7 +99,7 @@ public class RewriteSpatialPartitioningAggregation
         ImmutableMap.Builder<Symbol, Expression> envelopeAssignments = ImmutableMap.builder();
         for (Map.Entry<Symbol, Aggregation> entry : node.getAggregations().entrySet()) {
             Aggregation aggregation = entry.getValue();
-            CatalogSchemaFunctionName name = aggregation.getResolvedFunction().getSignature().getName();
+            CatalogSchemaFunctionName name = aggregation.getResolvedFunction().signature().getName();
             if (name.equals(NAME) && aggregation.getArguments().size() == 1) {
                 Expression geometry = getOnlyElement(aggregation.getArguments());
                 Symbol envelopeSymbol = context.getSymbolAllocator().newSymbol("envelope", plannerContext.getTypeManager().getType(GEOMETRY_TYPE_SIGNATURE));
@@ -140,7 +140,7 @@ public class RewriteSpatialPartitioningAggregation
                                 node.getSource(),
                                 Assignments.builder()
                                         .putIdentities(node.getSource().getOutputSymbols())
-                                        .put(partitionCountSymbol, new LongLiteral(Integer.toString(partitionCount)))
+                                        .put(partitionCountSymbol, new Constant(INTEGER, (long) partitionCount))
                                         .putAll(envelopeAssignments.buildOrThrow())
                                         .build()))
                         .setAggregations(aggregations.buildOrThrow())
@@ -149,12 +149,10 @@ public class RewriteSpatialPartitioningAggregation
 
     private boolean isStEnvelopeFunctionCall(Expression expression, ResolvedFunction stEnvelopeFunction)
     {
-        if (!(expression instanceof FunctionCall functionCall)) {
+        if (!(expression instanceof Call call)) {
             return false;
         }
 
-        return plannerContext.getMetadata().decodeFunction(functionCall.getName())
-                .getFunctionId()
-                .equals(stEnvelopeFunction.getFunctionId());
+        return call.function().functionId().equals(stEnvelopeFunction.functionId());
     }
 }

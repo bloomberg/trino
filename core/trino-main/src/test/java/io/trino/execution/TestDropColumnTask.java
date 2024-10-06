@@ -14,6 +14,7 @@
 package io.trino.execution;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.QualifiedObjectName;
@@ -24,6 +25,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.RowType.Field;
 import io.trino.sql.tree.DropColumn;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +35,7 @@ import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND;
+import static io.trino.spi.connector.SaveMode.FAIL;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
@@ -45,13 +48,13 @@ public class TestDropColumnTask
     public void testDropColumn()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT), new ColumnMetadata("b", BIGINT));
 
         getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("b"), false, false));
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT));
     }
 
@@ -59,9 +62,9 @@ public class TestDropColumnTask
     public void testDropOnlyColumn()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, someTable(tableName), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, someTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("test", BIGINT));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("test"), false, false)))
@@ -92,7 +95,7 @@ public class TestDropColumnTask
     public void testDropMissingColumn()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), FAIL);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("missing_column"), false, false)))
                 .hasErrorCode(COLUMN_NOT_FOUND)
@@ -103,11 +106,11 @@ public class TestDropColumnTask
     public void testDropColumnIfExists()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, simpleTable(tableName), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
 
         getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("c"), false, true));
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("a", BIGINT), new ColumnMetadata("b", BIGINT));
     }
 
@@ -115,9 +118,9 @@ public class TestDropColumnTask
     public void testUnsupportedDropDuplicatedField()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT), new Field(Optional.of("a"), BIGINT)), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT), new Field(Optional.of("a"), BIGINT)), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .isEqualTo(ImmutableList.of(new ColumnMetadata("col", RowType.rowType(
                         new Field(Optional.of("a"), BIGINT), new Field(Optional.of("a"), BIGINT)))));
 
@@ -130,9 +133,9 @@ public class TestDropColumnTask
     public void testUnsupportedDropOnlyField()
     {
         QualifiedObjectName tableName = qualifiedObjectName("existing_table");
-        metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT)), false);
+        metadata.createTable(testSession, TEST_CATALOG_NAME, rowTable(tableName, new Field(Optional.of("a"), BIGINT)), FAIL);
         TableHandle table = metadata.getTableHandle(testSession, tableName).get();
-        assertThat(metadata.getTableMetadata(testSession, table).getColumns())
+        assertThat(metadata.getTableMetadata(testSession, table).columns())
                 .containsExactly(new ColumnMetadata("col", RowType.rowType(new Field(Optional.of("a"), BIGINT))));
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(tableName), QualifiedName.of("col", "a"), false, false)))
@@ -144,7 +147,7 @@ public class TestDropColumnTask
     public void testDropColumnOnView()
     {
         QualifiedObjectName viewName = qualifiedObjectName("existing_view");
-        metadata.createView(testSession, viewName, someView(), false);
+        metadata.createView(testSession, viewName, someView(), ImmutableMap.of(), false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(viewName), QualifiedName.of("test"), false, false)))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -155,7 +158,7 @@ public class TestDropColumnTask
     public void testDropColumnOnMaterializedView()
     {
         QualifiedObjectName materializedViewName = qualifiedObjectName("existing_materialized_view");
-        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), false, false);
+        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), MATERIALIZED_VIEW_PROPERTIES, false, false);
 
         assertTrinoExceptionThrownBy(() -> getFutureValue(executeDropColumn(asQualifiedName(materializedViewName), QualifiedName.of("test"), false, false)))
                 .hasErrorCode(TABLE_NOT_FOUND)
@@ -165,7 +168,7 @@ public class TestDropColumnTask
     private ListenableFuture<Void> executeDropColumn(QualifiedName table, QualifiedName column, boolean tableExists, boolean columnExists)
     {
         return new DropColumnTask(plannerContext.getMetadata(), new AllowAllAccessControl())
-                .execute(new DropColumn(table, column, tableExists, columnExists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
+                .execute(new DropColumn(new NodeLocation(1, 1), table, column, tableExists, columnExists), queryStateMachine, ImmutableList.of(), WarningCollector.NOOP);
     }
 
     private static ConnectorTableMetadata simpleTable(QualifiedObjectName tableName)

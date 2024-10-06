@@ -29,7 +29,7 @@ import java.util.Map;
 import static com.google.common.base.Preconditions.checkState;
 import static io.trino.operator.WindowOperator.FrameBoundKey.Type.END;
 import static io.trino.operator.WindowOperator.FrameBoundKey.Type.START;
-import static io.trino.sql.tree.FrameBound.Type.UNBOUNDED_FOLLOWING;
+import static io.trino.sql.planner.plan.FrameBoundType.UNBOUNDED_FOLLOWING;
 
 public final class RegularWindowPartition
         implements WindowPartition
@@ -185,7 +185,7 @@ public final class RegularWindowPartition
         peerGroupStart = currentPosition;
         // find end of peer group
         peerGroupEnd = peerGroupStart + 1;
-        while ((peerGroupEnd < partitionEnd) && pagesIndex.positionNotDistinctFromPosition(peerGroupHashStrategy, peerGroupStart, peerGroupEnd)) {
+        while ((peerGroupEnd < partitionEnd) && pagesIndex.positionIdenticalToPosition(peerGroupHashStrategy, peerGroupStart, peerGroupEnd)) {
             peerGroupEnd++;
         }
     }

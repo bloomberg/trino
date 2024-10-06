@@ -37,29 +37,33 @@ To use Iceberg, you need:
 
 - Access to a {ref}`Hive metastore service (HMS) <hive-thrift-metastore>`, an
   {ref}`AWS Glue catalog <iceberg-glue-catalog>`, a {ref}`JDBC catalog
-  <iceberg-jdbc-catalog>`, a {ref}`REST catalog <iceberg-rest-catalog>`, or a
-  {ref}`Nessie server <iceberg-nessie-catalog>`.
+  <iceberg-jdbc-catalog>`, a {ref}`REST catalog <iceberg-rest-catalog>`,
+  a {ref}`Nessie server <iceberg-nessie-catalog>`, or a
+  {ref}`Snowflake catalog <iceberg-snowflake-catalog>`.
 
-- Data files stored in a supported file format. These can be configured using
-  file format configuration properties per catalog:
-
-  - {ref}`ORC <hive-orc-configuration>`
-  - {ref}`Parquet <hive-parquet-configuration>` (default)
+- Data files stored in the file formats
+  [Parquet](parquet-format-configuration)(default),
+  [ORC](orc-format-configuration), or Avro on a [supported file
+  system](iceberg-file-system-configuration).
 
 ## General configuration
 
 To configure the Iceberg connector, create a catalog properties file
-`etc/catalog/example.properties` that references the `iceberg`
-connector and defines a metastore type. The Hive metastore catalog is the
-default implementation. To use a {ref}`Hive metastore <hive-thrift-metastore>`,
-`iceberg.catalog.type` must be set to `hive_metastore` and
-`hive.metastore.uri` must be configured:
+`etc/catalog/example.properties` that references the `iceberg` connector.
+
+The [Hive metastore catalog](hive-thrift-metastore) is the default
+implementation.
+
+You must select and configure one of the [supported file
+systems](iceberg-file-system-configuration).
 
 ```properties
 connector.name=iceberg
-iceberg.catalog.type=hive_metastore
 hive.metastore.uri=thrift://example.net:9083
+fs.x.enabled=true
 ```
+
+Replace the `fs.x.enabled` configuration property with the desired file system.
 
 Other metadata catalog types as listed in the requirements section of this topic
 are available. Each metastore type has specific configuration properties along
@@ -69,94 +73,152 @@ with {ref}`general metastore configuration properties
 The following configuration properties are independent of which catalog
 implementation is used:
 
-```{eval-rst}
-.. list-table:: Iceberg general configuration properties
-  :widths: 30, 58, 12
-  :header-rows: 1
+:::{list-table} Iceberg general configuration properties
+:widths: 30, 58, 12
+:header-rows: 1
 
-  * - Property name
-    - Description
-    - Default
-  * - ``iceberg.catalog.type``
-    - Define the metastore type to use. Possible values are:
+* - Property name
+  - Description
+  - Default
+* - `iceberg.catalog.type`
+  - Define the [metastore type](general-metastore-properties) to use. Possible
+    values are:
 
-      * ``hive_metastore``
-      * ``glue``
-      * ``jdbc``
-      * ``rest``
-      * ``nessie``
-    -
-  * - ``iceberg.file-format``
-    - Define the data storage file format for Iceberg tables.
-      Possible values are:
+    * `hive_metastore`
+    * `glue`
+    * `jdbc`
+    * `rest`
+    * `nessie`
+    * `snowflake`
+  - `hive_metastore`
+* - `iceberg.file-format`
+  - Define the data storage file format for Iceberg tables. Possible values are:
 
-      * ``PARQUET``
-      * ``ORC``
-      * ``AVRO``
-    - ``PARQUET``
-  * - ``iceberg.compression-codec``
-    - The compression codec used when writing files.
-      Possible values are:
+    * `PARQUET`
+    * `ORC`
+    * `AVRO`
+  - `PARQUET`
+* - `iceberg.compression-codec`
+  - The compression codec used when writing files. Possible values are:
 
-      * ``NONE``
-      * ``SNAPPY``
-      * ``LZ4``
-      * ``ZSTD``
-      * ``GZIP``
-    - ``ZSTD``
-  * - ``iceberg.use-file-size-from-metadata``
-    - Read file sizes from metadata instead of file system. This property must
-      only be used as a workaround for `this issue
-      <https://github.com/apache/iceberg/issues/1980>`_. The problem was fixed
-      in Iceberg version 0.11.0.
-    - ``true``
-  * - ``iceberg.max-partitions-per-writer``
-    - Maximum number of partitions handled per writer.
-    - ``100``
-  * - ``iceberg.target-max-file-size``
-    - Target maximum size of written files; the actual size may be larger.
-    - ``1GB``
-  * - ``iceberg.unique-table-location``
-    - Use randomized, unique table locations.
-    - ``true``
-  * - ``iceberg.dynamic-filtering.wait-timeout``
-    - Maximum duration to wait for completion of dynamic filters during split
-      generation.
-    - ``0s``
-  * - ``iceberg.delete-schema-locations-fallback``
-    - Whether schema locations are deleted when Trino can't determine whether
-      they contain external files.
-    - ``false``
-  * - ``iceberg.minimum-assigned-split-weight``
-    - A decimal value in the range (0, 1] used as a minimum for weights assigned
-      to each split. A low value may improve performance on tables with small
-      files. A higher value may improve performance for queries with highly
-      skewed aggregations or joins.
-    - 0.05
-  * - ``iceberg.table-statistics-enabled``
-    - Enables :doc:`/optimizer/statistics`. The equivalent :doc:`catalog session
-      property </sql/set-session>` is ``statistics_enabled`` for session
-      specific use. Set to ``false`` to disable statistics. Disabling statistics
-      means that :doc:`/optimizer/cost-based-optimizations` cannot make better
-      decisions about the query plan.
-    - ``true``
-  * - ``iceberg.projection-pushdown-enabled``
-    - Enable :doc:`projection pushdown </optimizer/pushdown>`
-    - ``true``
-  * - ``iceberg.hive-catalog-name``
-    - Catalog to redirect to when a Hive table is referenced.
-    -
-  * - ``iceberg.materialized-views.storage-schema``
-    - Schema for creating materialized views storage tables. When this property
-      is not configured, storage tables are created in the same schema as the
-      materialized view definition. When the ``storage_schema`` materialized
-      view property is specified, it takes precedence over this catalog
-      property.
-    - Empty
-  * - ``iceberg.register-table-procedure.enabled``
-    - Enable to allow user to call ``register_table`` procedure.
-    - ``false``
-```
+      * `NONE`
+      * `SNAPPY`
+      * `LZ4`
+      * `ZSTD`
+      * `GZIP`
+  - `ZSTD`
+* - `iceberg.use-file-size-from-metadata`
+  - Read file sizes from metadata instead of file system. This property must
+    only be used as a workaround for [this
+    issue](https://github.com/apache/iceberg/issues/1980). The problem was fixed
+    in Iceberg version 0.11.0.
+  - `true`
+* - `iceberg.max-partitions-per-writer`
+  - Maximum number of partitions handled per writer.
+  - `100`
+* - `iceberg.target-max-file-size`
+  - Target maximum size of written files; the actual size may be larger.
+  - `1GB`
+* - `iceberg.unique-table-location`
+  - Use randomized, unique table locations.
+  - `true`
+* - `iceberg.dynamic-filtering.wait-timeout`
+  - Maximum duration to wait for completion of dynamic filters during split
+    generation.
+  - `0s`
+* - `iceberg.delete-schema-locations-fallback`
+  - Whether schema locations are deleted when Trino can't determine whether
+    they contain external files.
+  - `false`
+* - `iceberg.minimum-assigned-split-weight`
+  - A decimal value in the range `(0, 1]` used as a minimum for weights assigned
+    to each split. A low value may improve performance on tables with small
+    files. A higher value may improve performance for queries with highly skewed
+    aggregations or joins.
+  - 0.05
+* - `iceberg.table-statistics-enabled`
+  - Enable [](/optimizer/statistics). The equivalent [catalog session
+    property](/sql/set-session) is `statistics_enabled` for session specific
+    use. Set to `false` to disable statistics. Disabling statistics means that
+    [](/optimizer/cost-based-optimizations) cannot make better decisions about
+    the query plan.
+  - `true`
+* - `iceberg.extended-statistics.enabled`
+  - Enable statistics collection with [](/sql/analyze) and use of extended
+    statistics. The equivalent catalog session property is
+    `extended_statistics_enabled`.
+  - `true`
+* - `iceberg.extended-statistics.collect-on-write`
+  - Enable collection of extended statistics for write operations. The
+    equivalent catalog session property is
+    `collect_extended_statistics_on_write`.
+  - `true`
+* - `iceberg.projection-pushdown-enabled`
+  - Enable [projection pushdown](/optimizer/pushdown)
+  - `true`
+* - `iceberg.hive-catalog-name`
+  - Catalog to redirect to when a Hive table is referenced.
+  -
+* - `iceberg.materialized-views.storage-schema`
+  - Schema for creating materialized views storage tables. When this property is
+    not configured, storage tables are created in the same schema as the
+    materialized view definition. When the `storage_schema` materialized view
+    property is specified, it takes precedence over this catalog property.
+  - Empty
+* - `iceberg.register-table-procedure.enabled`
+  - Enable to allow user to call [`register_table` procedure](iceberg-register-table).
+  - `false`
+* - `iceberg.add_files-procedure.enabled`
+  - Enable to allow user to call `add_files` procedure.
+  - `false`
+* - `iceberg.query-partition-filter-required`
+  - Set to `true` to force a query to use a partition filter for schemas
+    specified with `iceberg.query-partition-filter-required-schemas`. Equivalent
+    catalog session property is `query_partition_filter_required`.
+  - `false`
+* - `iceberg.query-partition-filter-required-schemas`
+  - Specify the list of schemas for which Trino can enforce that queries use a
+    filter on partition keys for source tables. Equivalent session property is
+    `query_partition_filter_required_schemas`. The list is used if the
+    `iceberg.query-partition-filter-required` configuration property or the
+    `query_partition_filter_required` catalog session property is set to `true`.
+  - `[]`
+* - `iceberg.incremental-refresh-enabled`
+  - Set to `false` to force the materialized view refresh operation to always
+    perform a full refresh. You can use the `incremental_refresh_enabled`
+    catalog session property for temporary, catalog specific use. In the
+    majority of cases, using incremental refresh, as compared to a full refresh,
+    is beneficial since a much smaller subset of the source tables needs to be
+    scanned. While incremental refresh may scan less data, it may result in the
+    creation of more data files, since it uses the append operation to insert
+    the new records.
+  - `true`
+* - `iceberg.metadata-cache.enabled`
+  - Set to `false` to disable in-memory caching of metadata files on the 
+    coordinator. This cache is not used when `fs.cache.enabled` is set to true.
+  - `true`
+
+:::
+
+(iceberg-fte-support)=
+### Fault-tolerant execution support
+
+The connector supports {doc}`/admin/fault-tolerant-execution` of query
+processing. Read and write operations are both supported with any retry policy.
+
+
+(iceberg-file-system-configuration)=
+## File system access configuration
+
+The connector supports accessing the following file systems:
+
+* [](/object-storage/file-system-azure)
+* [](/object-storage/file-system-gcs)
+* [](/object-storage/file-system-s3)
+* [](/object-storage/file-system-hdfs)
+
+You must enable and configure the specific file system access. [Legacy
+support](file-system-legacy) is not recommended and will be removed.
 
 ## Type mapping
 
@@ -181,48 +243,47 @@ formating in the Avro, ORC, or Parquet files:
 The connector maps Iceberg types to the corresponding Trino types according to
 the following table:
 
-```{eval-rst}
-.. list-table:: Iceberg to Trino type mapping
-  :widths: 40, 60
-  :header-rows: 1
+:::{list-table} Iceberg to Trino type mapping
+:widths: 40, 60
+:header-rows: 1
 
-  * - Iceberg type
-    - Trino type
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-  * - ``INT``
-    - ``INTEGER``
-  * - ``LONG``
-    - ``BIGINT``
-  * - ``FLOAT``
-    - ``REAL``
-  * - ``DOUBLE``
-    - ``DOUBLE``
-  * - ``DECIMAL(p,s)``
-    - ``DECIMAL(p,s)``
-  * - ``DATE``
-    - ``DATE``
-  * - ``TIME``
-    - ``TIME(6)``
-  * - ``TIMESTAMP``
-    - ``TIMESTAMP(6)``
-  * - ``TIMESTAMPTZ``
-    - ``TIMESTAMP(6) WITH TIME ZONE``
-  * - ``STRING``
-    - ``VARCHAR``
-  * - ``UUID``
-    - ``UUID``
-  * - ``BINARY``
-    - ``VARBINARY``
-  * - ``FIXED (L)``
-    - ``VARBINARY``
-  * - ``STRUCT(...)``
-    - ``ROW(...)``
-  * - ``LIST(e)``
-    - ``ARRAY(e)``
-  * - ``MAP(k,v)``
-    - ``MAP(k,v)``
-```
+* - Iceberg type
+  - Trino type
+* - `BOOLEAN`
+  - `BOOLEAN`
+* - `INT`
+  - `INTEGER`
+* - `LONG`
+  - `BIGINT`
+* - `FLOAT`
+  - `REAL`
+* - `DOUBLE`
+  - `DOUBLE`
+* - `DECIMAL(p,s)`
+  - `DECIMAL(p,s)`
+* - `DATE`
+  - `DATE`
+* - `TIME`
+  - `TIME(6)`
+* - `TIMESTAMP`
+  - `TIMESTAMP(6)`
+* - `TIMESTAMPTZ`
+  - `TIMESTAMP(6) WITH TIME ZONE`
+* - `STRING`
+  - `VARCHAR`
+* - `UUID`
+  - `UUID`
+* - `BINARY`
+  - `VARBINARY`
+* - `FIXED (L)`
+  - `VARBINARY`
+* - `STRUCT(...)`
+  - `ROW(...)`
+* - `LIST(e)`
+  - `ARRAY(e)`
+* - `MAP(k,v)`
+  - `MAP(k,v)`
+:::
 
 No other types are supported.
 
@@ -231,88 +292,88 @@ No other types are supported.
 The connector maps Trino types to the corresponding Iceberg types according to
 the following table:
 
-```{eval-rst}
-.. list-table:: Trino to Iceberg type mapping
-  :widths: 40, 60
-  :header-rows: 1
+:::{list-table} Trino to Iceberg type mapping
+:widths: 40, 60
+:header-rows: 1
 
-  * - Trino type
-    - Iceberg type
-  * - ``BOOLEAN``
-    - ``BOOLEAN``
-  * - ``INTEGER``
-    - ``INT``
-  * - ``BIGINT``
-    - ``LONG``
-  * - ``REAL``
-    - ``FLOAT``
-  * - ``DOUBLE``
-    - ``DOUBLE``
-  * - ``DECIMAL(p,s)``
-    - ``DECIMAL(p,s)``
-  * - ``DATE``
-    - ``DATE``
-  * - ``TIME(6)``
-    - ``TIME``
-  * - ``TIMESTAMP(6)``
-    - ``TIMESTAMP``
-  * - ``TIMESTAMP(6) WITH TIME ZONE``
-    - ``TIMESTAMPTZ``
-  * - ``VARCHAR``
-    - ``STRING``
-  * - ``UUID``
-    - ``UUID``
-  * - ``VARBINARY``
-    - ``BINARY``
-  * - ``ROW(...)``
-    - ``STRUCT(...)``
-  * - ``ARRAY(e)``
-    - ``LIST(e)``
-  * - ``MAP(k,v)``
-    - ``MAP(k,v)``
-```
+* - Trino type
+  - Iceberg type
+* - `BOOLEAN`
+  - `BOOLEAN`
+* - `INTEGER`
+  - `INT`
+* - `BIGINT`
+  - `LONG`
+* - `REAL`
+  - `FLOAT`
+* - `DOUBLE`
+  - `DOUBLE`
+* - `DECIMAL(p,s)`
+  - `DECIMAL(p,s)`
+* - `DATE`
+  - `DATE`
+* - `TIME(6)`
+  - `TIME`
+* - `TIMESTAMP(6)`
+  - `TIMESTAMP`
+* - `TIMESTAMP(6) WITH TIME ZONE`
+  - `TIMESTAMPTZ`
+* - `VARCHAR`
+  - `STRING`
+* - `UUID`
+  - `UUID`
+* - `VARBINARY`
+  - `BINARY`
+* - `ROW(...)`
+  - `STRUCT(...)`
+* - `ARRAY(e)`
+  - `LIST(e)`
+* - `MAP(k,v)`
+  - `MAP(k,v)`
+:::
 
 No other types are supported.
 
 ## Security
 
-The Iceberg connector allows you to choose one of several means of providing
-authorization at the catalog level.
+### Kerberos authentication
+
+The Iceberg connector supports Kerberos authentication for the Hive metastore
+and HDFS and is configured using the same parameters as the Hive connector. Find
+more information in the [](/object-storage/file-system-hdfs) section.
 
 (iceberg-authorization)=
+### Authorization
 
-### Authorization checks
+The Iceberg connector allows you to choose one of several means of providing
+authorization at the catalog level.
 
 You can enable authorization checks for the connector by setting the
 `iceberg.security` property in the catalog properties file. This property must
 be one of the following values:
 
-```{eval-rst}
-.. list-table:: Iceberg security values
-  :widths: 30, 60
-  :header-rows: 1
+:::{list-table} Iceberg security values
+:widths: 30, 60
+:header-rows: 1
 
-  * - Property value
-    - Description
-  * - ``ALLOW_ALL``
-    - No authorization checks are enforced.
-  * - ``SYSTEM``
-    - The connector relies on system-level access control.
-  * - ``READ_ONLY``
-    - Operations that read data or metadata, such as :doc:`/sql/select` are
-      permitted. No operations that write data or metadata, such as
-      :doc:`/sql/create-table`, :doc:`/sql/insert`, or :doc:`/sql/delete` are
-      allowed.
-  * - ``FILE``
-    - Authorization checks are enforced using a catalog-level access control
-      configuration file whose path is specified in the ``security.config-file``
-      catalog configuration property. See
-      :ref:`catalog-file-based-access-control` for information on the
-      authorization configuration file.
-```
+* - Property value
+  - Description
+* - `ALLOW_ALL`
+  - No authorization checks are enforced.
+* - `SYSTEM`
+  - The connector relies on system-level access control.
+* - `READ_ONLY`
+  - Operations that read data or metadata, such as [](/sql/select) are
+    permitted. No operations that write data or metadata, such as
+    [](/sql/create-table), [](/sql/insert), or [](/sql/delete) are allowed.
+* - `FILE`
+  - Authorization checks are enforced using a catalog-level access control
+    configuration file whose path is specified in the `security.config-file`
+    catalog configuration property. See [](catalog-file-based-access-control)
+    for information on the authorization configuration file.
+:::
 
 (iceberg-sql-support)=
-
 ## SQL support
 
 This connector provides read access and write access to data and metadata in
@@ -428,16 +489,16 @@ CALL examplecatalog.system.example_procedure()
 ```
 
 (iceberg-register-table)=
-
 #### Register table
 
-The connector can register existing Iceberg tables with the catalog.
+The connector can register existing Iceberg tables into the metastore if
+`iceberg.register-table-procedure.enabled` is set to `true` for the catalog.
 
 The procedure `system.register_table` allows the caller to register an
 existing Iceberg table in the metastore, using its existing metadata and data
 files:
 
-```
+```sql
 CALL example.system.register_table(schema_name => 'testdb', table_name => 'customer_orders', table_location => 'hdfs://hadoop-master:9000/user/hive/warehouse/customer_orders-581fad8517934af6be1857a903559d44')
 ```
 
@@ -446,7 +507,7 @@ metadata. This may be used to register the table with some specific table state,
 or may be necessary if the connector cannot automatically figure out the
 metadata version to use:
 
-```
+```sql
 CALL example.system.register_table(schema_name => 'testdb', table_name => 'customer_orders', table_location => 'hdfs://hadoop-master:9000/user/hive/warehouse/customer_orders-581fad8517934af6be1857a903559d44', metadata_file_name => '00003-409702ba-4735-4645-8f14-09537cc0b2c8.metadata.json')
 ```
 
@@ -455,15 +516,15 @@ default. The procedure is enabled only when
 `iceberg.register-table-procedure.enabled` is set to `true`.
 
 (iceberg-unregister-table)=
-
 #### Unregister table
 
-The connector can unregister existing Iceberg tables from the catalog.
+The connector can remove existing Iceberg tables from the metastore. Once
+unregistered, you can no longer query the table from Trino.
 
 The procedure `system.unregister_table` allows the caller to unregister an
 existing Iceberg table from the metastores without deleting the data:
 
-```
+```sql
 CALL example.system.unregister_table(schema_name => 'testdb', table_name => 'customer_orders')
 ```
 
@@ -504,15 +565,72 @@ The default value is `fail`, which causes the migrate procedure to throw an
 exception if subdirectories are found. Set the value to `true` to migrate
 nested directories, or `false` to ignore them.
 
-(iceberg-data-management)=
+(iceberg-add-files)=
+#### Add files
 
+The connector can add files from tables or locations if
+`iceberg.add_files-procedure.enabled` is set to `true` for the catalog.
+
+Use the procedure `system.add_files_from_table` to add existing files from the Hive 
+table or `system.add_files` to add existing files from specified locations. 
+The data files must be the Parquet, ORC, or Avro file format.
+
+:::{warning}
+The procedure does not check if files are already present in the target table.
+:::
+
+The procedure must be called for a specific catalog `example` with the
+relevant schema and table names supplied with the required parameters
+`schema_name` and `table_name`:
+
+```sql
+ALTER TABLE testdb.iceberg_customer_orders EXECUTE add_files_from_table(
+    schema_name => 'testdb',
+    table_name => 'hive_customer_orders')
+```
+
+You need to provide a `partition_filter` argument to add files from specified partitions.
+The following example adds files from a partition where the `region` is `ASIA` and
+`country` is `JAPAN`:
+
+```sql
+ALTER TABLE testdb.iceberg_customer_orders EXECUTE add_files_from_table(
+    schema_name => 'testdb',
+    table_name => 'hive_customer_orders',
+    partition_filter => map(ARRAY['region', 'country'], ARRAY['ASIA', 'JAPAN']))
+```
+
+In addition, you can provide a `recursive_directory` argument to migrate a
+Hive table that contains subdirectories:
+
+```sql
+ALTER TABLE testdb.iceberg_customer_orders EXECUTE add_files_from_table(
+    schema_name => 'testdb',
+    table_name => 'hive_customer_orders',
+    recursive_directory => 'true')
+```
+
+The default value of `recursive_directory` is `fail`, which causes the procedure 
+to throw an exception if subdirectories are found. Set the value to `true` to add 
+files from nested directories, or `false` to ignore them.
+
+`add_files` procedure supports adding files from a specified location.
+The procedure does not validate file schemas for compatibility with
+the target Iceberg table. The `location` property is supported for partitioned tables.
+
+```sql
+ALTER TABLE testdb.iceberg_customer_orders EXECUTE add_files(
+    location => 's3://my-bucket/a/path',
+    format => 'ORC')
+```
+
+(iceberg-data-management)=
 ### Data management
 
 The {ref}`sql-data-management` functionality includes support for `INSERT`,
 `UPDATE`, `DELETE`, and `MERGE` statements.
 
 (iceberg-delete)=
-
 #### Deletion by partition
 
 For partitioned tables, the Iceberg connector supports the deletion of entire
@@ -535,7 +653,6 @@ Tables using v2 of the Iceberg specification support deletion of individual rows
 by writing position delete files.
 
 (iceberg-schema-table-management)=
-
 ### Schema and table management
 
 The {ref}`sql-schema-table-management` functionality includes support for:
@@ -552,12 +669,18 @@ The {ref}`sql-schema-table-management` functionality includes support for:
 #### Schema evolution
 
 Iceberg supports schema evolution, with safe column add, drop, reorder, and
-rename operations, including in nested structures. Table partitioning can also
-be changed and the connector can still query data created before the
-partitioning change.
+rename operations, including in nested structures.
+
+Iceberg supports updating column types only for widening operations:
+
+- `INTEGER` to `BIGINT`
+- `REAL` to `DOUBLE`
+- `DECIMAL(p,s)` to `DECIMAL(p2,s)` when `p2` > `p` (scale cannot change)
+
+Partitioning can also be changed and the connector can still query data
+created before the partitioning change.
 
 (iceberg-alter-table-execute)=
-
 #### ALTER TABLE EXECUTE
 
 The connector supports the following commands for use with {ref}`ALTER TABLE
@@ -606,7 +729,6 @@ than the minimum retention configured in the system (7.00d)`. The default value
 for this property is `7d`.
 
 (drop-extended-stats)=
-
 ##### drop_extended_stats
 
 The `drop_extended_stats` command removes all extended statistics information
@@ -619,7 +741,6 @@ ALTER TABLE test_table EXECUTE drop_extended_stats
 ```
 
 (iceberg-alter-table-set-properties)=
-
 #### ALTER TABLE SET PROPERTIES
 
 The connector supports modifying the properties on existing tables using
@@ -649,7 +770,6 @@ The current values of a table's properties can be shown using {doc}`SHOW CREATE
 TABLE </sql/show-create-table>`.
 
 (iceberg-table-properties)=
-
 ##### Table properties
 
 Table properties supply or set metadata for the underlying tables. This is key
@@ -657,40 +777,49 @@ for {doc}`/sql/create-table-as` statements. Table properties are passed to the
 connector using a {doc}`WITH </sql/create-table-as>` clause.
 
 
-```{eval-rst}
-.. list-table:: Iceberg table properties
-  :widths: 40, 60
-  :header-rows: 1
+:::{list-table} Iceberg table properties
+:widths: 40, 60
+:header-rows: 1
 
-  * - Property name
-    - Description
-  * - ``format``
-    - Optionally specifies the format of table data files; either ``PARQUET``,
-      ``ORC`, or ``AVRO``. Defaults to the value of the ``iceberg.file-format``
-      catalog configuration property, which defaults to ``PARQUET``.
-  * - ``partitioning``
-    - Optionally specifies table partitioning. If a table is partitioned by
-      columns ``c1`` and ``c2``, the partitioning property is ``partitioning =
-      ARRAY['c1', 'c2']``.
-  * - ``location``
-    - Optionally specifies the file system location URI for the table.
-  * - ``format_version``
-    - Optionally specifies the format version of the Iceberg specification to
-      use for new tables; either ``1`` or ``2``. Defaults to ``2``. Version
-      ``2`` is required for row level deletes.
-  * - ``orc_bloom_filter_columns``
-    - Comma-separated list of columns to use for ORC bloom filter. It improves
-      the performance of queries using Equality and IN predicates when reading
-      ORC files. Requires ORC format. Defaults to ``[]``.
-  * - ``orc_bloom_filter_fpp``
-    - The ORC bloom filters false positive probability. Requires ORC format.
-      Defaults to ``0.05``.
-  * - ``extra_properties``
-    - Additional properties added to an Iceberg table. The properties are not
-      used by Trino, and are available in the ``$properties`` metadata table.
-      The properties are not included in the output of ``SHOW CREATE TABLE``
-      statements.
-```
+* - Property name
+  - Description
+* - `format`
+  - Optionally specifies the format of table data files; either `PARQUET`,
+    `ORC`, or `AVRO`. Defaults to the value of the `iceberg.file-format` catalog
+    configuration property, which defaults to `PARQUET`.
+* - `partitioning`
+  - Optionally specifies table partitioning. If a table is partitioned by
+    columns `c1` and `c2`, the partitioning property is `partitioning =
+    ARRAY['c1', 'c2']`.
+* - `sorted_by`
+  - The sort order to be applied during writes to the content of
+    each file written to the table. If the table files are sorted by columns
+    `c1` and `c2`, the sort order property is `sorted_by = ARRAY['c1', 'c2']`.
+    The sort order applies to the contents written within each output file
+    independently and not the entire dataset.
+* - `location`
+  - Optionally specifies the file system location URI for the table.
+* - `format_version`
+  - Optionally specifies the format version of the Iceberg specification to use
+    for new tables; either `1` or `2`. Defaults to `2`. Version `2` is required
+    for row level deletes.
+* - `orc_bloom_filter_columns`
+  - Comma-separated list of columns to use for ORC bloom filter. It improves the
+    performance of queries using Equality and IN predicates when reading ORC
+    files. Requires ORC format. Defaults to `[]`.
+* - `orc_bloom_filter_fpp`
+  - The ORC bloom filters false positive probability. Requires ORC format.
+    Defaults to `0.05`.
+* - `parquet_bloom_filter_columns`
+  - Comma-separated list of columns to use for Parquet bloom filter. It improves
+    the performance of queries using Equality and IN predicates when reading
+    Parquet files. Requires Parquet format. Defaults to `[]`.
+* - ``extra_properties``
+  - Additional properties added to an Iceberg table. The properties are not
+    used by Trino, and are available in the ``$properties`` metadata table.
+    The properties are not included in the output of ``SHOW CREATE TABLE``
+    statements.
+:::
 
 The table definition below specifies to use Parquet files, partitioning by columns
 `c1` and `c2`, and a file system location of
@@ -723,8 +852,19 @@ WITH (
     orc_bloom_filter_fpp = 0.05)
 ```
 
-(iceberg-metadata-tables)=
+The table definition below specifies to use Avro files, partitioning
+by `child1` field in `parent` column:
 
+```
+CREATE TABLE test_table (
+    data INTEGER,
+    parent ROW(child1 DOUBLE, child2 INTEGER))
+WITH (
+    format = 'AVRO',
+    partitioning = ARRAY['"parent.child1"'])
+```
+
+(iceberg-metadata-tables)=
 #### Metadata tables
 
 The connector exposes several metadata tables for each Iceberg table. These
@@ -755,6 +895,7 @@ SELECT * FROM "test_table$properties"
 write.format.default   | PARQUET  |
 ```
 
+(iceberg-history-table)=
 ##### `$history` table
 
 The `$history` table provides a log of the metadata changes performed on the
@@ -776,27 +917,72 @@ SELECT * FROM "test_table$history"
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: History columns
-  :widths: 30, 30, 40
-  :header-rows: 1
+:::{list-table} History columns
+:widths: 30, 30, 40
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``made_current_at``
-    - ``TIMESTAMP(3) WITH TIME ZONE``
-    - The time when the snapshot became active.
-  * - ``snapshot_id``
-    - ``BIGINT``
-    - The identifier of the snapshot.
-  * - ``parent_id``
-    - ``BIGINT``
-    - The identifier of the parent snapshot.
-  * - ``is_current_ancestor``
-    - ``BOOLEAN``
-    - Whether or not this snapshot is an ancestor of the current snapshot.
+* - Name
+  - Type
+  - Description
+* - `made_current_at`
+  - `TIMESTAMP(3) WITH TIME ZONE`
+  - The time when the snapshot became active.
+* - `snapshot_id`
+  - `BIGINT`
+  - The identifier of the snapshot.
+* - `parent_id`
+  - `BIGINT`
+  - The identifier of the parent snapshot.
+* - `is_current_ancestor`
+  - `BOOLEAN`
+  - Whether or not this snapshot is an ancestor of the current snapshot.
+:::
+
+##### `$metadata_log_entries` table
+
+The `$metadata_log_entries` table provides a view of metadata log entries
+of the Iceberg table.
+
+You can retrieve the information about the metadata log entries of the Iceberg
+table `test_table` by using the following query:
+
 ```
+SELECT * FROM "test_table$metadata_log_entries"
+```
+
+```text
+             timestamp                 |                                                              file                                                          | latest_snapshot_id  | latest_schema_id | latest_sequence_number
+---------------------------------------+----------------------------------------------------------------------------------------------------------------------------+---------------------+------------------+------------------------
+ 2024-01-16 15:55:31.172 Europe/Vienna | hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/00000-39174715-be2a-48fa-9949-35413b8b736e.metadata.json | 1221802298419195590 |                0 |                      1
+ 2024-01-16 17:19:56.118 Europe/Vienna | hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/00001-e40178c9-271f-4a96-ad29-eed5e7aef9b0.metadata.json | 7124386610209126943 |                0 |                      2
+```
+
+The output of the query has the following columns:
+
+:::{list-table} Metadata log entries columns
+:widths: 30, 30, 40
+:header-rows: 1
+
+* - Name
+  - Type
+  - Description
+* - `timestamp`
+  - `TIMESTAMP(3) WITH TIME ZONE`
+  - The time when the metadata was created.
+* - `file`
+  - `VARCHAR`
+  - The location of the metadata file.
+* - `latest_snapshot_id`
+  - `BIGINT`
+  - The identifier of the latest snapshot when the metadata was updated.
+* - `latest_schema_id`
+  - `INTEGER`
+  - The identifier of the latest schema when the metadata was updated.
+* - `latest_sequence_number`
+  - `BIGINT`
+  - The data sequence number of the metadata file.
+:::
+
 
 ##### `$snapshots` table
 
@@ -820,42 +1006,41 @@ SELECT * FROM "test_table$snapshots"
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: Snapshots columns
-  :widths: 20, 30, 50
-  :header-rows: 1
+:::{list-table} Snapshots columns
+:widths: 20, 30, 50
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``committed_at``
-    - ``TIMESTAMP(3) WITH TIME ZONE``
-    - The time when the snapshot became active.
-  * - ``snapshot_id``
-    - ``BIGINT``
-    - The identifier for the snapshot.
-  * - ``parent_id``
-    - ``BIGINT``
-    - The identifier for the parent snapshot.
-  * - ``operation``
-    - ``VARCHAR``
-    - The type of operation performed on the Iceberg table. The supported
-      operation types in Iceberg are:
+* - Name
+  - Type
+  - Description
+* - `committed_at`
+  - `TIMESTAMP(3) WITH TIME ZONE`
+  - The time when the snapshot became active.
+* - `snapshot_id`
+  - `BIGINT`
+  - The identifier for the snapshot.
+* - `parent_id`
+  - `BIGINT`
+  - The identifier for the parent snapshot.
+* - `operation`
+  - `VARCHAR`
+  - The type of operation performed on the Iceberg table. The supported
+    operation types in Iceberg are:
 
-      * ``append`` when new data is appended.
-      * ``replace`` when files are removed and replaced without changing the
-        data in the table.
-      * ``overwrite`` when new data is added to overwrite existing data.
-      * ``delete`` when data is deleted from the table and no new data is added.
-  * - ``manifest_list``
-    - ``VARCHAR``
-    - The list of Avro manifest files containing the detailed information about
-      the snapshot changes.
-  * - ``summary``
-    - ``map(VARCHAR, VARCHAR)``
-    - A summary of the changes made from the previous snapshot to the current
-      snapshot.
-```
+    * `append` when new data is appended.
+    * `replace` when files are removed and replaced without changing the
+      data in the table.
+    * `overwrite` when new data is added to overwrite existing data.
+    * `delete` when data is deleted from the table and no new data is added.
+* - `manifest_list`
+  - `VARCHAR`
+  - The list of Avro manifest files containing the detailed information about
+    the snapshot changes.
+* - `summary`
+  - `map(VARCHAR, VARCHAR)`
+  - A summary of the changes made from the previous snapshot to the current
+    snapshot.
+:::
 
 ##### `$manifests` table
 
@@ -877,53 +1062,52 @@ SELECT * FROM "test_table$manifests"
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: Manifests columns
-  :widths: 30, 30, 40
-  :header-rows: 1
+:::{list-table} Manifests columns
+:widths: 30, 30, 40
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``path``
-    - ``VARCHAR``
-    - The manifest file location.
-  * - ``length``
-    - ``BIGINT``
-    - The manifest file length.
-  * - ``partition_spec_id``
-    - ``INTEGER``
-    - The identifier for the partition specification used to write the manifest
-      file.
-  * - ``added_snapshot_id``
-    - ``BIGINT``
-    - The identifier of the snapshot during which this manifest entry has been
-      added.
-  * - ``added_data_files_count``
-    - ``INTEGER``
-    - The number of data files with status ``ADDED`` in the manifest file.
-  * - ``added_rows_count``
-    - ``BIGINT``
-    - The total number of rows in all data files with status ``ADDED`` in the
-      manifest file.
-  * - ``existing_data_files_count``
-    - ``INTEGER``
-    - The number of data files with status ``EXISTING`` in the manifest file.
-  * - ``existing_rows_count``
-    - ``BIGINT``
-    - The total number of rows in all data files with status ``EXISTING`` in the
-      manifest file.
-  * - ``deleted_data_files_count``
-    - ``INTEGER``
-    - The number of data files with status ``DELETED`` in the manifest file.
-  * - ``deleted_rows_count``
-    - ``BIGINT``
-    - The total number of rows in all data files with status ``DELETED`` in the
-      manifest file.
-  * - ``partitions``
-    - ``ARRAY(row(contains_null BOOLEAN, contains_nan BOOLEAN, lower_bound VARCHAR, upper_bound VARCHAR))``
-    - Partition range metadata.
-```
+* - Name
+  - Type
+  - Description
+* - `path`
+  - `VARCHAR`
+  - The manifest file location.
+* - `length`
+  - `BIGINT`
+  - The manifest file length.
+* - `partition_spec_id`
+  - `INTEGER`
+  - The identifier for the partition specification used to write the manifest
+    file.
+* - `added_snapshot_id`
+  - `BIGINT`
+  - The identifier of the snapshot during which this manifest entry has been
+    added.
+* - `added_data_files_count`
+  - `INTEGER`
+  - The number of data files with status `ADDED` in the manifest file.
+* - `added_rows_count`
+  - `BIGINT`
+  - The total number of rows in all data files with status `ADDED` in the
+    manifest file.
+* - `existing_data_files_count`
+  - `INTEGER`
+  - The number of data files with status `EXISTING` in the manifest file.
+* - `existing_rows_count`
+  - `BIGINT`
+  - The total number of rows in all data files with status `EXISTING` in the
+    manifest file.
+* - `deleted_data_files_count`
+  - `INTEGER`
+  - The number of data files with status `DELETED` in the manifest file.
+* - `deleted_rows_count`
+  - `BIGINT`
+  - The total number of rows in all data files with status `DELETED` in the
+    manifest file.
+* - `partitions`
+  - `ARRAY(row(contains_null BOOLEAN, contains_nan BOOLEAN, lower_bound VARCHAR, upper_bound VARCHAR))`
+  - Partition range metadata.
+:::
 
 ##### `$partitions` table
 
@@ -946,31 +1130,30 @@ SELECT * FROM "test_table$partitions"
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: Partitions columns
-  :widths: 20, 30, 50
-  :header-rows: 1
+:::{list-table} Partitions columns
+:widths: 20, 30, 50
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``partition``
-    - ``ROW(...)``
-    - A row that contains the mapping of the partition column names to the
-      partition column values.
-  * - ``record_count``
-    - ``BIGINT``
-    - The number of records in the partition.
-  * - ``file_count``
-    - ``BIGINT``
-    - The number of files mapped in the partition.
-  * - ``total_size``
-    - ``BIGINT``
-    - The size of all the files in the partition.
-  * - ``data``
-    - ``ROW(... ROW (min ..., max ... , null_count BIGINT, nan_count BIGINT))``
-    - Partition range metadata.
-```
+* - Name
+  - Type
+  - Description
+* - `partition`
+  - `ROW(...)`
+  - A row that contains the mapping of the partition column names to the
+    partition column values.
+* - `record_count`
+  - `BIGINT`
+  - The number of records in the partition.
+* - `file_count`
+  - `BIGINT`
+  - The number of files mapped in the partition.
+* - `total_size`
+  - `BIGINT`
+  - The size of all the files in the partition.
+* - `data`
+  - `ROW(... ROW (min ..., max ... , null_count BIGINT, nan_count BIGINT))`
+  - Partition range metadata.
+:::
 
 ##### `$files` table
 
@@ -992,68 +1175,67 @@ SELECT * FROM "test_table$files"
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: Files columns
-  :widths: 25, 30, 45
-  :header-rows: 1
+:::{list-table} Files columns
+:widths: 25, 30, 45
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``content``
-    - ``INTEGER``
-    - Type of content stored in the file. The supported content types in Iceberg
-      are:
+* - Name
+  - Type
+  - Description
+* - `content`
+  - `INTEGER`
+  - Type of content stored in the file. The supported content types in Iceberg
+    are:
 
-      * ``DATA(0)``
-      * ``POSITION_DELETES(1)``
-      * ``EQUALITY_DELETES(2)``
-  * - ``file_path``
-    - ``VARCHAR``
-    - The data file location.
-  * - ``file_format``
-    - ``VARCHAR``
-    - The format of the data file.
-  * - ``record_count``
-    - ``BIGINT``
-    - The number of entries contained in the data file.
-  * - ``file_size_in_bytes``
-    - ``BIGINT``
-    - The data file size
-  * - ``column_sizes``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding size in the
-      file.
-  * - ``value_counts``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding count of
-      entries in the file.
-  * - ``null_value_counts``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding count of
-      ``NULL`` values in the file.
-  * - ``nan_value_counts``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding count of non-
-      numerical values in the file.
-  * - ``lower_bounds``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding lower bound in
-      the file.
-  * - ``upper_bounds``
-    - ``map(INTEGER, BIGINT)``
-    - Mapping between the Iceberg column ID and its corresponding upper bound in
-      the file.
-  * - ``key_metadata``
-    - ``VARBINARY``
-    - Metadata about the encryption key used to encrypt this file, if applicable.
-  * - ``split_offsets``
-    - ``array(BIGINT)``
-    - List of recommended split locations.
-  * - ``equality_ids``
-    - ``array(INTEGER)``
-    - The set of field IDs used for equality comparison in equality delete files.
-```
+    * `DATA(0)`
+    * `POSITION_DELETES(1)`
+    * `EQUALITY_DELETES(2)`
+* - `file_path`
+  - `VARCHAR`
+  - The data file location.
+* - `file_format`
+  - `VARCHAR`
+  - The format of the data file.
+* - `record_count`
+  - `BIGINT`
+  - The number of entries contained in the data file.
+* - `file_size_in_bytes`
+  - `BIGINT`
+  - The data file size
+* - `column_sizes`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding size in the
+    file.
+* - `value_counts`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding count of entries
+    in the file.
+* - `null_value_counts`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding count of `NULL`
+    values in the file.
+* - `nan_value_counts`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding count of non-
+    numerical values in the file.
+* - `lower_bounds`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding lower bound in
+    the file.
+* - `upper_bounds`
+  - `map(INTEGER, BIGINT)`
+  - Mapping between the Iceberg column ID and its corresponding upper bound in
+    the file.
+* - `key_metadata`
+  - `VARBINARY`
+  - Metadata about the encryption key used to encrypt this file, if applicable.
+* - `split_offsets`
+  - `array(BIGINT)`
+  - List of recommended split locations.
+* - `equality_ids`
+  - `array(INTEGER)`
+  - The set of field IDs used for equality comparison in equality delete files.
+:::
 
 ##### `$refs` table
 
@@ -1076,37 +1258,35 @@ example_branch  | BRANCH | 20000000000 | 20000                   | 2            
 
 The output of the query has the following columns:
 
-```{eval-rst}
-.. list-table:: Refs columns
-  :widths: 20, 30, 50
-  :header-rows: 1
+:::{list-table} Refs columns
+:widths: 20, 30, 50
+:header-rows: 1
 
-  * - Name
-    - Type
-    - Description
-  * - ``name``
-    - ``VARCHAR``
-    - Name of the reference.
-  * - ``type``
-    - ``VARCHAR``
-    - Type of the reference, either ``BRANCH`` or ``TAG``.
-  * - ``snapshot_id``
-    - ``BIGINT``
-    - The snapshot ID of the reference.
-  * - ``max_reference_age_in_ms``
-    - ``BIGINT``
-    - The maximum age of the reference before it could be expired.
-  * - ``min_snapshots_to_keep``
-    - ``INTEGER``
-    - For branch only, the minimum number of snapshots to keep in a branch.
-  * - ``max_snapshot_age_in_ms``
-    - ``BIGINT``
-    - For branch only, the max snapshot age allowed in a branch. Older snapshots
-      in the branch will be expired.
-```
+* - Name
+  - Type
+  - Description
+* - `name`
+  - `VARCHAR`
+  - Name of the reference.
+* - `type`
+  - `VARCHAR`
+  - Type of the reference, either `BRANCH` or `TAG`.
+* - `snapshot_id`
+  - `BIGINT`
+  - The snapshot ID of the reference.
+* - `max_reference_age_in_ms`
+  - `BIGINT`
+  - The maximum age of the reference before it could be expired.
+* - `min_snapshots_to_keep`
+  - `INTEGER`
+  - For branch only, the minimum number of snapshots to keep in a branch.
+* - `max_snapshot_age_in_ms`
+  - `BIGINT`
+  - For branch only, the max snapshot age allowed in a branch. Older snapshots
+    in the branch will be expired.
+:::
 
 (iceberg-metadata-columns)=
-
 #### Metadata columns
 
 In addition to the defined columns, the Iceberg connector automatically exposes
@@ -1139,7 +1319,7 @@ Retrieve all records that belong to a specific file using
 ```
 SELECT *
 FROM example.web.page_views
-WHERE "$file_modified_time" = CAST('2022-07-01 01:02:03.456 UTC' AS TIMESTAMP WIOTH TIMEZONE)
+WHERE "$file_modified_time" = CAST('2022-07-01 01:02:03.456 UTC' AS TIMESTAMP WITH TIME ZONE)
 ```
 
 #### DROP TABLE
@@ -1152,7 +1332,6 @@ different location than the table's corresponding base directory on the object
 store is not supported.
 
 (iceberg-comment)=
-
 #### COMMENT
 
 The Iceberg connector supports setting comments on the following objects:
@@ -1172,39 +1351,37 @@ The connector supports the command {doc}`COMMENT </sql/comment>` for setting
 comments on existing entities.
 
 (iceberg-tables)=
-
 #### Partitioned tables
 
 Iceberg supports partitioning by specifying transforms over the table columns. A
 partition is created for each unique tuple value produced by the transforms.
 Identity transforms are simply the column name. Other transforms are:
 
-```{eval-rst}
-.. list-table:: Iceberg column transforms
-  :widths: 40, 60
-  :header-rows: 1
+:::{list-table} Iceberg column transforms
+:widths: 40, 60
+:header-rows: 1
 
-  * - Transform
-    - Description
-  * - ``year(ts)``
-    - A partition is created for each year.  The partition value is the integer
-      difference in years between ``ts`` and January 1 1970.
-  * - ``month(ts)``
-    - A partition is created for each month of each year.  The partition value
-      is the integer difference in months between ``ts`` and January 1 1970.
-  * - ``day(ts)``
-    - A partition is created for each day of each year.  The partition value is
-      the integer difference in days between ``ts`` and January 1 1970.
-  * - ``hour(ts)``
-    - A partition is created hour of each day.  The partition value is a
-      timestamp with the minutes and seconds set to zero.
-  * - ``bucket(x, nbuckets)``
-    - The data is hashed into the specified number of buckets.  The partition
-      value is an integer hash of ``x``, with a value between 0 and ``nbuckets -
-      1`` inclusive.
-  * - ``truncate(s, nchars)``
-    - The partition value is the first ``nchars`` characters of ``s``.
-```
+* - Transform
+  - Description
+* - `year(ts)`
+  - A partition is created for each year. The partition value is the integer
+    difference in years between `ts` and January 1 1970.
+* - `month(ts)`
+  - A partition is created for each month of each year. The partition value is
+    the integer difference in months between `ts` and January 1 1970.
+* - `day(ts)`
+  - A partition is created for each day of each year. The partition value is the
+    integer difference in days between `ts` and January 1 1970.
+* - `hour(ts)`
+  - A partition is created hour of each day. The partition value is a timestamp
+    with the minutes and seconds set to zero.
+* - `bucket(x, nbuckets)`
+  - The data is hashed into the specified number of buckets. The partition value
+    is an integer hash of `x`, with a value between 0 and `nbuckets - 1`
+    inclusive.
+* - `truncate(s, nchars)`
+  - The partition value is the first `nchars` characters of `s`.
+:::
 
 In this example, the table is partitioned by the month of `order_date`, a hash
 of `account_number` (with 10 buckets), and `country`:
@@ -1277,8 +1454,28 @@ FROM example.testdb."customer_orders$snapshots"
 ORDER BY committed_at DESC
 ```
 
-(iceberg-time-travel)=
+(iceberg-create-or-replace)=
+#### Replace tables
 
+The connector supports replacing an existing table, as an atomic operation.
+Atomic table replacement creates a new snapshot with the new table definition as
+part of the [table history](#iceberg-history-table).
+
+To replace a table, use [`CREATE OR REPLACE TABLE`](/sql/create-table) or
+[`CREATE OR REPLACE TABLE AS`](/sql/create-table-as).
+
+Earlier snapshots of the table can be queried through [](iceberg-time-travel).
+
+In the following example, a table `example_table` can be replaced by a
+completely new definition and data from the source table:
+
+```sql
+CREATE OR REPLACE TABLE example_table
+WITH (sorted_by = ARRAY['a'])
+AS SELECT * FROM another_table;
+```
+
+(iceberg-time-travel)=
 ##### Time travel queries
 
 The connector offers the ability to query historical data. This allows you to
@@ -1299,6 +1496,14 @@ before or at the specified timestamp in the query is internally used for
 providing the previous state of the table:
 
 ```
+SELECT *
+FROM example.testdb.customer_orders FOR TIMESTAMP AS OF TIMESTAMP '2022-03-23 09:59:29.803 Europe/Vienna'
+```
+
+The connector allows to create a new snapshot through Iceberg's [replace table](iceberg-create-or-replace).
+
+```
+CREATE OR REPLACE TABLE example.testdb.customer_orders AS
 SELECT *
 FROM example.testdb.customer_orders FOR TIMESTAMP AS OF TIMESTAMP '2022-03-23 09:59:29.803 Europe/Vienna'
 ```
@@ -1370,13 +1575,8 @@ CREATE TABLE example_table (
 When trying to insert/update data in the table, the query fails if trying to set
 `NULL` value on a column having the `NOT NULL` constraint.
 
-### View management
-
-Trino allows reading from Iceberg materialized views.
-
 (iceberg-materialized-views)=
-
-#### Materialized views
+### Materialized views
 
 The Iceberg connector supports {ref}`sql-materialized-view-management`. In the
 underlying system, each materialized view consists of a view definition and an
@@ -1387,7 +1587,7 @@ You can use the {ref}`iceberg-table-properties` to control the created storage
 table and therefore the layout and performance. For example, you can use the
 following clause with {doc}`/sql/create-materialized-view` to use the ORC format
 for the data files and partition the storage per day using the column
-`_date`:
+`event_date`:
 
 ```
 WITH ( format = 'ORC', partitioning = ARRAY['event_date'] )
@@ -1402,31 +1602,151 @@ Creating a materialized view does not automatically populate it with data. You
 must run {doc}`/sql/refresh-materialized-view` to populate data in the
 materialized view.
 
-Updating the data in the materialized view with `REFRESH MATERIALIZED VIEW`
+Updating the data in the materialized view can be achieved using the `REFRESH
+MATERIALIZED VIEW` command. This operation may perform either an incremental or
+a full refresh, depending on the complexity of the materialized view definition
+and the snapshot history of the source tables. For a full refresh, the operation
 deletes the data from the storage table, and inserts the data that is the result
-of executing the materialized view query into the existing table. Data is
-replaced atomically, so users can continue to query the materialized view while
-it is being refreshed. Refreshing a materialized view also stores the
-snapshot-ids of all Iceberg tables that are part of the materialized view's
-query in the materialized view metadata. When the materialized view is queried,
-the snapshot-ids are used to check if the data in the storage table is up to
-date. If the data is outdated, the materialized view behaves like a normal view,
-and the data is queried directly from the base tables. Detecting outdated data
-is possible only when the materialized view uses Iceberg tables only, or when it
-uses a mix of Iceberg and non-Iceberg tables but some Iceberg tables are outdated.
-When the materialized view is based on non-Iceberg tables, querying it can
-return outdated data, since the connector has no information whether the
-underlying non-Iceberg tables have changed.
+of executing the materialized view query into the existing table. For
+incremental refresh, the existing data is not deleted from the storage table and
+only the delta records are processed from the source tables and appended into
+the storage table as needed. In both cases, data is replaced or appended
+atomically, so users can continue to query the materialized view while it is
+being refreshed. Refreshing a materialized view also stores the snapshot-ids of
+all Iceberg tables that are part of the materialized view's query in the
+materialized view metadata. When the materialized view is queried, the
+snapshot-ids are used to check if the data in the storage table is up to date.
+
+Materialized views that use non-Iceberg tables in the query show the [default
+behavior around grace periods](mv-grace-period). If all tables are Iceberg
+tables, the connector can determine if the data has not changed and continue to
+use the data from the storage tables, even after the grace period expired.
 
 Dropping a materialized view with {doc}`/sql/drop-materialized-view` removes
 the definition and the storage table.
 
-(iceberg-fte-support)=
+### Table functions
 
-## Fault-tolerant execution support
+The connector supports the table functions described in the following sections.
 
-The connector supports {doc}`/admin/fault-tolerant-execution` of query
-processing. Read and write operations are both supported with any retry policy.
+#### table_changes
+
+Allows reading row-level changes between two versions of an Iceberg table.
+The following query shows an example of displaying the changes of the `t1`
+table in the `default` schema in the current catalog.
+All changes between the start and end snapshots are returned.
+
+```sql
+SELECT
+  *
+FROM
+  TABLE(
+    system.table_changes(
+      schema_name => 'default',
+      table_name => 't1',
+      start_snapshot_id => 6541165659943306573,
+      end_snapshot_id => 6745790645714043599
+    )
+  );
+```
+
+The function takes the following required parameters:
+
+- `schema_name`
+  : Name of the schema for which the function is called.
+- `table_name`
+  : Name of the table for which the function is called.
+- `start_snapshot_id`
+  : The identifier of the exclusive starting snapshot.
+- `end_snapshot_id`
+  : The identifier of the inclusive end snapshot.
+
+Use the `$snapshots` metadata table to determine the snapshot IDs of the
+table.
+
+The function returns the columns present in the table, and the following values
+for each change:
+
+- `_change_type`
+  : The type of change that occurred. Possible values are `insert` and `delete`.
+- `_change_version_id`
+  : The identifier of the snapshot in which the change occurred.
+- `_change_timestamp`
+  : Timestamp when the snapshot became active.
+- `_change_ordinal`
+  : Order number of the change, useful for sorting the results.
+
+**Example:**
+
+Create a table:
+
+```
+CREATE TABLE test_schema.pages (page_url VARCHAR, domain VARCHAR, views INTEGER);
+```
+
+Insert some data:
+
+```
+INSERT INTO test_schema.pages
+    VALUES
+        ('url1', 'domain1', 1),
+        ('url2', 'domain2', 2),
+        ('url3', 'domain1', 3);
+INSERT INTO test_schema.pages
+    VALUES
+        ('url4', 'domain1', 400),
+        ('url5', 'domain2', 500),
+        ('url6', 'domain3', 2);
+```
+
+Retrieve the snapshot identifiers of the changes performed on the table:
+
+```
+SELECT
+    snapshot_id,
+    parent_id,
+    operation
+FROM test_schema."pages$snapshots";
+```
+
+```text
+     snapshot_id     |      parent_id      | operation
+---------------------+---------------------+-----------
+ 2009020668682716382 |                NULL | append
+ 2135434251890923160 | 2009020668682716382 | append
+ 3108755571950643966 | 2135434251890923160 | append
+(3 rows)
+
+```
+
+Select the changes performed in the previously-mentioned `INSERT` statements:
+
+```
+SELECT
+    *
+FROM
+    TABLE(
+            system.table_changes(
+                    schema_name => 'test_schema',
+                    table_name => 'pages',
+                    start_snapshot_id => 2009020668682716382,
+                    end_snapshot_id => 3108755571950643966
+            )
+    )
+ORDER BY _change_ordinal ASC;
+```
+
+```text
+ page_url | domain  | views | _change_type | _change_version_id  |      _change_timestamp      | _change_ordinal
+----------+---------+-------+--------------+---------------------+-----------------------------+-----------------
+ url1     | domain1 |     1 | insert       | 2135434251890923160 | 2024-04-04 21:24:26.105 UTC |               0
+ url2     | domain2 |     2 | insert       | 2135434251890923160 | 2024-04-04 21:24:26.105 UTC |               0
+ url3     | domain1 |     3 | insert       | 2135434251890923160 | 2024-04-04 21:24:26.105 UTC |               0
+ url4     | domain1 |   400 | insert       | 3108755571950643966 | 2024-04-04 21:24:28.318 UTC |               1
+ url5     | domain2 |   500 | insert       | 3108755571950643966 | 2024-04-04 21:24:28.318 UTC |               1
+ url6     | domain3 |     2 | insert       | 3108755571950643966 | 2024-04-04 21:24:28.318 UTC |               1
+(6 rows)
+```
 
 ## Performance
 
@@ -1441,7 +1761,6 @@ catalog configuration property, or the corresponding
 `extended_statistics_enabled` session property.
 
 (iceberg-analyze)=
-
 #### Updating table statistics
 
 If your queries are complex and include joining large data sets, running
@@ -1470,7 +1789,6 @@ dropped using the {ref}`drop_extended_stats <drop-extended-stats>` command
 before re-analyzing.
 
 (iceberg-table-redirection)=
-
 ### Table redirection
 
 ```{include} table-redirection.fragment
@@ -1478,3 +1796,8 @@ before re-analyzing.
 
 The connector supports redirection from Iceberg tables to Hive tables with the
 `iceberg.hive-catalog-name` catalog configuration property.
+
+### File system cache
+
+The connector supports configuring and using [file system
+caching](/object-storage/file-system-cache).

@@ -56,6 +56,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
@@ -69,12 +70,17 @@ import static io.trino.tests.product.launcher.env.DockerContainer.ensurePathExis
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.COORDINATOR;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.TESTS;
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.isTrinoContainer;
+import static io.trino.tests.product.launcher.env.EnvironmentListener.compose;
+import static io.trino.tests.product.launcher.env.EnvironmentListener.printStartupLogs;
 import static io.trino.tests.product.launcher.env.Environments.pruneEnvironment;
 import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
 import static java.lang.String.format;
+import static java.lang.System.getenv;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Duration.ofMinutes;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
+import static java.util.function.UnaryOperator.identity;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
 public final class Environment
@@ -103,12 +109,13 @@ public final class Environment
             Map<String, DockerContainer> containers,
             EnvironmentListener listener,
             boolean attached,
-            Map<String, List<String>> configuredFeatures)
+            Map<String, List<String>> configuredFeatures,
+            List<Supplier<String>> startupLogs)
     {
         this.name = requireNonNull(name, "name is null");
         this.startupRetries = startupRetries;
         this.containers = requireNonNull(containers, "containers is null");
-        this.listener = requireNonNull(listener, "listener is null");
+        this.listener = compose(requireNonNull(listener, "listener is null"), printStartupLogs(startupLogs));
         this.attached = attached;
         this.configuredFeatures = requireNonNull(configuredFeatures, "configuredFeatures is null");
     }
@@ -120,7 +127,12 @@ public final class Environment
                 .onFailedAttempt(event -> log.warn(event.getLastException(), "Could not start environment '%s'", this))
                 .onRetry(event -> log.info("Trying to start environment '%s', %d failed attempt(s)", this, event.getAttemptCount() + 1))
                 .onSuccess(event -> log.info("Environment '%s' started in %s, %d attempt(s)", this, event.getElapsedTime(), event.getAttemptCount()))
-                .onFailure(event -> log.info("Environment '%s' failed to start in attempt(s): %d: %s", this, event.getAttemptCount(), event.getException()))
+                .onFailure(event -> {
+                    if (getenv("GITHUB_RUN_ID") != null) {
+                        System.out.printf("::error title=Failed to start environment '%s'::%s%n", this, event.getException());
+                    }
+                    log.info("Environment '%s' failed to start in attempt(s): %d: %s", this, event.getAttemptCount(), event.getException());
+                })
                 .build();
 
         return Failsafe
@@ -163,7 +175,7 @@ public final class Environment
             log.info("Started environment %s with containers:\n%s", name, table.render());
 
             // After deepStart all containers should be running and healthy
-            checkState(allContainersHealthy(containers), "Not all containers are running or healthy");
+            checkState(allContainersHealthy(containers), format("The containers %s are not running or healthy", unhealthyContainers(containers)));
 
             listener.environmentStarted(this);
             return this;
@@ -326,6 +338,13 @@ public final class Environment
                 .allMatch(Environment::containerIsHealthy);
     }
 
+    private static List<DockerContainer> unhealthyContainers(Iterable<DockerContainer> containers)
+    {
+        return Streams.stream(containers)
+                .filter(Environment::containerIsHealthy)
+                .toList();
+    }
+
     private static boolean containerIsHealthy(DockerContainer container)
     {
         if (container.isTemporary()) {
@@ -367,13 +386,16 @@ public final class Environment
     public static class Builder
     {
         private final String name;
+        private final Map<String, DockerContainer> containers = new HashMap<>();
+        private final PrintStream printStream;
+        private final Multimap<String, String> configuredFeatures = HashMultimap.create();
+        private final ImmutableList.Builder<Supplier<String>> startupLogs = ImmutableList.builder();
+        private Function<String, String> logTransformer = Function.identity();
+
         private DockerContainer.OutputMode outputMode;
         private int startupRetries = 1;
-        private Map<String, DockerContainer> containers = new HashMap<>();
         private Optional<Path> logsBaseDir = Optional.empty();
-        private PrintStream printStream;
         private boolean attached;
-        private Multimap<String, String> configuredFeatures = HashMultimap.create();
 
         public Builder(String name, PrintStream printStream)
         {
@@ -482,6 +504,18 @@ public final class Environment
             return this;
         }
 
+        public Builder addStartupLogs(Supplier<String> line)
+        {
+            startupLogs.add(line);
+            return this;
+        }
+
+        public Builder addLogsTransformer(Function<String, String> transformer)
+        {
+            logTransformer = logTransformer.compose(transformer);
+            return this;
+        }
+
         private static void updateContainerHostConfig(CreateContainerCmd createContainerCmd)
         {
             HostConfig hostConfig = requireNonNull(createContainerCmd.getHostConfig(), "hostConfig is null");
@@ -574,18 +608,18 @@ public final class Environment
             switch (outputMode) {
                 case DISCARD -> {
                     log.warn("Containers logs are not printed to stdout");
-                    setContainerOutputConsumer(Builder::discardContainerLogs);
+                    setContainerOutputConsumer(identity(), Builder::discardContainerLogs);
                 }
-                case PRINT -> setContainerOutputConsumer(frame -> printContainerLogs(printStream, frame));
+                case PRINT -> setContainerOutputConsumer(logTransformer, frame -> printContainerLogs(printStream, frame));
                 case PRINT_WRITE -> {
                     verify(logsBaseDir.isPresent(), "--logs-dir must be set with --output WRITE");
-                    setContainerOutputConsumer(container -> combineConsumers(
+                    setContainerOutputConsumer(logTransformer, container -> combineConsumers(
                             writeContainerLogs(container, logsBaseDir.get()),
                             printContainerLogs(printStream, container)));
                 }
                 case WRITE -> {
                     verify(logsBaseDir.isPresent(), "--logs-dir must be set with --output WRITE");
-                    setContainerOutputConsumer(container -> writeContainerLogs(container, logsBaseDir.get()));
+                    setContainerOutputConsumer(logTransformer, container -> writeContainerLogs(container, logsBaseDir.get()));
                 }
             }
 
@@ -612,13 +646,14 @@ public final class Environment
                     containers,
                     listener,
                     attached,
-                    configuredFeatures);
+                    configuredFeatures,
+                    startupLogs.build());
         }
 
         private static Consumer<OutputFrame> writeContainerLogs(DockerContainer container, Path path)
         {
             Path containerLogFile = path.resolve(container.getLogicalName() + "/container.log");
-            log.info("Writing container %s logs to %s", container, containerLogFile);
+            log.debug("Writing container %s logs to %s", container, containerLogFile);
 
             try {
                 ensurePathExists(containerLogFile.getParent());
@@ -664,7 +699,7 @@ public final class Environment
             catch (IOException e) {
                 throw new RuntimeException(e);
             }
-            String temptoConfig = "/docker/presto-product-tests/conf/tempto/tempto-configured-features.yaml";
+            String temptoConfig = "/docker/trino-product-tests/conf/tempto/tempto-configured-features.yaml";
             testContainer.withCopyFileToContainer(forHostPath(tempFile.getPath()), temptoConfig);
             // add custom tempto config and configured_features to arguments if there are any other groups enabled
             String[] commandParts = testContainer.getCommandParts();
@@ -681,9 +716,12 @@ public final class Environment
             return outputFrame -> Arrays.stream(consumers).forEach(consumer -> consumer.accept(outputFrame));
         }
 
-        private void setContainerOutputConsumer(Function<DockerContainer, Consumer<OutputFrame>> consumer)
+        private void setContainerOutputConsumer(Function<String, String> logTransformer, Function<DockerContainer, Consumer<OutputFrame>> consumer)
         {
-            configureContainers(container -> container.withLogConsumer(consumer.apply(container)));
+            configureContainers(container -> container.withLogConsumer(frame -> {
+                String line = logTransformer.apply(frame.getUtf8StringWithoutLineEnding());
+                consumer.apply(container).accept(new OutputFrame(frame.getType(), line.getBytes(UTF_8)));
+            }));
         }
 
         public Builder setLogsBaseDir(Optional<Path> baseDir)

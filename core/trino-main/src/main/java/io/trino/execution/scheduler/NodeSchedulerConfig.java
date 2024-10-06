@@ -45,8 +45,8 @@ public class NodeSchedulerConfig
 
     private int minCandidates = 10;
     private boolean includeCoordinator = true;
-    private int maxSplitsPerNode = 100;
-    private int minPendingSplitsPerTask = 10;
+    private int maxSplitsPerNode = 256;
+    private int minPendingSplitsPerTask = 16;
     private int maxAdjustedPendingSplitsWeightPerTask = 2000;
     private NodeSchedulerPolicy nodeSchedulerPolicy = NodeSchedulerPolicy.UNIFORM;
     private boolean optimizedLocalScheduling = true;
@@ -71,16 +71,11 @@ public class NodeSchedulerConfig
     private static NodeSchedulerPolicy toNodeSchedulerPolicy(String nodeSchedulerPolicy)
     {
         // "legacy" and "flat" are here for backward compatibility
-        switch (nodeSchedulerPolicy.toLowerCase(ENGLISH)) {
-            case "legacy":
-            case "uniform":
-                return NodeSchedulerPolicy.UNIFORM;
-            case "flat":
-            case "topology":
-                return NodeSchedulerPolicy.TOPOLOGY;
-            default:
-                throw new IllegalArgumentException("Unknown node scheduler policy: " + nodeSchedulerPolicy);
-        }
+        return switch (nodeSchedulerPolicy.toLowerCase(ENGLISH)) {
+            case "legacy", "uniform" -> NodeSchedulerPolicy.UNIFORM;
+            case "flat", "topology" -> NodeSchedulerPolicy.TOPOLOGY;
+            default -> throw new IllegalArgumentException("Unknown node scheduler policy: " + nodeSchedulerPolicy);
+        };
     }
 
     @Min(1)

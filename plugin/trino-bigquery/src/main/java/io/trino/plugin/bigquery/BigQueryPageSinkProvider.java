@@ -29,10 +29,10 @@ import static java.util.Objects.requireNonNull;
 public class BigQueryPageSinkProvider
         implements ConnectorPageSinkProvider
 {
-    private final BigQueryClientFactory clientFactory;
+    private final BigQueryWriteClientFactory clientFactory;
 
     @Inject
-    public BigQueryPageSinkProvider(BigQueryClientFactory clientFactory)
+    public BigQueryPageSinkProvider(BigQueryWriteClientFactory clientFactory)
     {
         this.clientFactory = requireNonNull(clientFactory, "clientFactory is null");
     }
@@ -42,13 +42,13 @@ public class BigQueryPageSinkProvider
     {
         BigQueryOutputTableHandle handle = (BigQueryOutputTableHandle) outputTableHandle;
         return new BigQueryPageSink(
-                clientFactory.createBigQueryClient(session),
-                handle.getRemoteTableName(),
-                handle.getColumnNames(),
-                handle.getColumnTypes(),
+                clientFactory.create(session),
+                handle.remoteTableName(),
+                handle.columnNames(),
+                handle.columnTypes(),
                 pageSinkId,
-                handle.getTemporaryTableName(),
-                handle.getPageSinkIdColumnName());
+                handle.temporaryTableName(),
+                handle.pageSinkIdColumnName());
     }
 
     @Override
@@ -56,12 +56,12 @@ public class BigQueryPageSinkProvider
     {
         BigQueryInsertTableHandle handle = (BigQueryInsertTableHandle) insertTableHandle;
         return new BigQueryPageSink(
-                clientFactory.createBigQueryClient(session),
-                handle.getRemoteTableName(),
-                handle.getColumnNames(),
-                handle.getColumnTypes(),
+                clientFactory.create(session),
+                handle.remoteTableName(),
+                handle.columnNames(),
+                handle.columnTypes(),
                 pageSinkId,
-                Optional.of(handle.getTemporaryTableName()),
-                Optional.of(handle.getPageSinkIdColumnName()));
+                Optional.of(handle.temporaryTableName()),
+                Optional.of(handle.pageSinkIdColumnName()));
     }
 }

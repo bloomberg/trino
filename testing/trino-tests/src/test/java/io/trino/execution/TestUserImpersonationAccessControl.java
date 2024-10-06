@@ -37,9 +37,7 @@ import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.client.StatementClientFactory.newStatementClient;
 import static io.trino.plugin.base.security.FileBasedAccessControlConfig.SECURITY_CONFIG_FILE;
 import static java.util.concurrent.TimeUnit.MINUTES;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNotNull;
-import static org.testng.Assert.assertNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestUserImpersonationAccessControl
         extends AbstractTestQueryFramework
@@ -50,7 +48,7 @@ public class TestUserImpersonationAccessControl
     {
         String securityConfigFile = new File(getResource("access_control_rules.json").toURI()).getPath();
         QueryRunner queryRunner = DistributedQueryRunner.builder(TEST_SESSION)
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .setSystemAccessControl("file", Map.of(SECURITY_CONFIG_FILE, securityConfigFile))
                 .build();
 
@@ -65,26 +63,26 @@ public class TestUserImpersonationAccessControl
     public void testReadAccessControl()
     {
         QueryError aliceQueryError = trySelectQuery("alice");
-        assertNull(aliceQueryError);
+        assertThat(aliceQueryError).isNull();
 
         QueryError bobQueryError = trySelectQuery("bob");
-        assertNotNull(bobQueryError);
-        assertEquals(bobQueryError.getErrorType(), "USER_ERROR");
-        assertEquals(bobQueryError.getErrorName(), "PERMISSION_DENIED");
+        assertThat(bobQueryError).isNotNull();
+        assertThat(bobQueryError.getErrorType()).isEqualTo("USER_ERROR");
+        assertThat(bobQueryError.getErrorName()).isEqualTo("PERMISSION_DENIED");
 
         QueryError charlieQueryError = trySelectQuery("charlie");
-        assertNull(charlieQueryError);
+        assertThat(charlieQueryError).isNull();
     }
 
     @Nullable
-    private QueryError trySelectQuery(String assumedUser)
+    private QueryError trySelectQuery(String sessionUser)
     {
         OkHttpClient httpClient = new OkHttpClient();
         try {
             ClientSession clientSession = ClientSession.builder()
                     .server(getDistributedQueryRunner().getCoordinator().getBaseUrl())
-                    .principal(Optional.of("user"))
-                    .user(Optional.of(assumedUser))
+                    .user(Optional.of("user"))
+                    .sessionUser(Optional.of(sessionUser))
                     .source("source")
                     .timeZone(ZoneId.of("America/Los_Angeles"))
                     .locale(Locale.ENGLISH)

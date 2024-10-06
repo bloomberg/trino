@@ -13,10 +13,12 @@
  */
 package io.trino.spi.connector;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.trino.spi.HostAddress;
 import io.trino.spi.SplitWeight;
 
 import java.util.List;
+import java.util.Map;
 
 public interface ConnectorSplit
 {
@@ -27,11 +29,24 @@ public interface ConnectorSplit
      * during splits assignment.
      * When false, the split will always be scheduled on one of the addresses returned by {@link #getAddresses()}.
      */
-    boolean isRemotelyAccessible();
+    default boolean isRemotelyAccessible()
+    {
+        return true;
+    }
 
-    List<HostAddress> getAddresses();
+    default List<HostAddress> getAddresses()
+    {
+        if (!isRemotelyAccessible()) {
+            throw new IllegalStateException("getAddresses must be implemented when for splits with isRemotelyAccessible=false");
+        }
+        return List.of();
+    }
 
-    Object getInfo();
+    @JsonIgnore // ConnectorSplit is json-serializable, but we don't want to repeat information in that field
+    default Map<String, String> getSplitInfo()
+    {
+        return Map.of();
+    }
 
     default SplitWeight getSplitWeight()
     {

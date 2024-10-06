@@ -21,7 +21,10 @@ import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.hive.formats.avro.AvroCompressionKind;
+import io.trino.hive.formats.avro.HiveAvroTypeBlockHandler;
+import io.trino.hive.formats.avro.HiveAvroTypeManager;
 import io.trino.memory.context.AggregatedMemoryContext;
+import io.trino.metastore.StorageFormat;
 import io.trino.plugin.hive.FileWriter;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveFileWriterFactory;
@@ -29,7 +32,6 @@ import io.trino.plugin.hive.HiveTimestampPrecision;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.WriterKind;
 import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
@@ -38,20 +40,22 @@ import org.apache.avro.Schema;
 
 import java.io.Closeable;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.hive.formats.HiveClassNames.AVRO_CONTAINER_OUTPUT_FORMAT_CLASS;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_OPEN_ERROR;
-import static io.trino.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
-import static io.trino.plugin.hive.HiveMetadata.PRESTO_VERSION_NAME;
+import static io.trino.plugin.hive.HiveMetadata.TRINO_QUERY_ID_NAME;
+import static io.trino.plugin.hive.HiveMetadata.TRINO_VERSION_NAME;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
-import static io.trino.plugin.hive.util.HiveClassNames.AVRO_CONTAINER_OUTPUT_FORMAT_CLASS;
+import static io.trino.plugin.hive.util.HiveTypeUtil.getType;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnNames;
 import static io.trino.plugin.hive.util.HiveUtil.getColumnTypes;
+import static io.trino.spi.type.TimestampType.createTimestampType;
 import static java.util.Objects.requireNonNull;
 
 public class AvroFileWriterFactory
@@ -78,7 +82,7 @@ public class AvroFileWriterFactory
             List<String> inputColumnNames,
             StorageFormat storageFormat,
             HiveCompressionCodec compressionCodec,
-            Properties schema,
+            Map<String, String> schema,
             ConnectorSession session,
             OptionalInt bucketNumber,
             AcidTransaction transaction,
@@ -99,7 +103,7 @@ public class AvroFileWriterFactory
         // an index to rearrange columns in the proper order
         List<String> fileColumnNames = getColumnNames(schema);
         List<Type> fileColumnTypes = getColumnTypes(schema).stream()
-                .map(hiveType -> hiveType.getType(typeManager, hiveTimestampPrecision))
+                .map(hiveType -> getType(hiveType, typeManager, hiveTimestampPrecision))
                 .collect(toImmutableList());
 
         List<Type> inputColumnTypes = inputColumnNames.stream().map(inputColumnName -> {
@@ -109,7 +113,7 @@ public class AvroFileWriterFactory
         }).collect(toImmutableList());
 
         try {
-            TrinoFileSystem fileSystem = fileSystemFactory.create(session.getIdentity());
+            TrinoFileSystem fileSystem = fileSystemFactory.create(session);
             Schema fileSchema = AvroHiveFileUtils.determineSchemaOrThrowException(fileSystem, schema);
             TrinoOutputFile outputFile = fileSystem.newOutputFile(location);
             AggregatedMemoryContext outputStreamMemoryContext = newSimpleAggregatedMemoryContext();
@@ -120,14 +124,15 @@ public class AvroFileWriterFactory
                     outputFile.create(outputStreamMemoryContext),
                     outputStreamMemoryContext,
                     fileSchema,
-                    new HiveAvroTypeManager(hiveTimestampPrecision),
+                    new HiveAvroTypeManager(),
+                    new HiveAvroTypeBlockHandler(createTimestampType(hiveTimestampPrecision.getPrecision())),
                     rollbackAction,
                     inputColumnNames,
                     inputColumnTypes,
                     compressionKind,
                     ImmutableMap.<String, String>builder()
-                            .put(PRESTO_VERSION_NAME, nodeVersion.toString())
-                            .put(PRESTO_QUERY_ID_NAME, session.getQueryId())
+                            .put(TRINO_VERSION_NAME, nodeVersion.toString())
+                            .put(TRINO_QUERY_ID_NAME, session.getQueryId())
                             .buildOrThrow()));
         }
         catch (Exception e) {

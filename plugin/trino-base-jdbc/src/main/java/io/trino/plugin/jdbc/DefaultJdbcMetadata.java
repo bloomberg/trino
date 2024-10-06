@@ -18,6 +18,8 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
+import io.trino.plugin.base.filter.UtcConstraintExtractor;
+import io.trino.plugin.base.filter.UtcConstraintExtractor.ExtractionResult;
 import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
 import io.trino.plugin.jdbc.PredicatePushdownController.DomainPushdownResult;
 import io.trino.plugin.jdbc.expression.ParameterizedExpression;
@@ -37,6 +39,7 @@ import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableSchema;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.JoinApplicationResult;
@@ -45,8 +48,11 @@ import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.ProjectionApplicationResult;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.RetryMode;
 import io.trino.spi.connector.RowChangeParadigm;
+import io.trino.spi.connector.SaveMode;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.SortItem;
@@ -71,14 +77,18 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 
 import static com.google.common.base.Functions.identity;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -89,17 +99,22 @@ import static com.google.common.base.Verify.verifyNotNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static com.google.common.collect.Streams.stream;
 import static io.trino.plugin.base.expression.ConnectorExpressions.and;
 import static io.trino.plugin.base.expression.ConnectorExpressions.extractConjuncts;
+import static io.trino.plugin.base.projection.ApplyProjectionUtil.replaceWithNewVariables;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_NON_TRANSIENT_ERROR;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isAggregationPushdownEnabled;
+import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isBulkListColumns;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isComplexExpressionPushdown;
+import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isComplexJoinPushdownEnabled;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isJoinPushdownEnabled;
 import static io.trino.plugin.jdbc.JdbcMetadataSessionProperties.isTopNPushdownEnabled;
 import static io.trino.plugin.jdbc.JdbcWriteSessionProperties.isNonTransactionalInsert;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.connector.RetryMode.NO_RETRIES;
 import static io.trino.spi.connector.RowChangeParadigm.CHANGE_ONLY_UPDATED_COLUMNS;
+import static io.trino.spi.connector.SaveMode.REPLACE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.lang.Math.max;
 import static java.util.Objects.requireNonNull;
@@ -107,21 +122,25 @@ import static java.util.Objects.requireNonNull;
 public class DefaultJdbcMetadata
         implements JdbcMetadata
 {
-    public static final int DEFAULT_COLUMN_ALIAS_LENGTH = 30;
-
     private static final String SYNTHETIC_COLUMN_NAME_PREFIX = "_pfgnrtd_";
     private static final String DELETE_ROW_ID = "_trino_artificial_column_handle_for_delete_row_id_";
     private static final String MERGE_ROW_ID = "$merge_row_id";
 
     private final JdbcClient jdbcClient;
+    private final TimestampTimeZoneDomain timestampTimeZoneDomain;
     private final boolean precalculateStatisticsForPushdown;
     private final Set<JdbcQueryEventListener> jdbcQueryEventListeners;
 
     private final AtomicReference<Runnable> rollbackAction = new AtomicReference<>();
 
-    public DefaultJdbcMetadata(JdbcClient jdbcClient, boolean precalculateStatisticsForPushdown, Set<JdbcQueryEventListener> jdbcQueryEventListeners)
+    public DefaultJdbcMetadata(
+            JdbcClient jdbcClient,
+            TimestampTimeZoneDomain timestampTimeZoneDomain,
+            boolean precalculateStatisticsForPushdown,
+            Set<JdbcQueryEventListener> jdbcQueryEventListeners)
     {
         this.jdbcClient = requireNonNull(jdbcClient, "jdbcClient is null");
+        this.timestampTimeZoneDomain = requireNonNull(timestampTimeZoneDomain, "timestampTimeZoneDomain is null");
         this.precalculateStatisticsForPushdown = precalculateStatisticsForPushdown;
         this.jdbcQueryEventListeners = ImmutableSet.copyOf(requireNonNull(jdbcQueryEventListeners, "queryEventListeners is null"));
     }
@@ -139,8 +158,12 @@ public class DefaultJdbcMetadata
     }
 
     @Override
-    public JdbcTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public JdbcTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         return jdbcClient.getTableHandle(session, tableName)
                 .orElse(null);
     }
@@ -170,20 +193,34 @@ public class DefaultJdbcMetadata
             return Optional.empty();
         }
 
+        TupleDomain<ColumnHandle> filterDomain;
+        ConnectorExpression remainingExpression;
+        switch (timestampTimeZoneDomain) {
+            case ANY -> {
+                filterDomain = constraint.getSummary();
+                remainingExpression = constraint.getExpression();
+            }
+            case UTC_ONLY -> {
+                ExtractionResult extractionResult = UtcConstraintExtractor.extractTupleDomain(constraint);
+                filterDomain = extractionResult.tupleDomain();
+                remainingExpression = extractionResult.remainingExpression();
+            }
+            default -> throw new UnsupportedOperationException("Unsupported timestamp time zone domain: " + timestampTimeZoneDomain);
+        }
+
         JdbcTableHandle handle = (JdbcTableHandle) table;
         if (handle.getSortOrder().isPresent() && handle.getLimit().isPresent()) {
             handle = flushAttributesAsQuery(session, handle);
         }
 
         TupleDomain<ColumnHandle> oldDomain = handle.getConstraint();
-        TupleDomain<ColumnHandle> newDomain = oldDomain.intersect(constraint.getSummary());
+        TupleDomain<ColumnHandle> newDomain = oldDomain.intersect(filterDomain);
         List<ParameterizedExpression> newConstraintExpressions;
         TupleDomain<ColumnHandle> remainingFilter;
-        Optional<ConnectorExpression> remainingExpression;
         if (newDomain.isNone()) {
             newConstraintExpressions = ImmutableList.of();
             remainingFilter = TupleDomain.all();
-            remainingExpression = Optional.of(Constant.TRUE);
+            remainingExpression = Constant.TRUE;
         }
         else {
             Map<ColumnHandle, Domain> domains = newDomain.getDomains().orElseThrow();
@@ -212,7 +249,7 @@ public class DefaultJdbcMetadata
             if (isComplexExpressionPushdown(session)) {
                 List<ParameterizedExpression> newExpressions = new ArrayList<>();
                 List<ConnectorExpression> remainingExpressions = new ArrayList<>();
-                for (ConnectorExpression expression : extractConjuncts(constraint.getExpression())) {
+                for (ConnectorExpression expression : extractConjuncts(remainingExpression)) {
                     Optional<ParameterizedExpression> converted = jdbcClient.convertPredicate(session, expression, constraint.getAssignments());
                     if (converted.isPresent()) {
                         newExpressions.add(converted.get());
@@ -225,11 +262,10 @@ public class DefaultJdbcMetadata
                         .addAll(handle.getConstraintExpressions())
                         .addAll(newExpressions)
                         .build().asList();
-                remainingExpression = Optional.of(and(remainingExpressions));
+                remainingExpression = and(remainingExpressions);
             }
             else {
                 newConstraintExpressions = ImmutableList.of();
-                remainingExpression = Optional.empty();
             }
         }
 
@@ -250,10 +286,7 @@ public class DefaultJdbcMetadata
                 handle.getAuthorization(),
                 handle.getUpdateAssignments());
 
-        return Optional.of(
-                remainingExpression.isPresent()
-                        ? new ConstraintApplicationResult<>(handle, remainingFilter, remainingExpression.get(), precalculateStatisticsForPushdown)
-                        : new ConstraintApplicationResult<>(handle, remainingFilter, precalculateStatisticsForPushdown));
+        return Optional.of(new ConstraintApplicationResult<>(handle, remainingFilter, remainingExpression, precalculateStatisticsForPushdown));
     }
 
     private JdbcTableHandle flushAttributesAsQuery(ConnectorSession session, JdbcTableHandle handle)
@@ -286,6 +319,18 @@ public class DefaultJdbcMetadata
         }
 
         JdbcTableHandle handle = (JdbcTableHandle) table;
+
+        if (isComplexExpressionPushdown(session)) {
+            Optional<ProjectionApplicationResult<ConnectorTableHandle>> projectionApplicationResult = applyProjectionExpressions(
+                    session,
+                    handle,
+                    projections,
+                    assignments);
+
+            if (projectionApplicationResult.isPresent()) {
+                return projectionApplicationResult;
+            }
+        }
 
         List<JdbcColumnHandle> newColumns = assignments.values().stream()
                 .map(JdbcColumnHandle.class::cast)
@@ -327,6 +372,135 @@ public class DefaultJdbcMetadata
                                 ((JdbcColumnHandle) assignment.getValue()).getColumnType()))
                         .collect(toImmutableList()),
                 precalculateStatisticsForPushdown));
+    }
+
+    private Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjectionExpressions(
+            ConnectorSession session,
+            JdbcTableHandle handle,
+            List<ConnectorExpression> projections,
+            Map<String, ColumnHandle> assignments)
+    {
+        int nextSyntheticColumnId = handle.getNextSyntheticColumnId();
+
+        ImmutableSet.Builder<JdbcColumnHandle> newColumnsBuilder = ImmutableSet.builder();
+        ImmutableList.Builder<Assignment> assignmentBuilder = ImmutableList.builder();
+        ImmutableMap.Builder<ConnectorExpression, Variable> newVariablesBuilder = ImmutableMap.builder();
+        ImmutableMap.Builder<String, ParameterizedExpression> columnExpressionsBuilder = ImmutableMap.builder();
+        Set<ConnectorExpression> translatedExpressions = new HashSet<>();
+
+        for (ConnectorExpression projection : ImmutableSet.copyOf(projections)) {
+            RewrittenExpression rewrittenExpression = rewriteExpression(session, handle, nextSyntheticColumnId, projection, assignments, translatedExpressions);
+            nextSyntheticColumnId = rewrittenExpression.nextSyntheticColumnId();
+            newVariablesBuilder.putAll(rewrittenExpression.syntheticVariables());
+            columnExpressionsBuilder.putAll(rewrittenExpression.columnExpressions());
+            newColumnsBuilder.addAll(rewrittenExpression.columnHandles());
+            assignmentBuilder.addAll(rewrittenExpression.assignments());
+        }
+
+        List<JdbcColumnHandle> newColumns = ImmutableList.copyOf(newColumnsBuilder.build());
+
+        Map<ConnectorExpression, Variable> newVariables = newVariablesBuilder.buildOrThrow();
+
+        if (newVariables.isEmpty()) {
+            return Optional.empty();
+        }
+
+        // Modify projections to refer to new variables
+        List<ConnectorExpression> newProjections = projections.stream()
+                .map(expression -> replaceWithNewVariables(expression, newVariables))
+                .collect(toImmutableList());
+
+        List<Assignment> outputAssignments = assignmentBuilder.build();
+
+        PreparedQuery preparedQuery = jdbcClient.prepareQuery(session, handle, Optional.empty(), newColumns, columnExpressionsBuilder.buildOrThrow());
+        return Optional.of(new ProjectionApplicationResult<>(
+                new JdbcTableHandle(
+                        new JdbcQueryRelationHandle(preparedQuery),
+                        TupleDomain.all(),
+                        ImmutableList.of(),
+                        Optional.empty(),
+                        OptionalLong.empty(),
+                        Optional.of(newColumns),
+                        handle.getOtherReferencedTables(),
+                        nextSyntheticColumnId,
+                        handle.getAuthorization(),
+                        handle.getUpdateAssignments()),
+                newProjections,
+                outputAssignments,
+                precalculateStatisticsForPushdown));
+    }
+
+    private RewrittenExpression rewriteExpression(
+            ConnectorSession session,
+            JdbcTableHandle handle,
+            int nextSyntheticColumnId,
+            ConnectorExpression projection,
+            Map<String, ColumnHandle> assignments,
+            Set<ConnectorExpression> translatedExpressions)
+    {
+        // If the expression was translated before skip processing it once again
+        if (translatedExpressions.contains(projection)) {
+            return new RewrittenExpression(
+                    nextSyntheticColumnId,
+                    ImmutableMap.of(),
+                    ImmutableMap.of(),
+                    ImmutableSet.of(),
+                    ImmutableList.of());
+        }
+        if (projection instanceof Variable variable) {
+            translatedExpressions.add(variable);
+            return new RewrittenExpression(
+                    nextSyntheticColumnId,
+                    ImmutableMap.of(),
+                    ImmutableMap.of(),
+                    ImmutableSet.of((JdbcColumnHandle) assignments.get(variable.getName())),
+                    ImmutableList.of(new Assignment(variable.getName(), assignments.get(variable.getName()), variable.getType())));
+        }
+        Optional<JdbcExpression> convertedExpression = jdbcClient.convertProjection(session, handle, projection, assignments);
+        if (convertedExpression.isPresent()) {
+            String columnName = SYNTHETIC_COLUMN_NAME_PREFIX + nextSyntheticColumnId;
+            JdbcColumnHandle newColumn = JdbcColumnHandle.builder()
+                    .setColumnName(columnName)
+                    .setJdbcTypeHandle(convertedExpression.get().getJdbcTypeHandle())
+                    .setColumnType(projection.getType())
+                    .setComment(Optional.of("synthetic"))
+                    .build();
+            nextSyntheticColumnId++;
+            Variable newVariable = new Variable(newColumn.getColumnName(), newColumn.getColumnType());
+            Assignment newAssignment = new Assignment(columnName, newColumn, projection.getType());
+            translatedExpressions.add(projection);
+            return new RewrittenExpression(
+                    nextSyntheticColumnId,
+                    ImmutableMap.of(projection, newVariable),
+                    ImmutableMap.of(columnName, new ParameterizedExpression(convertedExpression.get().getExpression(), convertedExpression.get().getParameters())),
+                    ImmutableSet.of(newColumn),
+                    ImmutableList.of(newAssignment));
+        }
+        // If the parent expression cannot be translated try translating its argument
+        ImmutableMap.Builder<ConnectorExpression, Variable> syntheticVariablesBuilder = ImmutableMap.builder();
+        ImmutableMap.Builder<String, ParameterizedExpression> columnExpressionsBuilder = ImmutableMap.builder();
+        ImmutableSet.Builder<JdbcColumnHandle> columnsBuilder = ImmutableSet.builder();
+        ImmutableList.Builder<Assignment> assignmentBuilder = ImmutableList.builder();
+        for (ConnectorExpression child : projection.getChildren()) {
+            RewrittenExpression rewrittenExpression = rewriteExpression(
+                    session,
+                    handle,
+                    nextSyntheticColumnId,
+                    child,
+                    assignments,
+                    translatedExpressions);
+            nextSyntheticColumnId = rewrittenExpression.nextSyntheticColumnId();
+            syntheticVariablesBuilder.putAll(rewrittenExpression.syntheticVariables());
+            columnExpressionsBuilder.putAll(rewrittenExpression.columnExpressions());
+            columnsBuilder.addAll(rewrittenExpression.columnHandles());
+            assignmentBuilder.addAll(rewrittenExpression.assignments());
+        }
+        return new RewrittenExpression(
+                nextSyntheticColumnId,
+                syntheticVariablesBuilder.buildOrThrow(),
+                columnExpressionsBuilder.buildOrThrow(),
+                columnsBuilder.build(),
+                assignmentBuilder.build());
     }
 
     @Override
@@ -394,19 +568,13 @@ public class DefaultJdbcMetadata
                 return Optional.empty();
             }
 
-            String columnName = SYNTHETIC_COLUMN_NAME_PREFIX + nextSyntheticColumnId;
+            JdbcColumnHandle newColumn = createSyntheticAggregationColumn(aggregate, expression.get().getJdbcTypeHandle(), nextSyntheticColumnId);
             nextSyntheticColumnId++;
-            JdbcColumnHandle newColumn = JdbcColumnHandle.builder()
-                    .setColumnName(columnName)
-                    .setJdbcTypeHandle(expression.get().getJdbcTypeHandle())
-                    .setColumnType(aggregate.getOutputType())
-                    .setComment(Optional.of("synthetic"))
-                    .build();
 
             newColumns.add(newColumn);
             projections.add(new Variable(newColumn.getColumnName(), aggregate.getOutputType()));
             resultAssignments.add(new Assignment(newColumn.getColumnName(), newColumn, aggregate.getOutputType()));
-            expressions.put(columnName, new ParameterizedExpression(expression.get().getExpression(), expression.get().getParameters()));
+            expressions.put(newColumn.getColumnName(), new ParameterizedExpression(expression.get().getExpression(), expression.get().getParameters()));
         }
 
         List<JdbcColumnHandle> newColumnsList = newColumns.build();
@@ -434,6 +602,133 @@ public class DefaultJdbcMetadata
         return Optional.of(new AggregationApplicationResult<>(handle, projections.build(), resultAssignments.build(), ImmutableMap.of(), precalculateStatisticsForPushdown));
     }
 
+    @VisibleForTesting
+    static JdbcColumnHandle createSyntheticAggregationColumn(AggregateFunction aggregate, JdbcTypeHandle typeHandle, int nextSyntheticColumnId)
+    {
+        // the new column can be max len(SYNTHETIC_COLUMN_NAME_PREFIX) + len(Integer.MAX_VALUE) = 9 + 10 = 19 characters which is small enough to be supported by all databases
+        String columnName = SYNTHETIC_COLUMN_NAME_PREFIX + nextSyntheticColumnId;
+        return JdbcColumnHandle.builder()
+                .setColumnName(columnName)
+                .setJdbcTypeHandle(typeHandle)
+                .setColumnType(aggregate.getOutputType())
+                .setComment(Optional.of("synthetic"))
+                .build();
+    }
+
+    @Override
+    public Optional<JoinApplicationResult<ConnectorTableHandle>> applyJoin(
+            ConnectorSession session,
+            JoinType joinType,
+            ConnectorTableHandle left,
+            ConnectorTableHandle right,
+            ConnectorExpression joinCondition,
+            Map<String, ColumnHandle> leftAssignments,
+            Map<String, ColumnHandle> rightAssignments,
+            JoinStatistics statistics)
+    {
+        if (!isComplexJoinPushdownEnabled(session)) {
+            // Fallback to the old join pushdown code
+            return JdbcMetadata.super.applyJoin(
+                    session,
+                    joinType,
+                    left,
+                    right,
+                    joinCondition,
+                    leftAssignments,
+                    rightAssignments,
+                    statistics);
+        }
+
+        if (isTableHandleForProcedure(left) || isTableHandleForProcedure(right)) {
+            return Optional.empty();
+        }
+
+        if (!isJoinPushdownEnabled(session)) {
+            return Optional.empty();
+        }
+
+        JdbcTableHandle leftHandle = flushAttributesAsQuery(session, (JdbcTableHandle) left);
+        JdbcTableHandle rightHandle = flushAttributesAsQuery(session, (JdbcTableHandle) right);
+
+        if (!leftHandle.getAuthorization().equals(rightHandle.getAuthorization())) {
+            return Optional.empty();
+        }
+        int nextSyntheticColumnId = max(leftHandle.getNextSyntheticColumnId(), rightHandle.getNextSyntheticColumnId());
+
+        ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newLeftColumnsBuilder = ImmutableMap.builder();
+        OptionalInt maxColumnNameLength = jdbcClient.getMaxColumnNameLength(session);
+        for (JdbcColumnHandle column : jdbcClient.getColumns(session, leftHandle)) {
+            newLeftColumnsBuilder.put(column, createSyntheticJoinProjectionColumn(column, nextSyntheticColumnId, maxColumnNameLength));
+            nextSyntheticColumnId++;
+        }
+        Map<JdbcColumnHandle, JdbcColumnHandle> newLeftColumns = newLeftColumnsBuilder.buildOrThrow();
+
+        ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newRightColumnsBuilder = ImmutableMap.builder();
+        for (JdbcColumnHandle column : jdbcClient.getColumns(session, rightHandle)) {
+            newRightColumnsBuilder.put(column, createSyntheticJoinProjectionColumn(column, nextSyntheticColumnId, maxColumnNameLength));
+            nextSyntheticColumnId++;
+        }
+        Map<JdbcColumnHandle, JdbcColumnHandle> newRightColumns = newRightColumnsBuilder.buildOrThrow();
+
+        Map<String, ColumnHandle> assignments = ImmutableMap.<String, ColumnHandle>builder()
+                .putAll(leftAssignments.entrySet().stream()
+                        .collect(toImmutableMap(Entry::getKey, entry -> newLeftColumns.get((JdbcColumnHandle) entry.getValue()))))
+                .putAll(rightAssignments.entrySet().stream()
+                        .collect(toImmutableMap(Entry::getKey, entry -> newRightColumns.get((JdbcColumnHandle) entry.getValue()))))
+                .buildOrThrow();
+
+        ImmutableList.Builder<ParameterizedExpression> joinConditions = ImmutableList.builder();
+        for (ConnectorExpression conjunct : extractConjuncts(joinCondition)) {
+            Optional<ParameterizedExpression> converted = jdbcClient.convertPredicate(session, conjunct, assignments);
+            if (converted.isEmpty()) {
+                return Optional.empty();
+            }
+            joinConditions.add(converted.get());
+        }
+
+        Optional<PreparedQuery> joinQuery = jdbcClient.implementJoin(
+                session,
+                joinType,
+                asPreparedQuery(leftHandle),
+                newLeftColumns.entrySet().stream()
+                        .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().getColumnName())),
+                asPreparedQuery(rightHandle),
+                newRightColumns.entrySet().stream()
+                        .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().getColumnName())),
+                joinConditions.build(),
+                statistics);
+
+        if (joinQuery.isEmpty()) {
+            return Optional.empty();
+        }
+
+        return Optional.of(new JoinApplicationResult<>(
+                new JdbcTableHandle(
+                        new JdbcQueryRelationHandle(joinQuery.get()),
+                        TupleDomain.all(),
+                        ImmutableList.of(),
+                        Optional.empty(),
+                        OptionalLong.empty(),
+                        Optional.of(
+                                ImmutableList.<JdbcColumnHandle>builder()
+                                        .addAll(newLeftColumns.values())
+                                        .addAll(newRightColumns.values())
+                                        .build()),
+                        leftHandle.getAllReferencedTables().flatMap(leftReferencedTables ->
+                                rightHandle.getAllReferencedTables().map(rightReferencedTables ->
+                                        ImmutableSet.<SchemaTableName>builder()
+                                                .addAll(leftReferencedTables)
+                                                .addAll(rightReferencedTables)
+                                                .build())),
+                        nextSyntheticColumnId,
+                        leftHandle.getAuthorization(),
+                        leftHandle.getUpdateAssignments()),
+                ImmutableMap.copyOf(newLeftColumns),
+                ImmutableMap.copyOf(newRightColumns),
+                precalculateStatisticsForPushdown));
+    }
+
+    @Deprecated
     @Override
     public Optional<JoinApplicationResult<ConnectorTableHandle>> applyJoin(
             ConnectorSession session,
@@ -462,15 +757,16 @@ public class DefaultJdbcMetadata
         int nextSyntheticColumnId = max(leftHandle.getNextSyntheticColumnId(), rightHandle.getNextSyntheticColumnId());
 
         ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newLeftColumnsBuilder = ImmutableMap.builder();
+        OptionalInt maxColumnNameLength = jdbcClient.getMaxColumnNameLength(session);
         for (JdbcColumnHandle column : jdbcClient.getColumns(session, leftHandle)) {
-            newLeftColumnsBuilder.put(column, createSyntheticColumn(column, nextSyntheticColumnId));
+            newLeftColumnsBuilder.put(column, createSyntheticJoinProjectionColumn(column, nextSyntheticColumnId, maxColumnNameLength));
             nextSyntheticColumnId++;
         }
         Map<JdbcColumnHandle, JdbcColumnHandle> newLeftColumns = newLeftColumnsBuilder.buildOrThrow();
 
         ImmutableMap.Builder<JdbcColumnHandle, JdbcColumnHandle> newRightColumnsBuilder = ImmutableMap.builder();
         for (JdbcColumnHandle column : jdbcClient.getColumns(session, rightHandle)) {
-            newRightColumnsBuilder.put(column, createSyntheticColumn(column, nextSyntheticColumnId));
+            newRightColumnsBuilder.put(column, createSyntheticJoinProjectionColumn(column, nextSyntheticColumnId, maxColumnNameLength));
             nextSyntheticColumnId++;
         }
         Map<JdbcColumnHandle, JdbcColumnHandle> newRightColumns = newRightColumnsBuilder.buildOrThrow();
@@ -485,16 +781,16 @@ public class DefaultJdbcMetadata
             jdbcJoinConditions.add(new JdbcJoinCondition(leftColumn.get(), joinCondition.getOperator(), rightColumn.get()));
         }
 
-        Optional<PreparedQuery> joinQuery = jdbcClient.implementJoin(
+        Optional<PreparedQuery> joinQuery = jdbcClient.legacyImplementJoin(
                 session,
                 joinType,
                 asPreparedQuery(leftHandle),
                 asPreparedQuery(rightHandle),
                 jdbcJoinConditions.build(),
                 newRightColumns.entrySet().stream()
-                        .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().getColumnName())),
+                        .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().getColumnName())),
                 newLeftColumns.entrySet().stream()
-                        .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().getColumnName())),
+                        .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().getColumnName())),
                 statistics);
 
         if (joinQuery.isEmpty()) {
@@ -528,20 +824,40 @@ public class DefaultJdbcMetadata
     }
 
     @VisibleForTesting
-    static JdbcColumnHandle createSyntheticColumn(JdbcColumnHandle column, int nextSyntheticColumnId)
+    static JdbcColumnHandle createSyntheticJoinProjectionColumn(JdbcColumnHandle column, int nextSyntheticColumnId, OptionalInt optionalMaxColumnNameLength)
     {
         verify(nextSyntheticColumnId >= 0, "nextSyntheticColumnId rolled over and is not monotonically increasing any more");
 
-        int sequentialNumberLength = String.valueOf(nextSyntheticColumnId).length();
-        int originalColumnNameLength = DEFAULT_COLUMN_ALIAS_LENGTH - sequentialNumberLength - "_".length();
+        final String separator = "_";
+        if (optionalMaxColumnNameLength.isEmpty()) {
+            return JdbcColumnHandle.builderFrom(column)
+                    .setColumnName(column.getColumnName() + separator + nextSyntheticColumnId)
+                    .build();
+        }
 
-        String columnNameTruncated = fixedLength(originalColumnNameLength)
+        int maxColumnNameLength = optionalMaxColumnNameLength.getAsInt();
+        int nextSyntheticColumnIdLength = String.valueOf(nextSyntheticColumnId).length();
+        verify(maxColumnNameLength >= nextSyntheticColumnIdLength, "Maximum allowed column name length is %s but next synthetic id has length %s", maxColumnNameLength, nextSyntheticColumnIdLength);
+
+        if (nextSyntheticColumnIdLength == maxColumnNameLength) {
+            return JdbcColumnHandle.builderFrom(column)
+                    .setColumnName(String.valueOf(nextSyntheticColumnId))
+                    .build();
+        }
+
+        if (nextSyntheticColumnIdLength + separator.length() == maxColumnNameLength) {
+            return JdbcColumnHandle.builderFrom(column)
+                    .setColumnName(separator + nextSyntheticColumnId)
+                    .build();
+        }
+
+        // fixedLength only accepts values > 0, so the cases where the value would be <= 0 are handled above explicitly
+        String truncatedColumnName = fixedLength(maxColumnNameLength - separator.length() - nextSyntheticColumnIdLength)
                 .split(column.getColumnName())
                 .iterator()
                 .next();
-        String columnName = columnNameTruncated + "_" + nextSyntheticColumnId;
         return JdbcColumnHandle.builderFrom(column)
-                .setColumnName(columnName)
+                .setColumnName(truncatedColumnName + separator + nextSyntheticColumnId)
                 .build();
     }
 
@@ -688,6 +1004,10 @@ public class DefaultJdbcMetadata
         }
 
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
+        if (!tableHandle.getConstraintExpressions().isEmpty()) {
+            // constraintExpressions is not currently supported by the TableScanRedirectApplicationResult
+            return Optional.empty();
+        }
         return jdbcClient.getTableScanRedirection(session, tableHandle);
     }
 
@@ -762,7 +1082,7 @@ public class DefaultJdbcMetadata
         for (SchemaTableName tableName : tables) {
             try {
                 jdbcClient.getTableHandle(session, tableName)
-                        .ifPresent(tableHandle -> columns.put(tableName, getTableMetadata(session, tableHandle).getColumns()));
+                        .ifPresent(tableHandle -> columns.put(tableName, getColumnMetadata(session, tableHandle)));
             }
             catch (TableNotFoundException | AccessDeniedException e) {
                 // table disappeared during listing operation or user is not allowed to access it
@@ -770,6 +1090,38 @@ public class DefaultJdbcMetadata
             }
         }
         return columns.buildOrThrow();
+    }
+
+    public List<ColumnMetadata> getColumnMetadata(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        return getColumnHandles(session, tableHandle).values()
+                .stream()
+                .map(JdbcColumnHandle.class::cast)
+                .map(JdbcColumnHandle::getColumnMetadata)
+                .collect(toImmutableList());
+    }
+
+    @Override
+    public Iterator<RelationColumnsMetadata> streamRelationColumns(ConnectorSession session, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter)
+    {
+        if (!isBulkListColumns(session)) {
+            return JdbcMetadata.super.streamRelationColumns(session, schemaName, relationFilter);
+        }
+        Map<SchemaTableName, RelationColumnsMetadata> resultsByName = stream(jdbcClient.getAllTableColumns(session, schemaName))
+                .collect(toImmutableMap(RelationColumnsMetadata::name, identity()));
+        return relationFilter.apply(resultsByName.keySet()).stream()
+                .map(resultsByName::get)
+                .iterator();
+    }
+
+    @Override
+    public Iterator<RelationCommentMetadata> streamRelationComments(ConnectorSession session, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter)
+    {
+        Map<SchemaTableName, RelationCommentMetadata> resultsByName = jdbcClient.getAllTableComments(session, schemaName).stream()
+                .collect(toImmutableMap(RelationCommentMetadata::name, identity()));
+        return relationFilter.apply(resultsByName.keySet()).stream()
+                .map(resultsByName::get)
+                .iterator();
     }
 
     @Override
@@ -805,17 +1157,23 @@ public class DefaultJdbcMetadata
     }
 
     @Override
-    public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode)
+    public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorTableLayout> layout, RetryMode retryMode, boolean replace)
     {
         verifyRetryMode(session, retryMode);
+        if (replace) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables");
+        }
         JdbcOutputTableHandle handle = jdbcClient.beginCreateTable(session, tableMetadata);
         setRollback(() -> jdbcClient.rollbackCreateTable(session, handle));
         return handle;
     }
 
     @Override
-    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
+    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, SaveMode saveMode)
     {
+        if (saveMode == REPLACE) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support replacing tables");
+        }
         jdbcClient.createTable(session, tableMetadata);
     }
 
@@ -895,7 +1253,12 @@ public class DefaultJdbcMetadata
     }
 
     @Override
-    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public Optional<ConnectorOutputMetadata> finishInsert(
+            ConnectorSession session,
+            ConnectorInsertTableHandle tableHandle,
+            List<ConnectorTableHandle> sourceTableHandles,
+            Collection<Slice> fragments,
+            Collection<ComputedStatistics> computedStatistics)
     {
         JdbcOutputTableHandle jdbcInsertHandle = (JdbcOutputTableHandle) tableHandle;
         jdbcClient.finishInsertTable(session, jdbcInsertHandle, getSuccessfulPageSinkIds(fragments));
@@ -1003,6 +1366,15 @@ public class DefaultJdbcMetadata
     }
 
     @Override
+    public void dropNotNullConstraint(ConnectorSession session, ConnectorTableHandle table, ColumnHandle column)
+    {
+        JdbcTableHandle tableHandle = (JdbcTableHandle) table;
+        JdbcColumnHandle columnHandle = (JdbcColumnHandle) column;
+        verify(!tableHandle.isSynthetic(), "Not a table reference: %s", tableHandle);
+        jdbcClient.dropNotNullConstraint(session, tableHandle, columnHandle);
+    }
+
+    @Override
     public void renameTable(ConnectorSession session, ConnectorTableHandle table, SchemaTableName newTableName)
     {
         JdbcTableHandle tableHandle = (JdbcTableHandle) table;
@@ -1055,5 +1427,21 @@ public class DefaultJdbcMetadata
     private static boolean isTableHandleForProcedure(ConnectorTableHandle tableHandle)
     {
         return tableHandle instanceof JdbcProcedureHandle;
+    }
+
+    public record RewrittenExpression(
+            int nextSyntheticColumnId,
+            Map<ConnectorExpression, Variable> syntheticVariables,
+            Map<String, ParameterizedExpression> columnExpressions,
+            Set<JdbcColumnHandle> columnHandles,
+            List<Assignment> assignments)
+    {
+        public RewrittenExpression
+        {
+            syntheticVariables = ImmutableMap.copyOf(requireNonNull(syntheticVariables, "syntheticVariables is null"));
+            columnExpressions = ImmutableMap.copyOf(requireNonNull(columnExpressions, "columnExpressions is null"));
+            columnHandles = ImmutableSet.copyOf(requireNonNull(columnHandles, "columnHandles is null"));
+            assignments = ImmutableList.copyOf(requireNonNull(assignments, "assignments is null"));
+        }
     }
 }

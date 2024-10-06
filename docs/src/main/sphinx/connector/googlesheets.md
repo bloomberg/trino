@@ -121,21 +121,19 @@ connector {ref}`modifies some types <type-mapping-overview>` when reading data.
 The connector maps Google Sheets types to the corresponding Trino types
 following this table:
 
-```{eval-rst}
-.. list-table:: Google Sheets type to Trino type mapping
-  :widths: 30, 20
-  :header-rows: 1
+:::{list-table} Google Sheets type to Trino type mapping
+:widths: 30, 20
+:header-rows: 1
 
-  * - Google Sheets type
-    - Trino type
-  * - ``TEXT``
-    - ``VARCHAR``
-```
+* - Google Sheets type
+  - Trino type
+* - `TEXT`
+  - `VARCHAR`
+:::
 
 No other types are supported.
 
 (google-sheets-sql-support)=
-
 ## SQL support
 
 In addition to the {ref}`globally available <sql-globally-available>` and {ref}`read operation <sql-read-operations>` statements,
@@ -143,13 +141,12 @@ this connector supports the following features:
 
 - {doc}`/sql/insert`
 
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`/functions/table` to access Google Sheets.
 
 (google-sheets-sheet-function)=
-
-### `sheet(id, range) -> table`
+#### `sheet(id, range) -> table`
 
 The `sheet` function allows you to query a Google Sheet directly without
 specifying it as a named table in the metadata sheet.

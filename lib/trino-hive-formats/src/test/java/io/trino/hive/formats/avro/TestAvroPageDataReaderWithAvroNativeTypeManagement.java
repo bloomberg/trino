@@ -38,8 +38,9 @@ import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.math.BigInteger;
@@ -57,7 +58,9 @@ import static io.trino.hive.formats.avro.NativeLogicalTypesAvroTypeManager.UUID_
 import static io.trino.hive.formats.avro.NativeLogicalTypesAvroTypeManager.padBigEndianToSize;
 import static io.trino.spi.type.Decimals.MAX_SHORT_PRECISION;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestAvroPageDataReaderWithAvroNativeTypeManagement
         extends TestAvroBase
 {
@@ -166,7 +169,7 @@ public class TestAvroPageDataReaderWithAvroNativeTypeManagement
         ALL_SUPPORTED_PAGE = new Page(blocks.build().toArray(Block[]::new));
     }
 
-    @BeforeClass
+    @BeforeAll
     public void testStatics()
     {
         // Identity
@@ -178,7 +181,7 @@ public class TestAvroPageDataReaderWithAvroNativeTypeManagement
             throws IOException, AvroTypeException
     {
         TrinoInputFile input = createWrittenFileWithData(ALL_SUPPORTED_TYPES_SCHEMA, ImmutableList.of(ALL_SUPPORTED_TYPES_GENERIC_RECORD));
-        try (AvroFileReader pageIterator = new AvroFileReader(input, ALL_SUPPORTED_TYPES_SCHEMA, new NativeLogicalTypesAvroTypeManager())) {
+        try (AvroFileReader pageIterator = new AvroFileReader(input, ALL_SUPPORTED_TYPES_SCHEMA, new NativeLogicalTypesAvroTypeBlockHandler())) {
             while (pageIterator.hasNext()) {
                 Page p = pageIterator.next();
                 assertIsAllSupportedTypePage(p);
@@ -210,7 +213,7 @@ public class TestAvroPageDataReaderWithAvroNativeTypeManagement
                 .endRecord();
 
         TrinoInputFile input = createWrittenFileWithSchema(10, writeSchema);
-        try (AvroFileReader avroFileReader = new AvroFileReader(input, schema, new NativeLogicalTypesAvroTypeManager())) {
+        try (AvroFileReader avroFileReader = new AvroFileReader(input, schema, new NativeLogicalTypesAvroTypeBlockHandler())) {
             int totalRecords = 0;
             while (avroFileReader.hasNext()) {
                 Page p = avroFileReader.next();
@@ -248,14 +251,14 @@ public class TestAvroPageDataReaderWithAvroNativeTypeManagement
                 AvroCompressionKind.NULL,
                 ImmutableMap.of(),
                 ALL_SUPPORTED_TYPES_SCHEMA.getFields().stream().map(Schema.Field::name).collect(toImmutableList()),
-                AvroTypeUtils.typeFromAvro(ALL_SUPPORTED_TYPES_SCHEMA, new NativeLogicalTypesAvroTypeManager()).getTypeParameters(), false)) {
+                new NativeLogicalTypesAvroTypeBlockHandler().typeFor(ALL_SUPPORTED_TYPES_SCHEMA).getTypeParameters(), false)) {
             fileWriter.write(ALL_SUPPORTED_PAGE);
         }
 
         try (AvroFileReader fileReader = new AvroFileReader(
                 trinoLocalFilesystem.newInputFile(testLocation),
                 ALL_SUPPORTED_TYPES_SCHEMA,
-                new NativeLogicalTypesAvroTypeManager())) {
+                new NativeLogicalTypesAvroTypeBlockHandler())) {
             assertThat(fileReader.hasNext()).isTrue();
             assertIsAllSupportedTypePage(fileReader.next());
             assertThat(fileReader.hasNext()).isFalse();

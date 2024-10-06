@@ -13,14 +13,12 @@
  */
 package io.trino.operator.aggregation;
 
-import io.trino.spi.block.Block;
 import io.trino.spi.block.MapBlockBuilder;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.GroupedAccumulatorState;
 import io.trino.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
-
-import static java.lang.Math.toIntExact;
 
 public class GroupedMapAggregationState
         extends AbstractMapAggregationState
@@ -33,7 +31,7 @@ public class GroupedMapAggregationState
             MethodHandle keyReadFlat,
             MethodHandle keyWriteFlat,
             MethodHandle hashFlat,
-            MethodHandle distinctFlatBlock,
+            MethodHandle identicalFlatBlock,
             MethodHandle keyHashBlock,
             Type valueType,
             MethodHandle valueReadFlat,
@@ -44,7 +42,7 @@ public class GroupedMapAggregationState
                 keyReadFlat,
                 keyWriteFlat,
                 hashFlat,
-                distinctFlatBlock,
+                identicalFlatBlock,
                 keyHashBlock,
                 valueType,
                 valueReadFlat,
@@ -53,19 +51,19 @@ public class GroupedMapAggregationState
     }
 
     @Override
-    public void setGroupId(long groupId)
+    public void setGroupId(int groupId)
     {
-        this.groupId = toIntExact(groupId);
+        this.groupId = groupId;
     }
 
     @Override
-    public void ensureCapacity(long size)
+    public void ensureCapacity(int size)
     {
-        setMaxGroupId(toIntExact(size));
+        setMaxGroupId(size);
     }
 
     @Override
-    public void add(Block keyBlock, int keyPosition, Block valueBlock, int valuePosition)
+    public void add(ValueBlock keyBlock, int keyPosition, ValueBlock valueBlock, int valuePosition)
     {
         add(groupId, keyBlock, keyPosition, valueBlock, valuePosition);
     }

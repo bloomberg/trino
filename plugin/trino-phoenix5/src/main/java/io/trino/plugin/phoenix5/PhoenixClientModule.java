@@ -48,22 +48,26 @@ import io.trino.plugin.jdbc.JdbcWriteSessionProperties;
 import io.trino.plugin.jdbc.LazyConnectionFactory;
 import io.trino.plugin.jdbc.MaxDomainCompactionThreshold;
 import io.trino.plugin.jdbc.QueryBuilder;
+import io.trino.plugin.jdbc.RetryingConnectionFactory;
+import io.trino.plugin.jdbc.RetryingConnectionFactoryModule;
 import io.trino.plugin.jdbc.ReusableConnectionFactoryModule;
-import io.trino.plugin.jdbc.StatsCollecting;
+import io.trino.plugin.jdbc.TimestampTimeZoneDomain;
 import io.trino.plugin.jdbc.TypeHandlingJdbcConfig;
 import io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties;
 import io.trino.plugin.jdbc.credential.EmptyCredentialProvider;
+import io.trino.plugin.jdbc.jmx.StatisticsAwareJdbcClient;
 import io.trino.plugin.jdbc.logging.RemoteQueryModifierModule;
+import io.trino.plugin.jdbc.procedure.ExecuteProcedure;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorSplitManager;
-import jakarta.annotation.PreDestroy;
+import io.trino.spi.procedure.Procedure;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.phoenix.jdbc.ConnectionInfo;
 import org.apache.phoenix.jdbc.PhoenixDriver;
-import org.apache.phoenix.jdbc.PhoenixEmbeddedDriver;
 
 import java.sql.SQLException;
 import java.util.Map;
@@ -72,15 +76,18 @@ import java.util.concurrent.ExecutorService;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.plugin.jdbc.JdbcModule.bindSessionPropertiesProvider;
 import static io.trino.plugin.jdbc.JdbcModule.bindTablePropertiesProvider;
 import static io.trino.plugin.phoenix5.ConfigurationInstantiator.newEmptyConfiguration;
 import static io.trino.plugin.phoenix5.PhoenixClient.DEFAULT_DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.phoenix5.PhoenixErrorCode.PHOENIX_CONFIG_ERROR;
 import static java.util.Objects.requireNonNull;
+import static org.apache.phoenix.util.ReadOnlyProps.EMPTY_PROPS;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class PhoenixClientModule
@@ -97,6 +104,7 @@ public class PhoenixClientModule
     protected void setup(Binder binder)
     {
         install(new RemoteQueryModifierModule());
+        install(new RetryingConnectionFactoryModule());
         binder.bind(ConnectorSplitManager.class).annotatedWith(ForJdbcDynamicFiltering.class).to(PhoenixSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorSplitManager.class).annotatedWith(ForClassLoaderSafe.class).to(JdbcDynamicFilteringSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorSplitManager.class).to(ClassLoaderSafeConnectorSplitManager.class).in(Scopes.SINGLETON);
@@ -126,14 +134,13 @@ public class PhoenixClientModule
 
         binder.bind(PhoenixClient.class).in(Scopes.SINGLETON);
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(Key.get(PhoenixClient.class)).in(Scopes.SINGLETON);
-        binder.bind(JdbcClient.class).to(Key.get(JdbcClient.class, StatsCollecting.class)).in(Scopes.SINGLETON);
+        binder.bind(JdbcClient.class).to(StatisticsAwareJdbcClient.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorMetadata.class).annotatedWith(ForClassLoaderSafe.class).to(PhoenixMetadata.class).in(Scopes.SINGLETON);
+        binder.bind(TimestampTimeZoneDomain.class).toInstance(TimestampTimeZoneDomain.ANY);
         binder.bind(ConnectorMetadata.class).to(ClassLoaderSafeConnectorMetadata.class).in(Scopes.SINGLETON);
+        newSetBinder(binder, Procedure.class).addBinding().toProvider(ExecuteProcedure.class).in(Scopes.SINGLETON);
 
-        binder.bind(ConnectionFactory.class)
-                .annotatedWith(ForLazyConnectionFactory.class)
-                .to(Key.get(ConnectionFactory.class, StatsCollecting.class))
-                .in(Scopes.SINGLETON);
+        binder.bind(ConnectionFactory.class).annotatedWith(ForLazyConnectionFactory.class).to(Key.get(RetryingConnectionFactory.class)).in(Scopes.SINGLETON);
         install(conditionalModule(
                 PhoenixConfig.class,
                 PhoenixConfig::isReuseConnection,
@@ -150,6 +157,9 @@ public class PhoenixClientModule
         install(new JdbcDiagnosticModule());
         install(new IdentifierMappingModule());
         install(new DecimalModule());
+
+        closingBinder(binder)
+                .registerExecutor(Key.get(ExecutorService.class, ForRecordCursor.class));
     }
 
     private void checkConfiguration(String connectionUrl)
@@ -170,12 +180,13 @@ public class PhoenixClientModule
             throws SQLException
     {
         return new ConfiguringConnectionFactory(
-                new DriverConnectionFactory(
-                        PhoenixDriver.INSTANCE, // Note: for some reason new PhoenixDriver won't work.
-                        config.getConnectionUrl(),
-                        getConnectionProperties(config),
-                        new EmptyCredentialProvider(),
-                        openTelemetry),
+                DriverConnectionFactory.builder(
+                                PhoenixDriver.INSTANCE, // Note: for some reason new PhoenixDriver won't work.
+                                config.getConnectionUrl(),
+                                new EmptyCredentialProvider())
+                        .setConnectionProperties(getConnectionProperties(config))
+                        .setOpenTelemetry(openTelemetry)
+                        .build(),
                 connection -> {
                     // Per JDBC spec, a Driver is expected to have new connections in auto-commit mode.
                     // This seems not to be true for PhoenixDriver, so we need to be explicit here.
@@ -192,7 +203,7 @@ public class PhoenixClientModule
             connectionProperties.setProperty(entry.getKey(), entry.getValue());
         }
 
-        PhoenixEmbeddedDriver.ConnectionInfo connectionInfo = PhoenixEmbeddedDriver.ConnectionInfo.create(config.getConnectionUrl());
+        ConnectionInfo connectionInfo = ConnectionInfo.create(config.getConnectionUrl(), EMPTY_PROPS, new Properties());
         connectionInfo.asProps().asMap().forEach(connectionProperties::setProperty);
         return connectionProperties;
     }
@@ -212,11 +223,5 @@ public class PhoenixClientModule
     public ExecutorService createRecordCursorExecutor()
     {
         return newDirectExecutorService();
-    }
-
-    @PreDestroy
-    public void shutdownRecordCursorExecutor(@ForRecordCursor ExecutorService executor)
-    {
-        executor.shutdownNow();
     }
 }

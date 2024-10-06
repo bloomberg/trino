@@ -89,10 +89,10 @@ public class SpatialPartitioningStateFactory
         @Override
         public void setExtent(Rectangle envelope)
         {
-            if (envelopes.get(groupId) == null) {
+            Rectangle previousEnvelope = envelopes.getAndSet(groupId, envelope);
+            if (previousEnvelope == null) {
                 envelopeCount++;
             }
-            envelopes.set(groupId, envelope);
         }
 
         @Override
@@ -104,12 +104,11 @@ public class SpatialPartitioningStateFactory
         @Override
         public void setSamples(List<Rectangle> samples)
         {
-            List<Rectangle> currentSamples = this.samples.get(groupId);
-            if (currentSamples != null) {
-                samplesCount -= currentSamples.size();
-            }
+            List<Rectangle> previousSamples = this.samples.getAndSet(groupId, samples);
             samplesCount += samples.size();
-            this.samples.set(groupId, samples);
+            if (previousSamples != null) {
+                samplesCount -= previousSamples.size();
+            }
         }
 
         @Override
@@ -119,13 +118,13 @@ public class SpatialPartitioningStateFactory
         }
 
         @Override
-        public void setGroupId(long groupId)
+        public void setGroupId(int groupId)
         {
             this.groupId = groupId;
         }
 
         @Override
-        public void ensureCapacity(long size)
+        public void ensureCapacity(int size)
         {
             partitionCounts.ensureCapacity(size);
             counts.ensureCapacity(size);
@@ -195,7 +194,7 @@ public class SpatialPartitioningStateFactory
         @Override
         public long getEstimatedSize()
         {
-            return INSTANCE_SIZE + (envelope != null ? envelope.estimateMemorySize() * (1 + samples.size()) : 0);
+            return INSTANCE_SIZE + (envelope != null ? (long) envelope.estimateMemorySize() * (1 + samples.size()) : 0);
         }
     }
 }

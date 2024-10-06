@@ -29,7 +29,7 @@ import io.trino.json.ir.IrNegationPredicate;
 import io.trino.json.ir.IrPathNode;
 import io.trino.json.ir.IrPredicate;
 import io.trino.json.ir.IrStartsWithPredicate;
-import io.trino.json.ir.SqlJsonLiteralConverter;
+import io.trino.json.ir.JsonLiteralConversionException;
 import io.trino.json.ir.TypedValue;
 import io.trino.operator.scalar.StringFunctions;
 import io.trino.spi.function.OperatorType;
@@ -137,7 +137,7 @@ class PathPredicateEvaluationVisitor
         try {
             leftSequence = pathVisitor.process(node.left(), context);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return null;
         }
 
@@ -145,7 +145,7 @@ class PathPredicateEvaluationVisitor
         try {
             rightSequence = pathVisitor.process(node.right(), context);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return null;
         }
 
@@ -162,11 +162,11 @@ class PathPredicateEvaluationVisitor
         boolean leftHasScalar = false;
         boolean leftHasNonScalar = false;
         for (Object object : leftSequence) {
-            if (object instanceof JsonNode) {
+            if (object instanceof JsonNode jsonNode) {
                 if (object instanceof NullNode) {
                     leftHasJsonNull = true;
                 }
-                else if (((JsonNode) object).isValueNode()) {
+                else if (jsonNode.isValueNode()) {
                     leftHasScalar = true;
                 }
                 else {
@@ -182,11 +182,11 @@ class PathPredicateEvaluationVisitor
         boolean rightHasScalar = false;
         boolean rightHasNonScalar = false;
         for (Object object : rightSequence) {
-            if (object instanceof JsonNode) {
-                if (((JsonNode) object).isNull()) {
+            if (object instanceof JsonNode jsonNode) {
+                if (jsonNode.isNull()) {
                     rightHasJsonNull = true;
                 }
-                else if (((JsonNode) object).isValueNode()) {
+                else if (jsonNode.isValueNode()) {
                     rightHasScalar = true;
                 }
                 else {
@@ -366,7 +366,7 @@ class PathPredicateEvaluationVisitor
         try {
             sequence = pathVisitor.process(node.path(), context);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return null;
         }
 
@@ -396,7 +396,7 @@ class PathPredicateEvaluationVisitor
         try {
             valueSequence = pathVisitor.process(node.value(), context);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return null;
         }
 
@@ -404,7 +404,7 @@ class PathPredicateEvaluationVisitor
         try {
             prefixSequence = pathVisitor.process(node.prefix(), context);
         }
-        catch (PathEvaluationError e) {
+        catch (PathEvaluationException e) {
             return null;
         }
         if (prefixSequence.size() != 1) {
@@ -443,8 +443,8 @@ class PathPredicateEvaluationVisitor
     {
         ImmutableList.Builder<TypedValue> scalars = ImmutableList.builder();
         for (Object object : sequence) {
-            if (object instanceof TypedValue) {
-                scalars.add((TypedValue) object);
+            if (object instanceof TypedValue typedValue) {
+                scalars.add(typedValue);
             }
             else {
                 JsonNode jsonNode = (JsonNode) object;
@@ -453,7 +453,7 @@ class PathPredicateEvaluationVisitor
                     try {
                         typedValue = getTypedValue(jsonNode);
                     }
-                    catch (SqlJsonLiteralConverter.JsonLiteralConversionError e) {
+                    catch (JsonLiteralConversionException e) {
                         return null;
                     }
                     if (typedValue.isEmpty()) {
@@ -471,8 +471,8 @@ class PathPredicateEvaluationVisitor
     {
         if (object instanceof TypedValue typedValue) {
             if (isCharacterStringType(typedValue.getType())) {
-                if (typedValue.getType() instanceof CharType) {
-                    return padSpaces((Slice) typedValue.getObjectValue(), (CharType) typedValue.getType());
+                if (typedValue.getType() instanceof CharType charType) {
+                    return padSpaces((Slice) typedValue.getObjectValue(), charType);
                 }
                 return (Slice) typedValue.getObjectValue();
             }

@@ -21,7 +21,7 @@ import java.util.Map;
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
-import static org.testng.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestOAuth2SecurityConfig
 {
@@ -30,7 +30,8 @@ public class TestOAuth2SecurityConfig
     {
         assertRecordedDefaults(recordDefaults(OAuth2SecurityConfig.class)
                 .setCredential(null)
-                .setToken(null));
+                .setToken(null)
+                .setScope(null));
     }
 
     @Test
@@ -39,12 +40,15 @@ public class TestOAuth2SecurityConfig
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("iceberg.rest-catalog.oauth2.token", "token")
                 .put("iceberg.rest-catalog.oauth2.credential", "credential")
+                .put("iceberg.rest-catalog.oauth2.scope", "scope")
                 .buildOrThrow();
 
         OAuth2SecurityConfig expected = new OAuth2SecurityConfig()
                 .setCredential("credential")
-                .setToken("token");
-        assertTrue(expected.credentialOrTokenPresent());
+                .setToken("token")
+                .setScope("scope");
+        assertThat(expected.credentialOrTokenPresent()).isTrue();
+        assertThat(expected.scopePresentOnlyWithCredential()).isFalse();
         assertFullMapping(properties, expected);
     }
 }

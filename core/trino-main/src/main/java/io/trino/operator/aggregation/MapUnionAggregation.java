@@ -16,6 +16,8 @@ package io.trino.operator.aggregation;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.MapBlockBuilder;
+import io.trino.spi.block.SqlMap;
+import io.trino.spi.block.ValueBlock;
 import io.trino.spi.function.AggregationFunction;
 import io.trino.spi.function.AggregationState;
 import io.trino.spi.function.CombineFunction;
@@ -38,10 +40,16 @@ public final class MapUnionAggregation
     public static void input(
             @TypeParameter("V") Type valueType,
             @AggregationState({"K", "V"}) MapAggregationState state,
-            @SqlType("map(K,V)") Block value)
+            @SqlType("map(K,V)") SqlMap value)
     {
-        for (int i = 0; i < value.getPositionCount(); i += 2) {
-            state.add(value, i, value, i + 1);
+        int rawOffset = value.getRawOffset();
+        Block rawKeyBlock = value.getRawKeyBlock();
+        Block rawValueBlock = value.getRawValueBlock();
+
+        ValueBlock rawKeyValues = rawKeyBlock.getUnderlyingValueBlock();
+        ValueBlock rawValueValues = rawValueBlock.getUnderlyingValueBlock();
+        for (int i = 0; i < value.getSize(); i++) {
+            state.add(rawKeyValues, rawKeyBlock.getUnderlyingValuePosition(rawOffset + i), rawValueValues, rawValueBlock.getUnderlyingValuePosition(rawOffset + i));
         }
     }
 

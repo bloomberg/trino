@@ -14,10 +14,12 @@
 package io.trino.plugin.hive.metastore;
 
 import io.airlift.json.JsonCodec;
+import io.trino.metastore.Storage;
+import io.trino.metastore.StorageFormat;
 import org.junit.jupiter.api.Test;
 
 import static io.airlift.json.JsonCodec.jsonCodec;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestStorage
 {
@@ -31,6 +33,6 @@ public class TestStorage
                 .setLocation("/test")
                 .build();
 
-        assertEquals(CODEC.fromJson(CODEC.toJson(storage)), storage);
+        assertThat(CODEC.fromJson(CODEC.toJson(storage))).isEqualTo(storage);
     }
 }

@@ -30,6 +30,7 @@ import io.trino.sql.tree.Insert;
 import io.trino.sql.tree.LikeClause;
 import io.trino.sql.tree.Limit;
 import io.trino.sql.tree.LongLiteral;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.QueryBody;
 import io.trino.sql.tree.QuerySpecification;
@@ -59,7 +60,6 @@ import static io.trino.sql.tree.LikeClause.PropertiesOption.INCLUDING;
 import static io.trino.sql.tree.SaveMode.IGNORE;
 import static io.trino.verifier.QueryType.READ;
 import static io.trino.verifier.VerifyCommand.statementToQueryType;
-import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newSingleThreadExecutor;
 
@@ -163,7 +163,7 @@ public class QueryRewriter
             connection.setCatalog(catalogOverride.orElse(query.getCatalog()));
             connection.setSchema(schemaOverride.orElse(query.getSchema()));
         }
-        catch (SQLClientInfoException ignored) {
+        catch (SQLClientInfoException _) {
             // Do nothing
         }
     }
@@ -206,10 +206,10 @@ public class QueryRewriter
                     querySpecification.getOffset(),
                     Optional.of(new Limit(new LongLiteral("0"))));
 
-            zeroRowsQuery = new io.trino.sql.tree.Query(createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
         }
         else {
-            zeroRowsQuery = new io.trino.sql.tree.Query(createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
         }
 
         ImmutableList.Builder<Column> columns = ImmutableList.builder();
@@ -257,7 +257,7 @@ public class QueryRewriter
 
     private static String dropTableSql(QualifiedName table)
     {
-        return formatSql(new DropTable(table, true));
+        return formatSql(new DropTable(new NodeLocation(1, 1), table, true));
     }
 
     private static String escapeLikeExpression(Connection connection, String value)
@@ -270,9 +270,9 @@ public class QueryRewriter
     public static class QueryRewriteException
             extends Exception
     {
-        public QueryRewriteException(String messageFormat, Object... args)
+        public QueryRewriteException(String message)
         {
-            super(format(messageFormat, args));
+            super(message);
         }
     }
 

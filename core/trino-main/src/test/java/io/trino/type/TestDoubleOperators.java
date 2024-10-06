@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.lang.invoke.MethodHandle;
 
@@ -28,8 +29,8 @@ import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.ADD;
 import static io.trino.spi.function.OperatorType.DIVIDE;
 import static io.trino.spi.function.OperatorType.EQUAL;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
 import static io.trino.spi.function.OperatorType.MODULUS;
@@ -46,10 +47,10 @@ import static java.lang.Double.isNaN;
 import static java.lang.Double.longBitsToDouble;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestDoubleOperators
 {
     private QueryAssertions assertions;
@@ -788,25 +789,25 @@ public class TestDoubleOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "cast(NULL as DOUBLE)", "CAST(NULL AS DOUBLE)"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "37.7", "37.7"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "37", "37.8"))
+        assertThat(assertions.operator(IDENTICAL, "cast(NULL as DOUBLE)", "CAST(NULL AS DOUBLE)"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "NULL", "37.7"))
+        assertThat(assertions.operator(IDENTICAL, "37.7", "37.7"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "37.7", "NULL"))
-                .isEqualTo(true);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "nan()", "nan()"))
+        assertThat(assertions.operator(IDENTICAL, "37", "37.8"))
                 .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "NULL", "37.7"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "37.7", "NULL"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "nan()", "nan()"))
+                .isEqualTo(true);
     }
 
     @Test
@@ -834,13 +835,13 @@ public class TestDoubleOperators
     {
         long[] nanRepresentations = new long[] {doubleToLongBits(Double.NaN), 0xfff8000000000000L, 0x7ff8123412341234L, 0xfff8123412341234L};
         for (long nanRepresentation : nanRepresentations) {
-            assertTrue(isNaN(longBitsToDouble(nanRepresentation)));
+            assertThat(isNaN(longBitsToDouble(nanRepresentation))).isTrue();
             // longBitsToDouble() keeps the bitwise difference in NaN
-            assertTrue(nanRepresentation == nanRepresentations[0]
-                    || doubleToRawLongBits(longBitsToDouble(nanRepresentation)) != doubleToRawLongBits(longBitsToDouble(nanRepresentations[0])));
+            assertThat(nanRepresentation == nanRepresentations[0]
+                    || doubleToRawLongBits(longBitsToDouble(nanRepresentation)) != doubleToRawLongBits(longBitsToDouble(nanRepresentations[0]))).isTrue();
 
-            assertEquals(executeHashOperator(longBitsToDouble(nanRepresentation)), executeHashOperator(longBitsToDouble(nanRepresentations[0])));
-            assertEquals(executeXxHash64Operator(longBitsToDouble(nanRepresentation)), executeXxHash64Operator(longBitsToDouble(nanRepresentations[0])));
+            assertThat(executeHashOperator(longBitsToDouble(nanRepresentation))).isEqualTo(executeHashOperator(longBitsToDouble(nanRepresentations[0])));
+            assertThat(executeXxHash64Operator(longBitsToDouble(nanRepresentation))).isEqualTo(executeXxHash64Operator(longBitsToDouble(nanRepresentations[0])));
         }
     }
 
@@ -851,9 +852,9 @@ public class TestDoubleOperators
         double[] zeroes = {0.0, -0.0};
         for (double zero : zeroes) {
             //noinspection SimplifiedTestNGAssertion
-            assertTrue(zero == 0);
-            assertEquals(executeHashOperator(zero), executeHashOperator(zeroes[0]));
-            assertEquals(executeXxHash64Operator(zero), executeXxHash64Operator(zeroes[0]));
+            assertThat(zero).isZero();
+            assertThat(executeHashOperator(zero)).isEqualTo(executeHashOperator(zeroes[0]));
+            assertThat(executeXxHash64Operator(zero)).isEqualTo(executeXxHash64Operator(zeroes[0]));
         }
     }
 
@@ -861,6 +862,7 @@ public class TestDoubleOperators
             throws Throwable
     {
         MethodHandle hashCodeOperator = assertions.getQueryRunner()
+                .getPlannerContext()
                 .getTypeManager()
                 .getTypeOperators()
                 .getHashCodeOperator(DOUBLE, simpleConvention(FAIL_ON_NULL, NEVER_NULL));
@@ -872,6 +874,7 @@ public class TestDoubleOperators
             throws Throwable
     {
         MethodHandle xxHash64Operator = assertions.getQueryRunner()
+                .getPlannerContext()
                 .getTypeManager()
                 .getTypeOperators()
                 .getXxHash64Operator(DOUBLE, simpleConvention(FAIL_ON_NULL, NEVER_NULL));

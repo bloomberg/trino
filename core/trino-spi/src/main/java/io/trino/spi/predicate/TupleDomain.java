@@ -16,6 +16,7 @@ package io.trino.spi.predicate;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.errorprone.annotations.DoNotCall;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
 
@@ -167,12 +168,9 @@ public final class TupleDomain<T>
                         })));
     }
 
-    /*
-     * This method is for JSON serialization only. Do not use.
-     * It's marked as @Deprecated to help avoid usage, and not because we plan to remove it.
-     */
-    @Deprecated
     @JsonCreator
+    @DoNotCall // For JSON deserialization only
+    @Deprecated // Discourage usages in SPI consumers
     public static <T> TupleDomain<T> fromColumnDomains(@JsonProperty("columnDomains") Optional<List<ColumnDomain<T>>> columnDomains)
     {
         if (columnDomains.isEmpty()) {
@@ -182,12 +180,9 @@ public final class TupleDomain<T>
                 .collect(toLinkedMap(ColumnDomain::getColumn, ColumnDomain::getDomain)));
     }
 
-    /*
-     * This method is for JSON serialization only. Do not use.
-     * It's marked as @Deprecated to help avoid usage, and not because we plan to remove it.
-     */
-    @Deprecated
     @JsonProperty
+    @DoNotCall // For JSON serialization only
+    @Deprecated // Discourage usages in SPI consumers
     public Optional<List<ColumnDomain<T>>> getColumnDomains()
     {
         return domains.map(map -> map.entrySet().stream()
@@ -359,7 +354,6 @@ public final class TupleDomain<T>
      * Note that this is NOT equivalent to a strict union as the final result may allow tuples
      * that do not exist in either TupleDomain.
      * Example 1:
-     * <p>
      * <ul>
      * <li>TupleDomain X: a => 1, b => 2
      * <li>TupleDomain Y: a => 2, b => 3
@@ -372,11 +366,10 @@ public final class TupleDomain<T>
      * <p>
      * Let a be of type DOUBLE
      * <ul>
-     * <li>TupleDomain X: (a < 5)
-     * <li>TupleDomain Y: (a > 0)
-     * <li>Column-wise unioned TupleDomain: (a IS NOT NULL)
+     * <li>TupleDomain X: {@code (a < 5)}
+     * <li>TupleDomain Y: {@code (a > 0)}
+     * <li>Column-wise unioned TupleDomain: {@code (a IS NOT NULL)}
      * </ul>
-     * </p>
      * In the above resulting TupleDomain, tuple (a => NaN) would be considered valid but would
      * not be valid for either TupleDomain X or TupleDomain Y.
      * However, this result is guaranteed to be a superset of the strict union.
@@ -428,7 +421,7 @@ public final class TupleDomain<T>
             if (!domain.isNone()) {
                 for (Map.Entry<T, Domain> entry : domain.getDomains().get().entrySet()) {
                     if (commonColumns.contains(entry.getKey())) {
-                        List<Domain> domainForColumn = domainsByColumn.computeIfAbsent(entry.getKey(), ignored -> new ArrayList<>());
+                        List<Domain> domainForColumn = domainsByColumn.computeIfAbsent(entry.getKey(), _ -> new ArrayList<>());
                         domainForColumn.add(entry.getValue());
                     }
                 }

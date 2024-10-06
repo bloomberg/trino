@@ -18,10 +18,8 @@ import io.trino.testing.MaterializedResult;
 import io.trino.testing.QueryRunner;
 import org.junit.jupiter.api.Test;
 
-import static io.trino.plugin.kudu.KuduQueryRunnerFactory.createKuduQueryRunner;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Fail.fail;
 
 public class TestKuduIntegrationIntegerColumns
         extends AbstractTestQueryFramework
@@ -37,7 +35,7 @@ public class TestKuduIntegrationIntegerColumns
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createKuduQueryRunner(closeAfterClass(new TestingKuduServer()), "test_integer");
+        return KuduQueryRunnerFactory.builder(closeAfterClass(new TestingKuduServer())).build();
     }
 
     @Test
@@ -68,24 +66,24 @@ public class TestKuduIntegrationIntegerColumns
         assertUpdate("INSERT INTO test_int VALUES(1, CAST(" + casted + " AS " + test.type + "))", 1);
 
         MaterializedResult result = computeActual("SELECT id, intcol FROM test_int");
-        assertEquals(result.getRowCount(), 1);
+        assertThat(result.getRowCount()).isEqualTo(1);
         Object obj = result.getMaterializedRows().get(0).getField(1);
         switch (test.bits) {
             case 64:
-                assertTrue(obj instanceof Long);
-                assertEquals(((Long) obj).longValue(), casted);
+                assertThat(obj).isInstanceOf(Long.class);
+                assertThat(((Long) obj).longValue()).isEqualTo(casted);
                 break;
             case 32:
-                assertTrue(obj instanceof Integer);
-                assertEquals(((Integer) obj).longValue(), casted);
+                assertThat(obj).isInstanceOf(Integer.class);
+                assertThat(((Integer) obj).longValue()).isEqualTo(casted);
                 break;
             case 16:
-                assertTrue(obj instanceof Short);
-                assertEquals(((Short) obj).longValue(), casted);
+                assertThat(obj).isInstanceOf(Short.class);
+                assertThat(((Short) obj).longValue()).isEqualTo(casted);
                 break;
             case 8:
-                assertTrue(obj instanceof Byte);
-                assertEquals(((Byte) obj).longValue(), casted);
+                assertThat(obj).isInstanceOf(Byte.class);
+                assertThat(((Byte) obj).longValue()).isEqualTo(casted);
                 break;
             default:
                 fail("Unexpected bits: " + test.bits);

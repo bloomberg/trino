@@ -25,7 +25,6 @@ import io.trino.operator.TaskContext;
 import io.trino.sql.planner.LocalExecutionPlanner;
 import io.trino.sql.planner.LocalExecutionPlanner.LocalExecutionPlan;
 import io.trino.sql.planner.PlanFragment;
-import io.trino.sql.planner.TypeProvider;
 
 import java.util.concurrent.Executor;
 
@@ -79,12 +78,11 @@ public class SqlTaskExecutionFactory
                 cpuTimerEnabled);
 
         LocalExecutionPlan localExecutionPlan;
-        try (SetThreadName ignored = new SetThreadName("Task-%s", taskStateMachine.getTaskId())) {
+        try (SetThreadName _ = new SetThreadName("Task-%s", taskStateMachine.getTaskId())) {
             try (var ignoredSpan = scopedSpan(tracer, "local-planner")) {
                 localExecutionPlan = planner.plan(
                         taskContext,
                         fragment.getRoot(),
-                        TypeProvider.copyOf(fragment.getSymbols()),
                         fragment.getOutputPartitioningScheme(),
                         fragment.getPartitionedSources(),
                         outputBuffer);

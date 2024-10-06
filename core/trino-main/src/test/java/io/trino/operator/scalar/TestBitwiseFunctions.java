@@ -18,12 +18,15 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import static io.trino.testing.assertions.TrinoExceptionAssert.assertTrinoExceptionThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestBitwiseFunctions
 {
     private QueryAssertions assertions;
@@ -151,7 +154,7 @@ public class TestBitwiseFunctions
                 .isEqualTo(0L);
 
         assertThat(assertions.function("bitwise_and", "3", "8"))
-                .isEqualTo(3L & 8L);
+                .isEqualTo(0L);
 
         assertThat(assertions.function("bitwise_and", "-4", "12"))
                 .isEqualTo(-4L & 12L);

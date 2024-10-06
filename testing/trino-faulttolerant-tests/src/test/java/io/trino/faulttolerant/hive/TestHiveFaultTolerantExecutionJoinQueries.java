@@ -19,7 +19,6 @@ import io.trino.plugin.exchange.filesystem.containers.MinioStorage;
 import io.trino.plugin.hive.HiveQueryRunner;
 import io.trino.testing.AbstractTestFaultTolerantExecutionJoinQueries;
 import io.trino.testing.QueryRunner;
-import io.trino.testng.services.ManageTestResources.Suppress;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -29,14 +28,12 @@ import java.util.Map;
 import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.exchange.filesystem.containers.MinioStorage.getExchangeManagerProperties;
 import static io.trino.testing.TestingNames.randomNameSuffix;
-import static io.trino.tpch.TpchTable.getTables;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
 @TestInstance(PER_CLASS)
 public class TestHiveFaultTolerantExecutionJoinQueries
         extends AbstractTestFaultTolerantExecutionJoinQueries
 {
-    @Suppress(because = "Not a TestNG test class")
     private MinioStorage minioStorage;
 
     @Override
@@ -53,8 +50,8 @@ public class TestHiveFaultTolerantExecutionJoinQueries
                     runner.installPlugin(new FileSystemExchangePlugin());
                     runner.loadExchangeManager("filesystem", getExchangeManagerProperties(minioStorage));
                 })
-                .setInitialTables(getTables())
                 .addHiveProperty("hive.dynamic-filtering.wait-timeout", "1h")
+                .setInitialTables(REQUIRED_TPCH_TABLES)
                 .build();
     }
 

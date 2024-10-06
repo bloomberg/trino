@@ -14,16 +14,16 @@
 package io.trino.connector;
 
 import com.google.errorprone.annotations.ThreadSafe;
+import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorFactory;
-
-import java.util.function.Function;
+import io.trino.spi.connector.ConnectorName;
 
 @ThreadSafe
 public interface CatalogFactory
 {
-    void addConnectorFactory(ConnectorFactory connectorFactory, Function<CatalogHandle, ClassLoader> duplicatePluginClassLoaderFactory);
+    void addConnectorFactory(ConnectorFactory connectorFactory);
 
     CatalogConnector createCatalog(CatalogProperties catalogProperties);
 

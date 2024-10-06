@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.trino.spi.connector.DynamicFilter.NOT_BLOCKED;
 import static java.util.Objects.requireNonNull;
 
@@ -57,24 +58,24 @@ public final class MemorySplitManager
     {
         MemoryTableHandle table = (MemoryTableHandle) handle;
 
-        List<MemoryDataFragment> dataFragments = metadata.getDataFragments(table.getId());
+        List<MemoryDataFragment> dataFragments = metadata.getDataFragments(table.id());
 
         long totalRows = 0;
 
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
 
         for (MemoryDataFragment dataFragment : dataFragments) {
-            long rows = dataFragment.getRows();
+            long rows = dataFragment.rows();
             totalRows += rows;
 
-            if (table.getLimit().isPresent() && totalRows > table.getLimit().getAsLong()) {
-                rows -= totalRows - table.getLimit().getAsLong();
-                splits.add(new MemorySplit(table.getId(), 0, 1, dataFragment.getHostAddress(), rows, OptionalLong.of(rows)));
+            if (table.limit().isPresent() && totalRows > table.limit().getAsLong()) {
+                rows -= totalRows - table.limit().getAsLong();
+                splits.add(new MemorySplit(table.id(), 0, 1, dataFragment.hostAddress(), rows, OptionalLong.of(rows)));
                 break;
             }
 
             for (int i = 0; i < splitsPerNode; i++) {
-                splits.add(new MemorySplit(table.getId(), i, splitsPerNode, dataFragment.getHostAddress(), rows, OptionalLong.empty()));
+                splits.add(new MemorySplit(table.id(), i, splitsPerNode, dataFragment.hostAddress(), rows, OptionalLong.empty()));
             }
         }
 
@@ -92,7 +93,7 @@ public final class MemorySplitManager
     private static CompletableFuture<?> whenCompleted(DynamicFilter dynamicFilter)
     {
         if (dynamicFilter.isAwaitable()) {
-            return dynamicFilter.isBlocked().thenCompose(ignored -> whenCompleted(dynamicFilter));
+            return dynamicFilter.isBlocked().thenCompose(_ -> whenCompleted(dynamicFilter));
         }
         return NOT_BLOCKED;
     }
@@ -112,7 +113,7 @@ public final class MemorySplitManager
         @Override
         public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
         {
-            return delay.thenCompose(ignored -> delegate.getNextBatch(maxSize));
+            return delay.thenCompose(_ -> delegate.getNextBatch(maxSize));
         }
 
         @Override
@@ -128,6 +129,15 @@ public final class MemorySplitManager
                 return delegate.isFinished();
             }
             return false;
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("delay", delay)
+                    .add("delegate", delegate)
+                    .toString();
         }
     }
 }

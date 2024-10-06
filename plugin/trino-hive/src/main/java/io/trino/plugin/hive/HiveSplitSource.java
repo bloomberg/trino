@@ -19,6 +19,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.log.Logger;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
+import io.trino.filesystem.cache.CachingHostAddressProvider;
 import io.trino.plugin.hive.InternalHiveSplit.InternalHiveBlock;
 import io.trino.plugin.hive.util.AsyncQueue;
 import io.trino.plugin.hive.util.AsyncQueue.BorrowResult;
@@ -84,6 +85,7 @@ class HiveSplitSource
     private final CounterStat highMemorySplitSourceCounter;
     private final AtomicBoolean loggedHighMemoryWarning = new AtomicBoolean();
     private final HiveSplitWeightProvider splitWeightProvider;
+    private final CachingHostAddressProvider cachingHostAddressProvider;
 
     private final boolean recordScannedFiles;
     private final ImmutableList.Builder<Object> scannedFilePaths = ImmutableList.builder();
@@ -98,6 +100,7 @@ class HiveSplitSource
             HiveSplitLoader splitLoader,
             AtomicReference<State> stateReference,
             CounterStat highMemorySplitSourceCounter,
+            CachingHostAddressProvider cachingHostAddressProvider,
             boolean recordScannedFiles)
     {
         requireNonNull(session, "session is null");
@@ -114,6 +117,7 @@ class HiveSplitSource
         this.maxInitialSplitSize = getMaxInitialSplitSize(session);
         this.remainingInitialSplits = new AtomicInteger(maxInitialSplits);
         this.splitWeightProvider = isSizeBasedSplitWeightsEnabled(session) ? new SizeBasedSplitWeightProvider(getMinimumAssignedSplitWeight(session), maxSplitSize) : HiveSplitWeightProvider.uniformStandardWeightProvider();
+        this.cachingHostAddressProvider = requireNonNull(cachingHostAddressProvider, "cachingHostAddressProvider is null");
         this.recordScannedFiles = recordScannedFiles;
     }
 
@@ -128,6 +132,7 @@ class HiveSplitSource
             HiveSplitLoader splitLoader,
             Executor executor,
             CounterStat highMemorySplitSourceCounter,
+            CachingHostAddressProvider cachingHostAddressProvider,
             boolean recordScannedFiles)
     {
         AtomicReference<State> stateReference = new AtomicReference<>(State.initial());
@@ -168,6 +173,7 @@ class HiveSplitSource
                 splitLoader,
                 stateReference,
                 highMemorySplitSourceCounter,
+                cachingHostAddressProvider,
                 recordScannedFiles);
     }
 
@@ -305,11 +311,11 @@ class HiveSplitSource
                         internalSplit.getFileModifiedTime(),
                         internalSplit.getSchema(),
                         internalSplit.getPartitionKeys(),
-                        block.getAddresses(),
+                        cachingHostAddressProvider.getHosts(internalSplit.getPath(), block.getAddresses()),
                         internalSplit.getReadBucketNumber(),
                         internalSplit.getTableBucketNumber(),
                         internalSplit.isForceLocalScheduling(),
-                        internalSplit.getTableToPartitionMapping(),
+                        internalSplit.getHiveColumnCoercions(),
                         internalSplit.getBucketConversion(),
                         internalSplit.getBucketValidation(),
                         internalSplit.getAcidInfo(),
@@ -364,18 +370,12 @@ class HiveSplitSource
     {
         State state = stateReference.get();
 
-        switch (state.getKind()) {
-            case INITIAL:
-                return false;
-            case NO_MORE_SPLITS:
-                return bufferedInternalSplitCount.get() == 0;
-            case FAILED:
-                throw propagateTrinoException(state.getThrowable());
-            case CLOSED:
-                throw new IllegalStateException("HiveSplitSource is already closed");
-            default:
-                throw new UnsupportedOperationException();
-        }
+        return switch (state.getKind()) {
+            case INITIAL -> false;
+            case NO_MORE_SPLITS -> bufferedInternalSplitCount.get() == 0;
+            case FAILED -> throw propagateTrinoException(state.getThrowable());
+            case CLOSED -> throw new IllegalStateException("HiveSplitSource is already closed");
+        };
     }
 
     @Override

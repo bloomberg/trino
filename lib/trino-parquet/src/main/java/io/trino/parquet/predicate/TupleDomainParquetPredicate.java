@@ -61,7 +61,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Function;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.trino.parquet.ParquetMetadataConverter.isMinMaxStatsSupported;
 import static io.trino.parquet.ParquetTimestampUtils.decodeInt64Timestamp;
 import static io.trino.parquet.ParquetTimestampUtils.decodeInt96Timestamp;
 import static io.trino.parquet.ParquetTypeUtils.getShortDecimalValue;
@@ -207,6 +209,10 @@ public class TupleDomainParquetPredicate
                 continue;
             }
 
+            // ParquetMetadataConverter#fromParquetColumnIndex returns null if the parquet primitive type does not support min/max stats
+            if (!isMinMaxStatsSupported(column.getPrimitiveType())) {
+                continue;
+            }
             ColumnIndex columnIndex = columnIndexStore.getColumnIndex(ColumnPath.get(column.getPath()));
             if (columnIndex == null) {
                 continue;
@@ -386,10 +392,13 @@ public class TupleDomainParquetPredicate
             }
             else {
                 for (int i = 0; i < minimums.size(); i++) {
-                    Int128 min = Int128.fromBigEndian(((Slice) minimums.get(i)).getBytes());
-                    Int128 max = Int128.fromBigEndian(((Slice) maximums.get(i)).getBytes());
+                    Object min = minimums.get(i);
+                    Object max = maximums.get(i);
 
-                    rangesBuilder.addRangeInclusive(min, max);
+                    Int128 minValue = min instanceof Slice ? Int128.fromBigEndian(((Slice) min).getBytes()) : Int128.valueOf(asLong(min));
+                    Int128 maxValue = max instanceof Slice ? Int128.fromBigEndian(((Slice) max).getBytes()) : Int128.valueOf(asLong(max));
+
+                    rangesBuilder.addRangeInclusive(minValue, maxValue);
                 }
             }
 
@@ -595,12 +604,12 @@ public class TupleDomainParquetPredicate
 
     private static ParquetCorruptionException corruptionException(String column, ParquetDataSourceId id, Statistics<?> statistics, Exception cause)
     {
-        return new ParquetCorruptionException(cause, format("Corrupted statistics for column \"%s\" in Parquet file \"%s\": [%s]", column, id, statistics));
+        return new ParquetCorruptionException(cause, id, "Corrupted statistics for column \"%s\": [%s]", column, statistics);
     }
 
     private static ParquetCorruptionException corruptionException(String column, ParquetDataSourceId id, ColumnIndex columnIndex, Exception cause)
     {
-        return new ParquetCorruptionException(cause, format("Corrupted statistics for column \"%s\" in Parquet file \"%s\". Corrupted column index: [%s]", column, id, columnIndex));
+        return new ParquetCorruptionException(cause, id, "Corrupted statistics for column \"%s\". Corrupted column index: [%s]", column, columnIndex);
     }
 
     private static boolean isCorruptedColumnIndex(
@@ -685,6 +694,11 @@ public class TupleDomainParquetPredicate
                 continue;
             }
 
+            // ParquetMetadataConverter#fromParquetColumnIndex returns null if the parquet primitive type does not support min/max stats
+            if (!isMinMaxStatsSupported(column.getPrimitiveType())) {
+                continue;
+            }
+
             FilterPredicate columnFilter = FilterApi.userDefined(
                     new TrinoIntColumn(ColumnPath.get(column.getPath())),
                     new DomainUserDefinedPredicate<>(column, domain, timeZone));
@@ -753,6 +767,15 @@ public class TupleDomainParquetPredicate
             // To be safe, we just keep the record by returning false.
             return false;
         }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("columnDescriptor", columnDescriptor)
+                    .add("columnDomain", columnDomain)
+                    .toString();
+        }
     }
 
     private static class ColumnIndexValueConverter
@@ -787,11 +810,11 @@ public class TupleDomainParquetPredicate
         {
             return switch (primitiveType.getPrimitiveTypeName()) {
                 case BOOLEAN -> throw new ParquetDecodingException("Dictionary encoding does not support: " + primitiveType.getPrimitiveTypeName());
-                case INT32 -> (i) -> dictionary.decodeToInt(i);
-                case INT64 -> (i) -> dictionary.decodeToLong(i);
-                case FLOAT -> (i) -> dictionary.decodeToFloat(i);
-                case DOUBLE -> (i) -> dictionary.decodeToDouble(i);
-                case FIXED_LEN_BYTE_ARRAY, BINARY, INT96 -> (i) -> dictionary.decodeToSlice(i);
+                case INT32 -> dictionary::decodeToInt;
+                case INT64 -> dictionary::decodeToLong;
+                case FLOAT -> dictionary::decodeToFloat;
+                case DOUBLE -> dictionary::decodeToDouble;
+                case FIXED_LEN_BYTE_ARRAY, BINARY, INT96 -> dictionary::decodeToSlice;
             };
         }
     }

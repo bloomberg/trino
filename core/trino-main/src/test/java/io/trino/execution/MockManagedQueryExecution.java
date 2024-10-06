@@ -130,8 +130,11 @@ public class MockManagedQueryExecution
                         7,
                         8,
                         9,
+                        5,
                         DataSize.ofBytes(14),
                         15,
+                        DataSize.ofBytes(13),
+                        DataSize.ofBytes(13),
                         DataSize.ofBytes(13),
                         16.0,
                         17.0,
@@ -178,6 +181,7 @@ public class MockManagedQueryExecution
 
                         new Duration(100, NANOSECONDS),
                         new Duration(150, NANOSECONDS),
+                        new Duration(160, NANOSECONDS),
                         new Duration(200, NANOSECONDS),
 
                         9,

@@ -47,6 +47,7 @@ import static io.trino.plugin.deltalake.DeltaLakeCdfPageSink.CHANGE_TYPE_COLUMN_
 import static io.trino.plugin.deltalake.DeltaLakeColumnType.REGULAR;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetMaxReadBlockRowCount;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.getParquetMaxReadBlockSize;
+import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.isParquetIgnoreStatistics;
 import static io.trino.plugin.deltalake.DeltaLakeSessionProperties.isParquetUseColumnIndex;
 import static io.trino.plugin.deltalake.functions.tablechanges.TableChangesFileType.CDF_FILE;
 import static io.trino.spi.function.table.TableFunctionProcessorState.Finished.FINISHED;
@@ -175,7 +176,8 @@ public class TableChangesFunctionProcessor
         parquetReaderOptions = parquetReaderOptions
                 .withMaxReadBlockSize(getParquetMaxReadBlockSize(session))
                 .withMaxReadBlockRowCount(getParquetMaxReadBlockRowCount(session))
-                .withUseColumnIndex(isParquetUseColumnIndex(session));
+                .withUseColumnIndex(isParquetUseColumnIndex(session))
+                .withIgnoreStatistics(isParquetIgnoreStatistics(session));
 
         List<DeltaLakeColumnHandle> splitColumns = switch (split.fileType()) {
             case CDF_FILE -> ImmutableList.<DeltaLakeColumnHandle>builder().addAll(handle.columns())
@@ -195,8 +197,8 @@ public class TableChangesFunctionProcessor
                 inputFile,
                 0,
                 split.fileSize(),
-                splitColumns.stream().filter(column -> column.getColumnType() == REGULAR).map(DeltaLakeColumnHandle::toHiveColumnHandle).collect(toImmutableList()),
-                TupleDomain.all(), // TODO add predicate pushdown https://github.com/trinodb/trino/issues/16990
+                splitColumns.stream().filter(column -> column.columnType() == REGULAR).map(DeltaLakeColumnHandle::toHiveColumnHandle).collect(toImmutableList()),
+                ImmutableList.of(TupleDomain.all()), // TODO add predicate pushdown https://github.com/trinodb/trino/issues/16990
                 true,
                 parquetDateTimeZone,
                 fileFormatDataSourceStats,

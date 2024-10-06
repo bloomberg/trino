@@ -31,11 +31,11 @@ import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
 import io.trino.sql.query.QueryAssertions;
-import io.trino.testing.LocalQueryRunner;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -51,8 +51,8 @@ import static io.trino.spi.function.InvocationConvention.InvocationReturnConvent
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
@@ -77,9 +77,10 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.emptyList;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestRowOperators
 {
     private QueryAssertions assertions;
@@ -113,9 +114,9 @@ public class TestRowOperators
     public void testRowTypeLookup()
     {
         TypeSignature signature = RowType.from(ImmutableList.of(field("b", BIGINT))).getTypeSignature();
-        Type type = ((LocalQueryRunner) assertions.getQueryRunner()).getPlannerContext().getTypeManager().getType(signature);
-        assertEquals(type.getTypeSignature().getParameters().size(), 1);
-        assertEquals(type.getTypeSignature().getParameters().get(0).getNamedTypeSignature().getName().get(), "b");
+        Type type = assertions.getQueryRunner().getPlannerContext().getTypeManager().getType(signature);
+        assertThat(type.getTypeSignature().getParameters().size()).isEqualTo(1);
+        assertThat(type.getTypeSignature().getParameters().get(0).getNamedTypeSignature().getName().get()).isEqualTo("b");
     }
 
     @Test
@@ -612,43 +613,43 @@ public class TestRowOperators
     }
 
     @Test
-    public void testIsDistinctFrom()
+    public void testIdentical()
     {
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "CAST(NULL AS ROW(UNKNOWN))", "CAST(NULL AS ROW(UNKNOWN))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(NULL)", "row(NULL)"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 'cat')", "row(1, 'cat')"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, ARRAY [1])", "row(1, ARRAY [1])"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, ARRAY [1, 2])", "row(1, ARRAY [1, NULL])"))
+        assertThat(assertions.operator(IDENTICAL, "CAST(NULL AS ROW(UNKNOWN))", "CAST(NULL AS ROW(UNKNOWN))"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(2))"))
+        assertThat(assertions.operator(IDENTICAL, "row(NULL)", "row(NULL)"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', 2)"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, 'cat')", "row(1, 'cat')"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))"))
-                .isEqualTo(false);
-
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, 'cat')", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, ARRAY [1])", "row(1, ARRAY [1])"))
                 .isEqualTo(true);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, ARRAY [1, 2])", "row(1, ARRAY [1, NULL])"))
                 .isEqualTo(false);
 
-        assertThat(assertions.operator(IS_DISTINCT_FROM, "ARRAY[ROW(1)]", "ARRAY[ROW(1)]"))
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', from_unixtime(1))", "row(1, 2.0E0, TRUE, 'cat', from_unixtime(2))"))
                 .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', 2)"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))", "row(1, 2.0E0, TRUE, 'cat', CAST(NULL AS INTEGER))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, 'cat')", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+                .isEqualTo(false);
+
+        assertThat(assertions.operator(IDENTICAL, "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))", "row(1, 2.0E0, TRUE, CAST(NULL AS VARCHAR(3)))"))
+                .isEqualTo(true);
+
+        assertThat(assertions.operator(IDENTICAL, "ARRAY[ROW(1)]", "ARRAY[ROW(1)]"))
+                .isEqualTo(true);
     }
 
     @Test
@@ -933,7 +934,7 @@ public class TestRowOperators
             if (fieldValue != null) {
                 Type fieldType = types.get(i);
                 try {
-                    fieldHashCode = (long) ((LocalQueryRunner) assertions.getQueryRunner()).getTypeOperators().getHashCodeOperator(fieldType, simpleConvention(FAIL_ON_NULL, NEVER_NULL))
+                    fieldHashCode = (long) assertions.getQueryRunner().getPlannerContext().getTypeOperators().getHashCodeOperator(fieldType, simpleConvention(FAIL_ON_NULL, NEVER_NULL))
                             .invoke(fieldValue);
                 }
                 catch (Throwable throwable) {

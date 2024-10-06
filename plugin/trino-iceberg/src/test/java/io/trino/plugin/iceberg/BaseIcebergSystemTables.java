@@ -13,26 +13,35 @@
  */
 package io.trino.plugin.iceberg;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.trino.spi.type.ArrayType;
 import io.trino.testing.AbstractTestQueryFramework;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.MaterializedResult;
 import io.trino.testing.MaterializedRow;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import io.trino.testing.QueryRunner;
+import org.apache.iceberg.FileContent;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.trino.plugin.iceberg.IcebergFileFormat.PARQUET;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.testing.MaterializedResult.DEFAULT_PRECISION;
+import static io.trino.testing.MaterializedResult.resultBuilder;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertEquals;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public abstract class BaseIcebergSystemTables
         extends AbstractTestQueryFramework
 {
@@ -44,7 +53,7 @@ public abstract class BaseIcebergSystemTables
     }
 
     @Override
-    protected DistributedQueryRunner createQueryRunner()
+    protected QueryRunner createQueryRunner()
             throws Exception
     {
         return IcebergQueryRunner.builder()
@@ -52,7 +61,7 @@ public abstract class BaseIcebergSystemTables
                 .build();
     }
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         assertUpdate("CREATE SCHEMA test_schema");
@@ -90,7 +99,7 @@ public abstract class BaseIcebergSystemTables
         assertQuery("SELECT count(*) FROM test_schema.test_table_with_dml", "VALUES 7");
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         assertUpdate("DROP TABLE IF EXISTS test_schema.test_table");
@@ -98,6 +107,7 @@ public abstract class BaseIcebergSystemTables
         assertUpdate("DROP TABLE IF EXISTS test_schema.test_table_drop_column");
         assertUpdate("DROP TABLE IF EXISTS test_schema.test_table_nan");
         assertUpdate("DROP TABLE IF EXISTS test_schema.test_table_with_dml");
+        assertUpdate("DROP TABLE IF EXISTS test_schema.test_metadata_log_entries");
         assertUpdate("DROP SCHEMA IF EXISTS test_schema");
     }
 
@@ -113,20 +123,20 @@ public abstract class BaseIcebergSystemTables
                         "('data', 'row(_bigint row(min bigint, max bigint, null_count bigint, nan_count bigint))', '', '')");
 
         MaterializedResult result = computeActual("SELECT * from test_schema.\"test_table$partitions\"");
-        assertEquals(result.getRowCount(), 3);
+        assertThat(result.getRowCount()).isEqualTo(3);
 
         Map<LocalDate, MaterializedRow> rowsByPartition = result.getMaterializedRows().stream()
                 .collect(toImmutableMap(row -> ((LocalDate) ((MaterializedRow) row.getField(0)).getField(0)), Function.identity()));
 
         // Test if row counts are computed correctly
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-08")).getField(1), 1L);
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-09")).getField(1), 3L);
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-10")).getField(1), 2L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-08")).getField(1)).isEqualTo(1L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-09")).getField(1)).isEqualTo(3L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-10")).getField(1)).isEqualTo(2L);
 
         // Test if min/max values, null value count and nan value count are computed correctly.
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-08")).getField(4), new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 0L, 0L, 0L, null)));
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-09")).getField(4), new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 1L, 3L, 0L, null)));
-        assertEquals(rowsByPartition.get(LocalDate.parse("2019-09-10")).getField(4), new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 4L, 5L, 0L, null)));
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-08")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 0L, 0L, 0L, null)));
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-09")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 1L, 3L, 0L, null)));
+        assertThat(rowsByPartition.get(LocalDate.parse("2019-09-10")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION, new MaterializedRow(DEFAULT_PRECISION, 4L, 5L, 0L, null)));
     }
 
     @Test
@@ -135,52 +145,44 @@ public abstract class BaseIcebergSystemTables
         assertQuery("SELECT count(*) FROM test_schema.test_table_nan", "VALUES 6");
 
         MaterializedResult result = computeActual("SELECT * from test_schema.\"test_table_nan$partitions\"");
-        assertEquals(result.getRowCount(), 4);
+        assertThat(result.getRowCount()).isEqualTo(4);
 
         Map<LocalDate, MaterializedRow> rowsByPartition = result.getMaterializedRows().stream()
                 .collect(toImmutableMap(row -> ((LocalDate) ((MaterializedRow) row.getField(0)).getField(0)), Function.identity()));
 
         // Test if row counts are computed correctly
-        assertEquals(rowsByPartition.get(LocalDate.parse("2022-01-01")).getField(1), 1L);
-        assertEquals(rowsByPartition.get(LocalDate.parse("2022-01-02")).getField(1), 1L);
-        assertEquals(rowsByPartition.get(LocalDate.parse("2022-01-03")).getField(1), 1L);
-        assertEquals(rowsByPartition.get(LocalDate.parse("2022-01-04")).getField(1), 3L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-01")).getField(1)).isEqualTo(1L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-02")).getField(1)).isEqualTo(1L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-03")).getField(1)).isEqualTo(1L);
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-04")).getField(1)).isEqualTo(3L);
 
         // Test if min/max values, null value count and nan value count are computed correctly.
-        assertEquals(
-                rowsByPartition.get(LocalDate.parse("2022-01-01")).getField(4),
-                new MaterializedRow(DEFAULT_PRECISION,
-                        new MaterializedRow(DEFAULT_PRECISION, 1L, 1L, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, 1.1d, 1.1d, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, 1.2f, 1.2f, 0L, null)));
-        assertEquals(
-                rowsByPartition.get(LocalDate.parse("2022-01-02")).getField(4),
-                new MaterializedRow(DEFAULT_PRECISION,
-                        new MaterializedRow(DEFAULT_PRECISION, 2L, 2L, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(1L)),
-                        new MaterializedRow(DEFAULT_PRECISION, 2.2f, 2.2f, 0L, null)));
-        assertEquals(
-                rowsByPartition.get(LocalDate.parse("2022-01-03")).getField(4),
-                new MaterializedRow(DEFAULT_PRECISION,
-                        new MaterializedRow(DEFAULT_PRECISION, 3L, 3L, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, 3.3, 3.3d, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(1L))));
-        assertEquals(
-                rowsByPartition.get(LocalDate.parse("2022-01-04")).getField(4),
-                new MaterializedRow(DEFAULT_PRECISION,
-                        new MaterializedRow(DEFAULT_PRECISION, 4L, 6L, 0L, null),
-                        new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(2L)),
-                        new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(2L))));
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-01")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
+                new MaterializedRow(DEFAULT_PRECISION, 1L, 1L, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, 1.1d, 1.1d, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, 1.2f, 1.2f, 0L, null)));
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-02")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
+                new MaterializedRow(DEFAULT_PRECISION, 2L, 2L, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(1L)),
+                new MaterializedRow(DEFAULT_PRECISION, 2.2f, 2.2f, 0L, null)));
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-03")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
+                new MaterializedRow(DEFAULT_PRECISION, 3L, 3L, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, 3.3, 3.3d, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(1L))));
+        assertThat(rowsByPartition.get(LocalDate.parse("2022-01-04")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
+                new MaterializedRow(DEFAULT_PRECISION, 4L, 6L, 0L, null),
+                new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(2L)),
+                new MaterializedRow(DEFAULT_PRECISION, null, null, 0L, nanCount(2L))));
     }
 
     @Test
     public void testPartitionTableOnDropColumn()
     {
         MaterializedResult resultAfterDrop = computeActual("SELECT * from test_schema.\"test_table_drop_column$partitions\"");
-        assertEquals(resultAfterDrop.getRowCount(), 3);
+        assertThat(resultAfterDrop.getRowCount()).isEqualTo(3);
         Map<LocalDate, MaterializedRow> rowsByPartitionAfterDrop = resultAfterDrop.getMaterializedRows().stream()
                 .collect(toImmutableMap(row -> ((LocalDate) ((MaterializedRow) row.getField(0)).getField(0)), Function.identity()));
-        assertEquals(rowsByPartitionAfterDrop.get(LocalDate.parse("2019-09-08")).getField(4), new MaterializedRow(DEFAULT_PRECISION,
+        assertThat(rowsByPartitionAfterDrop.get(LocalDate.parse("2019-09-08")).getField(4)).isEqualTo(new MaterializedRow(DEFAULT_PRECISION,
                 new MaterializedRow(DEFAULT_PRECISION, 0L, 0L, 0L, null)));
     }
 
@@ -201,6 +203,77 @@ public abstract class BaseIcebergSystemTables
 
         // Test the number of history entries
         assertQuery("SELECT count(*) FROM test_schema.\"test_table$history\"", "VALUES 3");
+    }
+
+    @Test
+    public void testMetadataLogEntriesTable()
+    {
+        assertQuery("SHOW COLUMNS FROM test_schema.\"test_table$metadata_log_entries\"",
+                "VALUES ('timestamp', 'timestamp(3) with time zone', '', '')," +
+                        "('file', 'varchar', '', '')," +
+                        "('latest_snapshot_id', 'bigint', '', '')," +
+                        "('latest_schema_id', 'integer', '', '')," +
+                        "('latest_sequence_number', 'bigint', '', '')");
+
+        List<Integer> latestSchemaIds = new ArrayList<>();
+        List<Long> latestSequenceNumbers = new ArrayList<>();
+
+        assertUpdate("CREATE TABLE test_schema.test_metadata_log_entries (c1 BIGINT)");
+        latestSchemaIds.add(0);
+        latestSequenceNumbers.add(1L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("INSERT INTO test_schema.test_metadata_log_entries VALUES (1)", 1);
+        // INSERT create two commits (https://github.com/trinodb/trino/issues/15439) and share a same snapshotId
+        latestSchemaIds.add(0);
+        latestSchemaIds.add(0);
+        latestSequenceNumbers.add(2L);
+        latestSequenceNumbers.add(2L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("ALTER TABLE test_schema.test_metadata_log_entries ADD COLUMN c2 VARCHAR");
+        latestSchemaIds.add(0);
+        latestSequenceNumbers.add(2L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("DELETE FROM test_schema.test_metadata_log_entries WHERE c1 = 1", 1);
+        latestSchemaIds.add(1);
+        latestSequenceNumbers.add(3L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        // OPTIMIZE create two commits: update snapshot and rewrite statistics
+        assertUpdate("ALTER TABLE test_schema.test_metadata_log_entries execute optimize");
+        latestSchemaIds.add(1);
+        latestSchemaIds.add(1);
+        latestSequenceNumbers.add(4L);
+        latestSequenceNumbers.add(4L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("CREATE OR REPLACE TABLE test_schema.test_metadata_log_entries (c3 INTEGER)");
+        latestSchemaIds.add(2);
+        latestSequenceNumbers.add(5L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("INSERT INTO test_schema.test_metadata_log_entries VALUES (1)", 1);
+        latestSchemaIds.add(2);
+        latestSequenceNumbers.add(6L);
+        latestSchemaIds.add(2);
+        latestSequenceNumbers.add(6L);
+        assertMetadataLogEntries(latestSchemaIds, latestSequenceNumbers);
+
+        assertUpdate("DROP TABLE IF EXISTS test_schema.test_metadata_log_entries");
+    }
+
+    private void assertMetadataLogEntries(List<Integer> latestSchemaIds, List<Long> latestSequenceNumbers)
+    {
+        MaterializedResult result = computeActual("SELECT latest_schema_id, latest_sequence_number FROM test_schema.\"test_metadata_log_entries$metadata_log_entries\" ORDER BY timestamp");
+        List<MaterializedRow> materializedRows = result.getMaterializedRows();
+
+        assertThat(result.getRowCount()).isEqualTo(latestSchemaIds.size());
+        for (int i = 0; i < result.getRowCount(); i++) {
+            assertThat(materializedRows.get(i).getField(0)).isEqualTo(latestSchemaIds.get(i));
+            assertThat(materializedRows.get(i).getField(1)).isEqualTo(latestSequenceNumbers.get(i));
+        }
     }
 
     @Test
@@ -280,6 +353,32 @@ public abstract class BaseIcebergSystemTables
                         "('split_offsets', 'array(bigint)', '', '')," +
                         "('equality_ids', 'array(integer)', '', '')");
         assertQuerySucceeds("SELECT * FROM test_schema.\"test_table$files\"");
+
+        long offset = format == PARQUET ? 4L : 3L;
+        assertThat(computeActual("SELECT split_offsets FROM test_schema.\"test_table$files\""))
+                .isEqualTo(resultBuilder(getSession(), ImmutableList.of(new ArrayType(BIGINT)))
+                        .row(ImmutableList.of(offset))
+                        .row(ImmutableList.of(offset))
+                        .row(ImmutableList.of(offset))
+                        .row(ImmutableList.of(offset))
+                        .build());
+    }
+
+    @Test
+    public void testFilesTableWithDelete()
+    {
+        assertUpdate("CREATE TABLE test_schema.test_table_with_delete (_bigint BIGINT, _date DATE) WITH (partitioning = ARRAY['_date'])");
+        assertUpdate("INSERT INTO test_schema.test_table_with_delete VALUES (0, CAST('2019-09-08' AS DATE)), (1, CAST('2019-09-09' AS DATE)), (2, CAST('2019-09-09' AS DATE))", 3);
+        assertUpdate("INSERT INTO test_schema.test_table_with_delete VALUES (3, CAST('2019-09-09' AS DATE)), (4, CAST('2019-09-10' AS DATE)), (5, CAST('2019-09-10' AS DATE))", 3);
+        assertUpdate("DELETE FROM test_schema.test_table_with_delete WHERE _bigint = 5", 1);
+        assertUpdate("DELETE FROM test_schema.test_table_with_delete WHERE _bigint = 2", 1);
+
+        assertQuery("SELECT count(*) FROM test_schema.test_table_with_delete", "VALUES 4");
+        assertQuery("SELECT count(*) FROM test_schema.\"test_table_with_delete$files\" WHERE content = " + FileContent.DATA.id(), "VALUES 4");
+        assertQuery("SELECT count(*) FROM test_schema.\"test_table_with_delete$files\" WHERE content = " + FileContent.POSITION_DELETES.id(), "VALUES 2");
+        assertQuery("SELECT count(*) FROM test_schema.\"test_table_with_delete$files\" WHERE content = " + FileContent.EQUALITY_DELETES.id(), "VALUES 0");
+
+        assertUpdate("DROP TABLE IF EXISTS test_schema.test_table_with_delete");
     }
 
     private Long nanCount(long value)

@@ -31,27 +31,23 @@ public class LogicalExpression
 
         public Operator flip()
         {
-            switch (this) {
-                case AND:
-                    return OR;
-                case OR:
-                    return AND;
-            }
-            throw new IllegalArgumentException("Unsupported logical expression type: " + this);
+            return switch (this) {
+                case AND -> OR;
+                case OR -> AND;
+            };
         }
     }
 
     private final Operator operator;
     private final List<Expression> terms;
 
-    public LogicalExpression(Operator operator, List<Expression> terms)
-    {
-        this(Optional.empty(), operator, terms);
-    }
-
     public LogicalExpression(NodeLocation location, Operator operator, List<Expression> terms)
     {
-        this(Optional.of(location), operator, terms);
+        super(location);
+        checkArgument(terms.size() >= 2, "Expected at least 2 terms");
+
+        this.operator = requireNonNull(operator, "operator is null");
+        this.terms = ImmutableList.copyOf(terms);
     }
 
     private LogicalExpression(Optional<NodeLocation> location, Operator operator, List<Expression> terms)

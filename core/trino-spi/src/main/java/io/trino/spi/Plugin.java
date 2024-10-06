@@ -14,9 +14,11 @@
 package io.trino.spi;
 
 import io.trino.spi.block.BlockEncoding;
+import io.trino.spi.catalog.CatalogStoreFactory;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.spi.eventlistener.EventListenerFactory;
 import io.trino.spi.exchange.ExchangeManagerFactory;
+import io.trino.spi.protocol.SpoolingManagerFactory;
 import io.trino.spi.resourcegroups.ResourceGroupConfigurationManagerFactory;
 import io.trino.spi.security.CertificateAuthenticatorFactory;
 import io.trino.spi.security.GroupProviderFactory;
@@ -34,6 +36,11 @@ import static java.util.Collections.emptySet;
 
 public interface Plugin
 {
+    default Iterable<CatalogStoreFactory> getCatalogStoreFactories()
+    {
+        return emptyList();
+    }
+
     default Iterable<ConnectorFactory> getConnectorFactories()
     {
         return emptyList();
@@ -100,6 +107,11 @@ public interface Plugin
     }
 
     default Iterable<ExchangeManagerFactory> getExchangeManagerFactories()
+    {
+        return emptyList();
+    }
+
+    default Iterable<SpoolingManagerFactory> getSpoolingManagerFactories()
     {
         return emptyList();
     }

@@ -26,6 +26,8 @@ import io.trino.spi.connector.DynamicFilter;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -38,14 +40,20 @@ public class BigQueryPageSourceProvider
 
     private final BigQueryClientFactory bigQueryClientFactory;
     private final BigQueryReadClientFactory bigQueryReadClientFactory;
+    private final BigQueryTypeManager typeManager;
     private final int maxReadRowsRetries;
     private final boolean arrowSerializationEnabled;
 
     @Inject
-    public BigQueryPageSourceProvider(BigQueryClientFactory bigQueryClientFactory, BigQueryReadClientFactory bigQueryReadClientFactory, BigQueryConfig config)
+    public BigQueryPageSourceProvider(
+            BigQueryClientFactory bigQueryClientFactory,
+            BigQueryReadClientFactory bigQueryReadClientFactory,
+            BigQueryTypeManager typeManager,
+            BigQueryConfig config)
     {
         this.bigQueryClientFactory = requireNonNull(bigQueryClientFactory, "bigQueryClientFactory is null");
         this.bigQueryReadClientFactory = requireNonNull(bigQueryReadClientFactory, "bigQueryReadClientFactory is null");
+        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.maxReadRowsRetries = config.getMaxReadRowsRetries();
         this.arrowSerializationEnabled = config.isArrowSerializationEnabled();
     }
@@ -62,10 +70,12 @@ public class BigQueryPageSourceProvider
         log.debug("createPageSource(transaction=%s, session=%s, split=%s, table=%s, columns=%s)", transaction, session, split, table, columns);
         BigQuerySplit bigQuerySplit = (BigQuerySplit) split;
 
-        // We expect columns list requested here to match list passed to ConnectorMetadata.applyProjection.
-        checkArgument(bigQuerySplit.getColumns().isEmpty() || bigQuerySplit.getColumns().equals(columns),
-                "Requested columns %s do not match list in split %s", columns, bigQuerySplit.getColumns());
-
+        Set<String> projectedColumnNames = bigQuerySplit.getColumns().stream().map(BigQueryColumnHandle::name).collect(Collectors.toSet());
+        // because we apply logic (download only parent columns - BigQueryMetadata.projectParentColumns)
+        // columns and split columns could differ
+        columns.stream()
+                .map(BigQueryColumnHandle.class::cast)
+                .forEach(column -> checkArgument(projectedColumnNames.contains(column.name()), "projected columns should contain all reader columns"));
         if (bigQuerySplit.representsEmptyProjection()) {
             return new BigQueryEmptyProjectionPageSource(bigQuerySplit.getEmptyRowsToGenerate());
         }
@@ -94,6 +104,7 @@ public class BigQueryPageSourceProvider
     {
         if (arrowSerializationEnabled) {
             return new BigQueryStorageArrowPageSource(
+                    typeManager,
                     bigQueryReadClientFactory.create(session),
                     maxReadRowsRetries,
                     split,
@@ -101,6 +112,7 @@ public class BigQueryPageSourceProvider
         }
         return new BigQueryStorageAvroPageSource(
                 bigQueryReadClientFactory.create(session),
+                typeManager,
                 maxReadRowsRetries,
                 split,
                 columnHandles);
@@ -110,10 +122,10 @@ public class BigQueryPageSourceProvider
     {
         return new BigQueryQueryPageSource(
                 session,
+                typeManager,
                 bigQueryClientFactory.create(session),
                 table,
-                columnHandles.stream().map(BigQueryColumnHandle::getName).collect(toImmutableList()),
-                columnHandles.stream().map(BigQueryColumnHandle::getTrinoType).collect(toImmutableList()),
+                columnHandles,
                 filter);
     }
 }

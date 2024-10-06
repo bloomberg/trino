@@ -17,25 +17,26 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.HiveBucketProperty;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.PartitionWithStatistics;
+import io.trino.metastore.Storage;
+import io.trino.metastore.StorageFormat;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.HiveStorageFormat;
-import io.trino.plugin.hive.PartitionStatistics;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.PartitionWithStatistics;
-import io.trino.plugin.hive.metastore.Storage;
-import io.trino.plugin.hive.metastore.StorageFormat;
-import io.trino.plugin.hive.metastore.Table;
 
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static io.trino.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
 import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
-import static io.trino.plugin.hive.metastore.StorageFormat.VIEW_STORAGE_FORMAT;
-import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.updateStatisticsParameters;
+import static io.trino.plugin.hive.metastore.file.ColumnStatistics.fromHiveColumnStatistics;
 import static java.util.Objects.requireNonNull;
 
 public class PartitionMetadata
@@ -49,7 +50,7 @@ public class PartitionMetadata
 
     private final Optional<String> externalLocation;
 
-    private final Map<String, HiveColumnStatistics> columnStatistics;
+    private final Map<String, ColumnStatistics> columnStatistics;
 
     @JsonCreator
     public PartitionMetadata(
@@ -59,7 +60,7 @@ public class PartitionMetadata
             @JsonProperty("bucketProperty") Optional<HiveBucketProperty> bucketProperty,
             @JsonProperty("serdeParameters") Map<String, String> serdeParameters,
             @JsonProperty("externalLocation") Optional<String> externalLocation,
-            @JsonProperty("columnStatistics") Map<String, HiveColumnStatistics> columnStatistics)
+            @JsonProperty("columnStatistics") Map<String, ColumnStatistics> columnStatistics)
     {
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         this.parameters = ImmutableMap.copyOf(requireNonNull(parameters, "parameters is null"));
@@ -78,11 +79,11 @@ public class PartitionMetadata
         PartitionStatistics statistics = partitionWithStatistics.getStatistics();
 
         this.columns = partition.getColumns();
-        this.parameters = updateStatisticsParameters(partition.getParameters(), statistics.getBasicStatistics());
+        this.parameters = updateStatisticsParameters(partition.getParameters(), statistics.basicStatistics());
 
         StorageFormat tableFormat = partition.getStorage().getStorageFormat();
         storageFormat = Arrays.stream(HiveStorageFormat.values())
-                .filter(format -> tableFormat.equals(StorageFormat.fromHiveStorageFormat(format)))
+                .filter(format -> tableFormat.equals(format.toStorageFormat()))
                 .findFirst();
 
         if (table.getTableType().equals(EXTERNAL_TABLE.name())) {
@@ -94,7 +95,8 @@ public class PartitionMetadata
 
         bucketProperty = partition.getStorage().getBucketProperty();
         serdeParameters = partition.getStorage().getSerdeParameters();
-        columnStatistics = ImmutableMap.copyOf(statistics.getColumnStatistics());
+        columnStatistics = statistics.columnStatistics().entrySet().stream()
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> fromHiveColumnStatistics(entry.getValue())));
     }
 
     @JsonProperty
@@ -134,7 +136,7 @@ public class PartitionMetadata
     }
 
     @JsonProperty
-    public Map<String, HiveColumnStatistics> getColumnStatistics()
+    public Map<String, ColumnStatistics> getColumnStatistics()
     {
         return columnStatistics;
     }
@@ -144,7 +146,7 @@ public class PartitionMetadata
         return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, serdeParameters, externalLocation, columnStatistics);
     }
 
-    public PartitionMetadata withColumnStatistics(Map<String, HiveColumnStatistics> columnStatistics)
+    public PartitionMetadata withColumnStatistics(Map<String, ColumnStatistics> columnStatistics)
     {
         return new PartitionMetadata(columns, parameters, storageFormat, bucketProperty, serdeParameters, externalLocation, columnStatistics);
     }
@@ -157,7 +159,7 @@ public class PartitionMetadata
                 values,
                 Storage.builder()
                         .setLocation(externalLocation.orElse(location))
-                        .setStorageFormat(storageFormat.map(StorageFormat::fromHiveStorageFormat).orElse(VIEW_STORAGE_FORMAT))
+                        .setStorageFormat(storageFormat.map(HiveStorageFormat::toStorageFormat).orElse(VIEW_STORAGE_FORMAT))
                         .setBucketProperty(bucketProperty)
                         .setSerdeParameters(serdeParameters)
                         .build(),

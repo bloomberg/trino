@@ -54,11 +54,11 @@ public enum BigQueryPseudoColumn
     {
         return new BigQueryColumnHandle(
                 trinoColumnName,
+                ImmutableList.of(),
                 trinoType,
                 bigqueryType,
+                true,
                 Field.Mode.REQUIRED,
-                null,
-                null,
                 ImmutableList.of(),
                 null,
                 true);

@@ -1,10 +1,9 @@
 # Data types
 
-Trino has a set of built-in data types, described below.
-Additional types can be provided by plugins.
+Trino has a set of built-in data types, described below. Additional types can be
+[provided by plugins](/develop/types).
 
 (type-mapping-overview)=
-
 ## Trino type support and mapping
 
 Connectors to data sources are not required to support all Trino data types
@@ -30,7 +29,6 @@ Data type support and mappings vary depending on the connector. Refer to the
 {doc}`connector documentation </connector>` for more information.
 
 (boolean-data-types)=
-
 ## Boolean
 
 ### `BOOLEAN`
@@ -38,7 +36,6 @@ Data type support and mappings vary depending on the connector. Refer to the
 This type captures boolean values `true` and `false`.
 
 (integer-data-types)=
-
 ## Integer
 
 Integer numbers can be expressed as numeric literals in the following formats:
@@ -80,7 +77,6 @@ A 64-bit signed two's complement integer with a minimum value of `-2^63` or
 `-0x8000000000000000` and a maximum value of `2^63 - 1` or `0x7FFFFFFFFFFFFFFF`.
 
 (floating-point-data-types)=
-
 ## Floating-point
 
 Floating-point, fixed-precision numbers can be expressed as numeric literal
@@ -104,11 +100,10 @@ IEEE Standard 754 for Binary Floating-Point Arithmetic.
 
 Example literals: `DOUBLE '10.3'`, `DOUBLE '1.03e1'`, `10.3e0`, `1.03e1`
 
-(fixed-precision-data-types)=
+(exact-numeric-data-types)=
+## Exact numeric
 
-## Fixed-precision
-
-Fixed-precision numbers can be expressed as numeric literals such as `1.1`, and
+Exact numeric values can be expressed as numeric literals such as `1.1`, and
 are supported by the `DECIMAL` data type.
 
 Underscore characters are ignored within literal values, and can be used to
@@ -121,8 +116,8 @@ Leading zeros in literal values are permitted and ignored. For example,
 
 ### `DECIMAL`
 
-A fixed-precision decimal number. Precision up to 38 digits is supported
-but performance is best up to 18 digits.
+A exact decimal number. Precision up to 38 digits is supported but performance
+is best up to 18 digits.
 
 The decimal type takes two literal parameters:
 
@@ -134,7 +129,6 @@ Example type definitions: `DECIMAL(10,3)`, `DECIMAL(20)`
 Example literals: `DECIMAL '10.3'`, `DECIMAL '1234567890'`, `1.1`
 
 (string-data-types)=
-
 ## String
 
 ### `VARCHAR`
@@ -155,13 +149,20 @@ before any Unicode character usage with 4 digits. In the examples above
 with 6 digits require usage of the plus symbol before the code. For example,
 you need to use `\+01F600` for a grinning face emoji.
 
+Single quotes in string literals can be escaped by using another single quote: 
+`'I am big, it''s the pictures that got small!'`
+
 ### `CHAR`
 
 Fixed length character data. A `CHAR` type without length specified has a default length of 1.
 A `CHAR(x)` value always has `x` characters. For example, casting `dog` to `CHAR(7)`
 adds 4 implicit trailing spaces. Leading and trailing spaces are included in comparisons of
 `CHAR` values. As a result, two character values with different lengths (`CHAR(x)` and
-`CHAR(y)` where `x != y`) will never be equal.
+`CHAR(y)` where `x != y`) will never be equal. As with `VARCHAR`, a single quote in a `CHAR` 
+literal can be escaped with another single quote:
+```sql
+SELECT CHAR 'All right, Mr. DeMille, I''m ready for my close-up.'
+```
 
 Example type definitions: `char`, `char(20)`
 
@@ -187,13 +188,11 @@ JSON value type, which can be a JSON object, a JSON array, a JSON number, a JSON
 `true`, `false` or `null`.
 
 (date-time-data-types)=
-
 ## Date and time
 
 See also {doc}`/functions/datetime`
 
 (date-data-type)=
-
 ### `DATE`
 
 Calendar date (year, month, day).
@@ -223,7 +222,6 @@ SELECT TIME '01:02:03.456 -08:00';
 ```
 
 (timestamp-data-type)=
-
 ### `TIMESTAMP`
 
 `TIMESTAMP` is an alias for `TIMESTAMP(3)` (millisecond precision).
@@ -265,18 +263,18 @@ SELECT cast(TIMESTAMP '2020-06-10 15:55:23.383345' as TIMESTAMP(12));
 ```
 
 (timestamp-with-time-zone-data-type)=
-
 ### `TIMESTAMP WITH TIME ZONE`
 
 `TIMESTAMP WITH TIME ZONE` is an alias for `TIMESTAMP(3) WITH TIME ZONE`
 (millisecond precision).
 
+(timestamp-p-with-time-zone-data-type)=
 ### `TIMESTAMP(P) WITH TIME ZONE`
 
 Instant in time that includes the date and time of day with `P` digits of
-precision for the fraction of seconds and with a time zone. Values of this
-type are rendered using the time zone from the value.
-Time zones can be expressed in the following ways:
+precision for the fraction of seconds and with a time zone. Values of this type
+are rendered using the time zone from the value. Time zones can be expressed in
+the following ways:
 
 - `UTC`, with `GMT`, `Z`, or `UT` usable as aliases for UTC.
 - `+hh:mm` or `-hh:mm` with `hh:mm` as an hour and minute offset from UTC.
@@ -313,11 +311,9 @@ Span of days, hours, minutes, seconds and milliseconds.
 Example: `INTERVAL '2' DAY`
 
 (structural-data-types)=
-
 ## Structural
 
 (array-type)=
-
 ### `ARRAY`
 
 An array of the given component type.
@@ -325,7 +321,6 @@ An array of the given component type.
 Example: `ARRAY[1, 2, 3]`
 
 (map-type)=
-
 ### `MAP`
 
 A map between the given component types.
@@ -333,7 +328,6 @@ A map between the given component types.
 Example: `MAP(ARRAY['foo', 'bar'], ARRAY[1, 2])`
 
 (row-type)=
-
 ### `ROW`
 
 A structure made up of fields that allows mixed types.
@@ -355,7 +349,6 @@ Example: `ROW(1, 2.0)[1]`
 ## Network address
 
 (ipaddress-type)=
-
 ### `IPADDRESS`
 
 An IP address that can represent either an IPv4 or IPv6 address. Internally,
@@ -371,7 +364,6 @@ Examples: `IPADDRESS '10.0.0.1'`, `IPADDRESS '2001:db8::1'`
 ## UUID
 
 (uuid-type)=
-
 ### `UUID`
 
 This type represents a UUID (Universally Unique IDentifier), also known as a
@@ -385,14 +377,12 @@ Calculating the approximate distinct count can be done much more cheaply than an
 [HyperLogLog](https://wikipedia.org/wiki/HyperLogLog) data sketch. See {doc}`/functions/hyperloglog`.
 
 (hyperloglog-type)=
-
 ### `HyperLogLog`
 
 A HyperLogLog sketch allows efficient computation of {func}`approx_distinct`. It starts as a
 sparse representation, switching to a dense representation when it becomes more efficient.
 
 (p4hyperloglog-type)=
-
 ### `P4HyperLogLog`
 
 A P4HyperLogLog sketch is similar to {ref}`hyperloglog-type`, but it starts (and remains)
@@ -401,7 +391,6 @@ in the dense representation.
 ## SetDigest
 
 (setdigest-type)=
-
 ### `SetDigest`
 
 A SetDigest (setdigest) is a data sketch structure used
@@ -424,7 +413,6 @@ SetDigests are additive, meaning they can be merged together.
 ## Quantile digest
 
 (qdigest-type)=
-
 ### `QDigest`
 
 A quantile digest (qdigest) is a summary structure which captures the approximate
@@ -445,7 +433,6 @@ daily, and quickly merged to retrieve the 99th percentile value.
 ## T-Digest
 
 (tdigest-type)=
-
 ### `TDigest`
 
 A T-digest (tdigest) is a summary structure which, similarly to qdigest, captures the

@@ -109,13 +109,13 @@ public class TestHdfsFileSystemS3Mock
     }
 
     @Override
-    protected final boolean supportsCreateWithoutOverwrite()
+    protected boolean isCreateExclusive()
     {
         return false;
     }
 
     @Override
-    protected final boolean deleteFileFailsIfNotExists()
+    protected boolean supportsCreateExclusive()
     {
         return false;
     }

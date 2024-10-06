@@ -15,20 +15,14 @@ package io.trino.sql.planner;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.sql.ir.DefaultTraversalVisitor;
+import io.trino.sql.ir.Expression;
+import io.trino.sql.ir.Lambda;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.iterative.Lookup;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.WindowNode;
-import io.trino.sql.tree.DefaultExpressionTraversalVisitor;
-import io.trino.sql.tree.DefaultTraversalVisitor;
-import io.trino.sql.tree.DereferenceExpression;
-import io.trino.sql.tree.Expression;
-import io.trino.sql.tree.Identifier;
-import io.trino.sql.tree.LambdaExpression;
-import io.trino.sql.tree.NodeRef;
-import io.trino.sql.tree.QualifiedName;
-import io.trino.sql.tree.SubqueryExpression;
-import io.trino.sql.tree.SymbolReference;
 
 import java.util.List;
 import java.util.Set;
@@ -38,7 +32,6 @@ import static io.trino.sql.planner.ExpressionExtractor.extractExpressions;
 import static io.trino.sql.planner.ExpressionExtractor.extractExpressionsNonRecursive;
 import static io.trino.sql.planner.iterative.Lookup.noLookup;
 import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
-import static java.util.Objects.requireNonNull;
 
 public final class SymbolsExtractor
 {
@@ -95,7 +88,7 @@ public final class SymbolsExtractor
     public static List<Symbol> extractAll(Expression expression)
     {
         ImmutableList.Builder<Symbol> builder = ImmutableList.builder();
-        new SymbolBuilderVisitor().process(expression, builder);
+        new SymbolBuilderVisitor().process(expression, new Context(ImmutableSet.of(), builder));
         return builder.build();
     }
 
@@ -106,7 +99,7 @@ public final class SymbolsExtractor
             builder.addAll(extractAll(argument));
         }
         aggregation.getFilter().ifPresent(builder::add);
-        aggregation.getOrderingScheme().ifPresent(orderBy -> builder.addAll(orderBy.getOrderBy()));
+        aggregation.getOrderingScheme().ifPresent(orderBy -> builder.addAll(orderBy.orderBy()));
         aggregation.getMask().ifPresent(builder::add);
         return builder.build();
     }
@@ -121,21 +114,6 @@ public final class SymbolsExtractor
         function.getFrame().getSortKeyCoercedForFrameEndComparison().ifPresent(builder::add);
         function.getFrame().getStartValue().ifPresent(builder::add);
         function.getFrame().getSortKeyCoercedForFrameStartComparison().ifPresent(builder::add);
-        return builder.build();
-    }
-
-    // to extract qualified name with prefix
-    public static Set<QualifiedName> extractNames(Expression expression, Set<NodeRef<Expression>> columnReferences)
-    {
-        ImmutableSet.Builder<QualifiedName> builder = ImmutableSet.builder();
-        new QualifiedNameBuilderVisitor(columnReferences, true).process(expression, builder);
-        return builder.build();
-    }
-
-    public static Set<QualifiedName> extractNamesNoSubqueries(Expression expression, Set<NodeRef<Expression>> columnReferences)
-    {
-        ImmutableSet.Builder<QualifiedName> builder = ImmutableSet.builder();
-        new QualifiedNameBuilderVisitor(columnReferences, false).process(expression, builder);
         return builder.build();
     }
 
@@ -154,62 +132,31 @@ public final class SymbolsExtractor
     }
 
     private static class SymbolBuilderVisitor
-            extends DefaultExpressionTraversalVisitor<ImmutableList.Builder<Symbol>>
+            extends DefaultTraversalVisitor<Context>
     {
         @Override
-        protected Void visitSymbolReference(SymbolReference node, ImmutableList.Builder<Symbol> builder)
+        protected Void visitReference(Reference node, Context context)
         {
-            builder.add(Symbol.from(node));
+            Symbol symbol = Symbol.from(node);
+            if (!context.lambdaArguments().contains(symbol)) {
+                context.builder().add(symbol);
+            }
             return null;
         }
 
         @Override
-        protected Void visitLambdaExpression(LambdaExpression node, ImmutableList.Builder<Symbol> context)
+        protected Void visitLambda(Lambda node, Context context)
         {
-            // Symbols in lambda expression are bound to lambda arguments, so no need to extract them
+            Context lambdaContext = new Context(
+                    ImmutableSet.<Symbol>builder()
+                            .addAll(context.lambdaArguments())
+                            .addAll(node.arguments())
+                            .build(),
+                    context.builder());
+            process(node.body(), lambdaContext);
             return null;
         }
     }
 
-    private static class QualifiedNameBuilderVisitor
-            extends DefaultTraversalVisitor<ImmutableSet.Builder<QualifiedName>>
-    {
-        private final Set<NodeRef<Expression>> columnReferences;
-        private final boolean recurseIntoSubqueries;
-
-        private QualifiedNameBuilderVisitor(Set<NodeRef<Expression>> columnReferences, boolean recurseIntoSubqueries)
-        {
-            this.columnReferences = requireNonNull(columnReferences, "columnReferences is null");
-            this.recurseIntoSubqueries = recurseIntoSubqueries;
-        }
-
-        @Override
-        protected Void visitDereferenceExpression(DereferenceExpression node, ImmutableSet.Builder<QualifiedName> builder)
-        {
-            if (columnReferences.contains(NodeRef.<Expression>of(node))) {
-                builder.add(DereferenceExpression.getQualifiedName(node));
-            }
-            else {
-                process(node.getBase(), builder);
-            }
-            return null;
-        }
-
-        @Override
-        protected Void visitIdentifier(Identifier node, ImmutableSet.Builder<QualifiedName> builder)
-        {
-            builder.add(QualifiedName.of(node.getValue()));
-            return null;
-        }
-
-        @Override
-        protected Void visitSubqueryExpression(SubqueryExpression node, ImmutableSet.Builder<QualifiedName> context)
-        {
-            if (!recurseIntoSubqueries) {
-                return null;
-            }
-
-            return super.visitSubqueryExpression(node, context);
-        }
-    }
+    private record Context(Set<Symbol> lambdaArguments, ImmutableList.Builder<Symbol> builder) {}
 }
